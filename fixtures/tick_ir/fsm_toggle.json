@@ -1,0 +1,45 @@
+{
+  "inputs": {
+    "i": {
+      "kind": "bool"
+    }
+  },
+  "name": "fsm_toggle",
+  "next_state": {
+    "s": {
+      "a": {
+        "kind": "var",
+        "name": "s"
+      },
+      "b": {
+        "kind": "var",
+        "name": "i"
+      },
+      "kind": "xor"
+    }
+  },
+  "output_exprs": {
+    "o": {
+      "kind": "var",
+      "name": "s"
+    }
+  },
+  "outputs": {
+    "o": {
+      "kind": "bool"
+    }
+  },
+  "reset_state": {
+    "s": {
+      "kind": "bool_const",
+      "value": false
+    }
+  },
+  "schema_version": 1,
+  "state": {
+    "s": {
+      "kind": "bool"
+    }
+  }
+}
+

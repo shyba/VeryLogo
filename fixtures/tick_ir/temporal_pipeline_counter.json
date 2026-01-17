@@ -1,0 +1,45 @@
+{
+  "inputs": {},
+  "name": "counter_pipe",
+  "next_state": {
+    "c": {
+      "a": {
+        "kind": "var",
+        "name": "c"
+      },
+      "b": {
+        "kind": "bitvec_const",
+        "value": 1,
+        "width": 3
+      },
+      "kind": "add"
+    }
+  },
+  "output_exprs": {
+    "o": {
+      "kind": "var",
+      "name": "c"
+    }
+  },
+  "outputs": {
+    "o": {
+      "kind": "bitvec",
+      "width": 3
+    }
+  },
+  "reset_state": {
+    "c": {
+      "kind": "bitvec_const",
+      "value": 0,
+      "width": 3
+    }
+  },
+  "schema_version": 1,
+  "state": {
+    "c": {
+      "kind": "bitvec",
+      "width": 3
+    }
+  }
+}
+

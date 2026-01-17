@@ -1,0 +1,27 @@
+{
+  "inputs": {
+    "i": {
+      "kind": "bool"
+    }
+  },
+  "name": "comb_not",
+  "next_state": {},
+  "output_exprs": {
+    "o": {
+      "kind": "not",
+      "x": {
+        "kind": "var",
+        "name": "i"
+      }
+    }
+  },
+  "outputs": {
+    "o": {
+      "kind": "bool"
+    }
+  },
+  "reset_state": {},
+  "schema_version": 1,
+  "state": {}
+}
+

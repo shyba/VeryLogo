@@ -1,0 +1,49 @@
+{
+  "inputs": {
+    "i": {
+      "kind": "bool"
+    }
+  },
+  "name": "debounce_like",
+  "next_state": {
+    "dead": {
+      "kind": "bool_const",
+      "value": false
+    },
+    "o_reg": {
+      "kind": "var",
+      "name": "i"
+    }
+  },
+  "output_exprs": {
+    "o": {
+      "kind": "var",
+      "name": "o_reg"
+    }
+  },
+  "outputs": {
+    "o": {
+      "kind": "bool"
+    }
+  },
+  "reset_state": {
+    "dead": {
+      "kind": "bool_const",
+      "value": false
+    },
+    "o_reg": {
+      "kind": "bool_const",
+      "value": false
+    }
+  },
+  "schema_version": 1,
+  "state": {
+    "dead": {
+      "kind": "bool"
+    },
+    "o_reg": {
+      "kind": "bool"
+    }
+  }
+}
+
