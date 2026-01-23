@@ -533,6 +533,254 @@ def test_aes_sbox_no_regression():
 
 ---
 
+## Appendix A: Why 32 AND Gates?
+
+The AES S-box computes `S(x) = A * inv(x) + c` in GF(2^8), where:
+- `inv(x)` = multiplicative inverse in GF(2^8), with `inv(0) = 0`
+- `A` = affine transformation matrix (linear, just XORs)
+- `c` = constant vector
+
+The inverse in GF(2^8) requires non-linear operations. The minimum known is **32 AND gates** because:
+1. GF(2^8) can be decomposed as tower field: GF(2^8) = GF((2^4)^2) = GF(((2^2)^2)^2)
+2. Each level of the tower requires multiplications
+3. Inversion uses: `inv(x) = x^254 = x^(2^8-2)` computed via square-and-multiply
+4. The 32 ANDs are intrinsic to the algebraic structure
+
+**Implication**: Optimization focuses on XOR count (83 in BP vs hundreds in naive), not AND count.
+
+---
+
+## Appendix B: Boyar-Peralta Algorithm Details
+
+### Problem Statement
+Given an m×n binary matrix M, find minimum XOR sequence to compute all m row vectors from n unit vectors (inputs).
+
+### Example
+```
+Matrix M (2 outputs, 3 inputs):
+  [1 1 0]   <- output 0 = x0 ^ x1
+  [1 0 1]   <- output 1 = x0 ^ x2
+
+Base vectors start as:
+  e0 = [1 0 0] (= x0)
+  e1 = [0 1 0] (= x1)
+  e2 = [0 0 1] (= x2)
+
+Target: produce [1 1 0] and [1 0 1]
+
+Step 1: e0 ^ e1 = [1 1 0] ✓ (matches output 0)
+Step 2: e0 ^ e2 = [1 0 1] ✓ (matches output 1)
+
+Result: 2 XOR operations (optimal for this case)
+```
+
+### Greedy Heuristic
+```python
+def bp_greedy(targets: set[int], base: list[int]) -> list[tuple[int, int]]:
+    """
+    targets: set of row vectors we need (as integers, bit-packed)
+    base: list of vectors we have (starts with unit vectors)
+    """
+    ops = []
+    while not targets.issubset(set(base)):
+        best_pair = None
+        best_score = -1
+
+        # Try all pairs in base
+        for i in range(len(base)):
+            for j in range(i + 1, len(base)):
+                candidate = base[i] ^ base[j]
+                if candidate in base:
+                    continue  # Already have it
+
+                # Score = how much closer this gets us to targets
+                score = sum(
+                    hamming_distance(t, candidate) < min(
+                        hamming_distance(t, base[i]),
+                        hamming_distance(t, base[j])
+                    )
+                    for t in targets if t not in base
+                )
+
+                # Bonus if candidate IS a target
+                if candidate in targets:
+                    score += 1000
+
+                if score > best_score:
+                    best_score = score
+                    best_pair = (i, j)
+
+        if best_pair is None:
+            raise RuntimeError("No progress possible")
+
+        i, j = best_pair
+        new_vec = base[i] ^ base[j]
+        base.append(new_vec)
+        ops.append((i, j))
+
+    return ops
+
+def hamming_distance(a: int, b: int) -> int:
+    return bin(a ^ b).count('1')
+```
+
+### Complexity
+- Naive: O(m * n) XORs (one per matrix entry)
+- BP: Often O(m + k) where k is small (sublinear in entries)
+- AES S-box: BP achieves 83 XORs vs ~200+ naive
+
+---
+
+## Appendix C: SAT Encoding for Exact Synthesis
+
+### Variables (for g gates, k inputs)
+```
+For each gate i in 0..g-1:
+  type[i] ∈ {XOR, AND}           # gate operation
+  left[i] ∈ 0..k+i-1             # left input (input or previous gate)
+  right[i] ∈ 0..k+i-1            # right input
+
+For correctness checking:
+  val[i][j] ∈ {0, 1}             # value of signal i under input assignment j
+```
+
+### Constraints
+```
+1. Structural:
+   left[i] < k + i               # can only use earlier signals
+   right[i] < k + i
+   left[i] <= right[i]           # symmetry breaking (commutative ops)
+
+2. Semantics (for each input assignment j):
+   If type[i] = XOR:
+     val[k+i][j] = val[left[i]][j] XOR val[right[i]][j]
+   If type[i] = AND:
+     val[k+i][j] = val[left[i]][j] AND val[right[i]][j]
+
+3. Correctness:
+   For each output o with truth table T:
+     For each input assignment j:
+       val[output_gate[o]][j] = T[j]
+```
+
+### Bitvector Optimization
+Instead of per-assignment constraints, encode truth tables as bitvectors:
+```python
+# For k inputs, truth table is 2^k bits
+# Gate semantics become bitvector operations:
+tt[i] = tt[left[i]] ^ tt[right[i]]   # if XOR
+tt[i] = tt[left[i]] & tt[right[i]]   # if AND
+
+# Correctness: tt[output_gate] == target_truth_table
+```
+
+This reduces constraint count from O(g * 2^k) to O(g).
+
+---
+
+## Appendix D: Common Pitfalls
+
+### 1. Gate Index Corruption
+After removing gates, all indices shift. Always rebuild with fresh indices:
+```python
+# BAD: in-place modification with stale indices
+for i, gate in enumerate(gates):
+    if should_remove(i):
+        del gates[i]  # indices now wrong!
+
+# GOOD: build new list, remap all references
+new_gates = []
+old_to_new = {}
+for i, gate in enumerate(old_gates):
+    if not should_remove(i):
+        old_to_new[i] = len(new_gates) + n_inputs
+        new_gates.append(remap(gate, old_to_new))
+```
+
+### 2. Circular Dependencies in Rewrites
+When applying `(a ^ b) ^ b → a`, ensure `b` is actually the same signal:
+```python
+# Must check: right operand of outer XOR == one operand of inner XOR
+# Not just structurally similar, but same gate index
+```
+
+### 3. Output Inversions
+CircuitState has `outputs = [(idx, inverted), ...]`. Don't forget the inversion:
+```python
+def evaluate(self, input_val: int) -> int:
+    # ... compute values ...
+    result = 0
+    for bit, (idx, inv) in enumerate(self.outputs):
+        val = values[idx]
+        if inv:
+            val = 1 - val
+        result |= val << bit
+    return result
+```
+
+### 4. SAT Timeout Handling
+SAT on large windows can hang. Always use timeouts:
+```python
+solver.set("timeout", 10000)  # 10 seconds
+result = solver.check()
+if result == z3.unknown:
+    return None  # timed out, skip this window
+```
+
+### 5. Equivalence Checking After Every Change
+```python
+def verify_equivalence(old: CircuitState, new: CircuitState, table: list[int]) -> bool:
+    for i in range(256):
+        if old.evaluate(i) != table[i] or new.evaluate(i) != table[i]:
+            return False
+    return True
+
+# Call after EVERY transformation
+new_state = transform(state)
+assert verify_equivalence(state, new_state, AES_SBOX_TABLE)
+state = new_state
+```
+
+---
+
+## Appendix E: Checkpoint File Format
+
+```json
+{
+  "version": 1,
+  "timestamp": "2026-01-23T12:34:56",
+  "gate_count": 423,
+  "and_count": 32,
+  "xor_count": 391,
+  "depth": 28,
+  "multiplicative_depth": 4,
+  "iterations": 1547,
+  "improvements": 23,
+  "last_improvement_iteration": 1523,
+  "circuit": {
+    "input_bits": 8,
+    "output_bits": 8,
+    "gates": [
+      ["xor", 0, 1],
+      ["and", 2, 8],
+      ...
+    ],
+    "outputs": [
+      [42, false],
+      [87, true],
+      ...
+    ]
+  },
+  "optimization_log": [
+    {"iteration": 100, "gate_count": 1145, "transformation": "initial"},
+    {"iteration": 150, "gate_count": 1102, "transformation": "CSE"},
+    ...
+  ]
+}
+```
+
+---
+
 ## References
 
 1. Boyar & Peralta, "A New Combinational Logic Minimization Technique" - BP algorithm
