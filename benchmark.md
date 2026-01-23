@@ -38,6 +38,10 @@ Algebraic Normal Form synthesis producing a correct but unoptimized circuit. Thi
 ## Running the Benchmark
 
 ```bash
+# Clone the Boyar-Peralta reference implementation
+git clone https://github.com/conorpp/bitsliced-aes.git external-bitsliced
+
+# Run the benchmark
 python scripts/benchmark_sbox_all.py
 python scripts/benchmark_sbox_all.py --iterations 10000000
 ```
