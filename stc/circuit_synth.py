@@ -1139,6 +1139,334 @@ class CircuitState:
 
         return output_exprs
 
+    def eliminate_dead_code(self) -> "CircuitState":
+        """Remove gates not in any output cone."""
+        used: set[int] = set()
+
+        def mark_used(idx: int) -> None:
+            if idx < self.input_bits:
+                return
+            gate_idx = idx - self.input_bits
+            if gate_idx < 0 or gate_idx >= len(self.gates):
+                return
+            if gate_idx in used:
+                return
+            used.add(gate_idx)
+            op, left, right = self.gates[gate_idx]
+            mark_used(left)
+            if op not in ("const", "not"):
+                mark_used(right)
+
+        for idx, _ in self.outputs:
+            mark_used(idx)
+
+        if len(used) == len(self.gates):
+            return CircuitState(
+                input_bits=self.input_bits,
+                output_bits=self.output_bits,
+                gates=list(self.gates),
+                outputs=list(self.outputs),
+                gate_count=self.gate_count,
+            )
+
+        old_to_new: dict[int, int] = {}
+        for i in range(self.input_bits):
+            old_to_new[i] = i
+
+        new_gates: list[tuple[str, int, int]] = []
+        for old_idx in sorted(used):
+            op, left, right = self.gates[old_idx]
+            new_idx = self.input_bits + len(new_gates)
+            old_to_new[self.input_bits + old_idx] = new_idx
+            new_left = old_to_new.get(left, left)
+            new_right = (
+                old_to_new.get(right, right) if op not in ("const", "not") else right
+            )
+            new_gates.append((op, new_left, new_right))
+
+        new_outputs = [(old_to_new[idx], inv) for idx, inv in self.outputs]
+
+        return CircuitState(
+            input_bits=self.input_bits,
+            output_bits=self.output_bits,
+            gates=new_gates,
+            outputs=new_outputs,
+            gate_count=len(new_gates),
+        )
+
+    def eliminate_common_subexpressions(self) -> "CircuitState":
+        seen: dict[tuple[str, int, int], int] = {}
+        remap: dict[int, int] = {}
+
+        for i in range(self.input_bits):
+            remap[i] = i
+
+        for g_idx, (op, left, right) in enumerate(self.gates):
+            full_idx = self.input_bits + g_idx
+
+            new_left = remap.get(left, left)
+            new_right = remap.get(right, right)
+
+            if op in ("xor", "and", "or") and new_left > new_right:
+                new_left, new_right = new_right, new_left
+
+            key = (op, new_left, new_right)
+
+            if key in seen:
+                remap[full_idx] = seen[key]
+            else:
+                seen[key] = full_idx
+                remap[full_idx] = full_idx
+
+        used: set[int] = set()
+
+        def mark_used(idx: int) -> None:
+            if idx < self.input_bits:
+                return
+            gate_idx = idx - self.input_bits
+            if gate_idx < 0 or gate_idx >= len(self.gates):
+                return
+            if gate_idx in used:
+                return
+            used.add(gate_idx)
+            op, left, right = self.gates[gate_idx]
+            mark_used(remap.get(left, left))
+            if op not in ("const", "not"):
+                mark_used(remap.get(right, right))
+
+        for out_idx, _ in self.outputs:
+            mark_used(remap.get(out_idx, out_idx))
+
+        old_to_new: dict[int, int] = {i: i for i in range(self.input_bits)}
+        new_gates: list[tuple[str, int, int]] = []
+
+        for old_gate_idx in sorted(used):
+            full_old_idx = self.input_bits + old_gate_idx
+
+            if remap.get(full_old_idx, full_old_idx) != full_old_idx:
+                continue
+
+            op, left, right = self.gates[old_gate_idx]
+            new_left = old_to_new.get(remap.get(left, left), remap.get(left, left))
+            new_right = old_to_new.get(remap.get(right, right), remap.get(right, right))
+
+            new_idx = self.input_bits + len(new_gates)
+            old_to_new[full_old_idx] = new_idx
+            new_gates.append((op, new_left, new_right))
+
+        for old_gate_idx in sorted(used):
+            full_old_idx = self.input_bits + old_gate_idx
+            canonical = remap.get(full_old_idx, full_old_idx)
+            if canonical != full_old_idx and canonical in old_to_new:
+                old_to_new[full_old_idx] = old_to_new[canonical]
+
+        new_outputs: list[tuple[int, bool]] = []
+        for out_idx, inv in self.outputs:
+            canonical = remap.get(out_idx, out_idx)
+            new_idx = old_to_new.get(canonical, canonical)
+            new_outputs.append((new_idx, inv))
+
+        return CircuitState(
+            input_bits=self.input_bits,
+            output_bits=self.output_bits,
+            gates=new_gates,
+            outputs=new_outputs,
+            gate_count=len(new_gates),
+        )
+
+    def apply_algebraic_rewrites(self) -> "CircuitState":
+        """
+        Apply algebraic identity rewrites until fixed point.
+
+        XOR identities:
+        - x ^ x -> 0 (constant)
+        - x ^ 0 -> x (propagate)
+        - (a ^ b) ^ b -> a (cancel)
+        - (a ^ b) ^ a -> b (cancel)
+
+        AND identities:
+        - x & x -> x
+        - x & 0 -> 0
+        - x & 1 -> x
+
+        Returns a new CircuitState with simplifications applied.
+        """
+        gates = list(self.gates)
+        outputs = list(self.outputs)
+
+        def find_const_gate(value: int) -> int | None:
+            for g_idx, (op, left, right) in enumerate(gates):
+                if op == "const" and (left & 1) == value:
+                    return self.input_bits + g_idx
+            return None
+
+        def ensure_const_gate(value: int) -> int:
+            existing = find_const_gate(value)
+            if existing is not None:
+                return existing
+            new_idx = self.input_bits + len(gates)
+            gates.append(("const", value, 1))
+            return new_idx
+
+        def get_gate_def(idx: int) -> tuple[str, int, int] | None:
+            if idx < self.input_bits:
+                return None
+            gate_idx = idx - self.input_bits
+            if gate_idx < 0 or gate_idx >= len(gates):
+                return None
+            return gates[gate_idx]
+
+        remap: dict[int, int] = {}
+
+        def resolve(idx: int) -> int:
+            while idx in remap:
+                idx = remap[idx]
+            return idx
+
+        changed = True
+        while changed:
+            changed = False
+
+            for g_idx in range(len(gates)):
+                op, left, right = gates[g_idx]
+                full_idx = self.input_bits + g_idx
+
+                if full_idx in remap:
+                    continue
+
+                left = resolve(left)
+                right = resolve(right)
+                gates[g_idx] = (op, left, right)
+
+                if op == "xor":
+                    if left == right:
+                        const_0 = ensure_const_gate(0)
+                        remap[full_idx] = const_0
+                        changed = True
+                        continue
+
+                    left_def = get_gate_def(left)
+                    if left_def is not None and left_def[0] == "const":
+                        if (left_def[1] & 1) == 0:
+                            remap[full_idx] = right
+                            changed = True
+                            continue
+
+                    right_def = get_gate_def(right)
+                    if right_def is not None and right_def[0] == "const":
+                        if (right_def[1] & 1) == 0:
+                            remap[full_idx] = left
+                            changed = True
+                            continue
+
+                    left_def = get_gate_def(left)
+                    if left_def is not None and left_def[0] == "xor":
+                        inner_a = resolve(left_def[1])
+                        inner_b = resolve(left_def[2])
+                        if inner_b == right:
+                            remap[full_idx] = inner_a
+                            changed = True
+                            continue
+                        if inner_a == right:
+                            remap[full_idx] = inner_b
+                            changed = True
+                            continue
+
+                    right_def = get_gate_def(right)
+                    if right_def is not None and right_def[0] == "xor":
+                        inner_a = resolve(right_def[1])
+                        inner_b = resolve(right_def[2])
+                        if inner_b == left:
+                            remap[full_idx] = inner_a
+                            changed = True
+                            continue
+                        if inner_a == left:
+                            remap[full_idx] = inner_b
+                            changed = True
+                            continue
+
+                elif op == "and":
+                    if left == right:
+                        remap[full_idx] = left
+                        changed = True
+                        continue
+
+                    left_def = get_gate_def(left)
+                    if left_def is not None and left_def[0] == "const":
+                        if (left_def[1] & 1) == 0:
+                            const_0 = ensure_const_gate(0)
+                            remap[full_idx] = const_0
+                            changed = True
+                            continue
+                        else:
+                            remap[full_idx] = right
+                            changed = True
+                            continue
+
+                    right_def = get_gate_def(right)
+                    if right_def is not None and right_def[0] == "const":
+                        if (right_def[1] & 1) == 0:
+                            const_0 = ensure_const_gate(0)
+                            remap[full_idx] = const_0
+                            changed = True
+                            continue
+                        else:
+                            remap[full_idx] = left
+                            changed = True
+                            continue
+
+        new_outputs = []
+        for idx, inv in outputs:
+            new_outputs.append((resolve(idx), inv))
+
+        used: set[int] = set()
+
+        def mark_used(idx: int) -> None:
+            idx = resolve(idx)
+            if idx < self.input_bits:
+                return
+            gate_idx = idx - self.input_bits
+            if gate_idx in used or gate_idx >= len(gates):
+                return
+            used.add(gate_idx)
+            op, left, right = gates[gate_idx]
+            mark_used(left)
+            if op not in ("const", "not"):
+                mark_used(right)
+
+        for idx, _ in new_outputs:
+            mark_used(idx)
+
+        old_to_new: dict[int, int] = {}
+        for i in range(self.input_bits):
+            old_to_new[i] = i
+
+        final_gates: list[tuple[str, int, int]] = []
+        for old_idx in sorted(used):
+            op, left, right = gates[old_idx]
+            left = resolve(left)
+            right = resolve(right)
+            new_left = old_to_new.get(left, left)
+            new_right = (
+                old_to_new.get(right, right) if op not in ("const", "not") else right
+            )
+            new_idx = self.input_bits + len(final_gates)
+            old_to_new[self.input_bits + old_idx] = new_idx
+            final_gates.append((op, new_left, new_right))
+
+        final_outputs = []
+        for idx, inv in new_outputs:
+            idx = resolve(idx)
+            final_outputs.append((old_to_new.get(idx, idx), inv))
+
+        return CircuitState(
+            input_bits=self.input_bits,
+            output_bits=self.output_bits,
+            gates=final_gates,
+            outputs=final_outputs,
+            gate_count=len(final_gates),
+        )
+
     def to_slp(self) -> str:
         """
         Export circuit in standard Straight-Line Program (SLP) format.

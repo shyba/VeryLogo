@@ -626,6 +626,253 @@ class TestCircuitStateMetrics(unittest.TestCase):
         self.assertEqual(state.multiplicative_depth, 0)
 
 
+class TestDeadCodeElimination(unittest.TestCase):
+    def test_dce_removes_unused(self) -> None:
+        """Create circuit with gates not connected to output, verify removed."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("and", 0, 2),
+                ("xor", 1, 2),
+            ],
+            outputs=[(3, False)],
+            gate_count=3,
+        )
+        cleaned = state.eliminate_dead_code()
+        self.assertEqual(cleaned.gate_count, 1)
+        self.assertEqual(len(cleaned.gates), 1)
+        self.assertEqual(cleaned.gates[0], ("xor", 0, 1))
+        self.assertEqual(cleaned.outputs, [(3, False)])
+
+    def test_dce_preserves_outputs(self) -> None:
+        """Verify evaluate() gives same results after DCE."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=4,
+            output_bits=2,
+            gates=[
+                ("xor", 0, 1),
+                ("and", 2, 3),
+                ("xor", 0, 2),
+                ("and", 4, 5),
+            ],
+            outputs=[(4, False), (7, True)],
+            gate_count=4,
+        )
+        cleaned = state.eliminate_dead_code()
+
+        for i in range(16):
+            original_result = state.evaluate(i)
+            cleaned_result = cleaned.evaluate(i)
+            self.assertEqual(
+                original_result,
+                cleaned_result,
+                f"Mismatch at input {i}: original={original_result}, cleaned={cleaned_result}",
+            )
+
+    def test_dce_chains(self) -> None:
+        """Verify it handles chains of unused gates."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("and", 0, 2),
+                ("xor", 2, 3),
+                ("and", 3, 4),
+                ("xor", 0, 1),
+            ],
+            outputs=[(6, False)],
+            gate_count=5,
+        )
+        cleaned = state.eliminate_dead_code()
+        self.assertEqual(cleaned.gate_count, 1)
+        self.assertEqual(len(cleaned.gates), 1)
+        self.assertEqual(cleaned.gates[0], ("xor", 0, 1))
+
+        for i in range(4):
+            original_result = state.evaluate(i)
+            cleaned_result = cleaned.evaluate(i)
+            self.assertEqual(original_result, cleaned_result)
+
+    def test_dce_all_gates_used(self) -> None:
+        """Verify no change when all gates are used."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("and", 0, 2),
+            ],
+            outputs=[(3, False)],
+            gate_count=2,
+        )
+        cleaned = state.eliminate_dead_code()
+        self.assertEqual(cleaned.gate_count, 2)
+        self.assertEqual(len(cleaned.gates), 2)
+
+    def test_dce_no_gates(self) -> None:
+        """Verify DCE handles circuit with no gates."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[],
+            outputs=[(0, False)],
+            gate_count=0,
+        )
+        cleaned = state.eliminate_dead_code()
+        self.assertEqual(cleaned.gate_count, 0)
+        self.assertEqual(len(cleaned.gates), 0)
+
+    def test_dce_multiple_outputs_shared_cone(self) -> None:
+        """Verify DCE preserves gates shared by multiple outputs."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=2,
+            gates=[
+                ("xor", 0, 1),
+                ("and", 0, 2),
+                ("xor", 1, 2),
+                ("or", 0, 1),
+            ],
+            outputs=[(3, False), (4, False)],
+            gate_count=4,
+        )
+        cleaned = state.eliminate_dead_code()
+        self.assertEqual(cleaned.gate_count, 3)
+        self.assertIn(("xor", 0, 1), cleaned.gates)
+
+        for i in range(4):
+            original_result = state.evaluate(i)
+            cleaned_result = cleaned.evaluate(i)
+            self.assertEqual(original_result, cleaned_result)
+
+    def test_dce_shared_intermediate(self) -> None:
+        """Verify DCE preserves intermediate gates used by multiple outputs."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=2,
+            gates=[
+                ("xor", 0, 1),
+                ("and", 0, 2),
+                ("xor", 1, 2),
+            ],
+            outputs=[(3, False), (4, False)],
+            gate_count=3,
+        )
+        cleaned = state.eliminate_dead_code()
+        self.assertEqual(cleaned.gate_count, 3)
+        self.assertIn(("xor", 0, 1), cleaned.gates)
+
+        for i in range(4):
+            original_result = state.evaluate(i)
+            cleaned_result = cleaned.evaluate(i)
+            self.assertEqual(original_result, cleaned_result)
+
+    def test_dce_const_gate(self) -> None:
+        """Verify DCE handles const gates correctly."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("const", 1, 1),
+                ("xor", 0, 1),
+                ("and", 2, 3),
+            ],
+            outputs=[(4, False)],
+            gate_count=3,
+        )
+        cleaned = state.eliminate_dead_code()
+        self.assertEqual(cleaned.gate_count, 3)
+
+        for i in range(4):
+            original_result = state.evaluate(i)
+            cleaned_result = cleaned.evaluate(i)
+            self.assertEqual(original_result, cleaned_result)
+
+    def test_dce_not_gate(self) -> None:
+        """Verify DCE handles not gates correctly."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("not", 0, 0),
+                ("xor", 0, 1),
+                ("and", 2, 3),
+            ],
+            outputs=[(4, False)],
+            gate_count=3,
+        )
+        cleaned = state.eliminate_dead_code()
+        self.assertEqual(cleaned.gate_count, 3)
+
+        for i in range(4):
+            original_result = state.evaluate(i)
+            cleaned_result = cleaned.evaluate(i)
+            self.assertEqual(original_result, cleaned_result)
+
+    def test_dce_removes_deep_unused_chain(self) -> None:
+        """Verify DCE removes a long chain of unused gates."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [
+            ("xor", 0, 1),
+            ("and", 0, 2),
+            ("xor", 2, 3),
+            ("and", 3, 4),
+            ("xor", 4, 5),
+            ("and", 5, 6),
+            ("xor", 0, 1),
+        ]
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=gates,
+            outputs=[(8, False)],
+            gate_count=7,
+        )
+        cleaned = state.eliminate_dead_code()
+        self.assertEqual(cleaned.gate_count, 1)
+        self.assertEqual(cleaned.gates[0], ("xor", 0, 1))
+
+    def test_dce_input_as_output(self) -> None:
+        """Verify DCE handles input directly used as output."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+            ],
+            outputs=[(0, False)],
+            gate_count=1,
+        )
+        cleaned = state.eliminate_dead_code()
+        self.assertEqual(cleaned.gate_count, 0)
+        self.assertEqual(len(cleaned.gates), 0)
+        self.assertEqual(cleaned.outputs, [(0, False)])
+
+
 class TestSlpExport(unittest.TestCase):
     def test_slp_xor_and_circuit(self) -> None:
         """Test SLP export with XOR and AND gates."""
@@ -724,3 +971,461 @@ class TestSlpExport(unittest.TestCase):
         lines = slp.split("\n")
         self.assertEqual(lines[0], "t0 = 0")
         self.assertEqual(lines[1], "y0 = t0")
+
+
+class TestAlgebraicRewrites(unittest.TestCase):
+    def test_rewrite_xor_self(self) -> None:
+        """Test x ^ x -> 0."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 0),
+            ],
+            outputs=[(2, False)],
+            gate_count=1,
+        )
+        rewritten = state.apply_algebraic_rewrites()
+
+        for i in range(4):
+            self.assertEqual(rewritten.evaluate(i), 0)
+
+        self.assertLess(rewritten.gate_count, state.gate_count + 1)
+
+    def test_rewrite_xor_zero(self) -> None:
+        """Test x ^ 0 -> x."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("const", 0, 1),
+                ("xor", 0, 2),
+            ],
+            outputs=[(3, False)],
+            gate_count=2,
+        )
+        rewritten = state.apply_algebraic_rewrites()
+
+        for i in range(4):
+            expected = i & 1
+            self.assertEqual(rewritten.evaluate(i), expected)
+
+        self.assertLessEqual(rewritten.gate_count, 1)
+
+    def test_rewrite_and_self(self) -> None:
+        """Test x & x -> x."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("and", 0, 0),
+            ],
+            outputs=[(2, False)],
+            gate_count=1,
+        )
+        rewritten = state.apply_algebraic_rewrites()
+
+        for i in range(4):
+            expected = i & 1
+            self.assertEqual(rewritten.evaluate(i), expected)
+
+        self.assertEqual(rewritten.gate_count, 0)
+
+    def test_rewrite_preserves_correctness(self) -> None:
+        """Test that rewrites preserve circuit semantics."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=2,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 2, 3),
+                ("and", 3, 3),
+                ("xor", 4, 4),
+                ("const", 0, 1),
+                ("xor", 0, 7),
+            ],
+            outputs=[(5, False), (8, False)],
+            gate_count=6,
+        )
+        rewritten = state.apply_algebraic_rewrites()
+
+        for i in range(8):
+            original_result = state.evaluate(i)
+            rewritten_result = rewritten.evaluate(i)
+            self.assertEqual(
+                original_result,
+                rewritten_result,
+                f"Mismatch at input {i}: original={original_result}, rewritten={rewritten_result}",
+            )
+
+        self.assertLessEqual(rewritten.gate_count, state.gate_count)
+
+    def test_rewrite_xor_cancel_left(self) -> None:
+        """Test (a ^ b) ^ b -> a."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 2, 1),
+            ],
+            outputs=[(3, False)],
+            gate_count=2,
+        )
+        rewritten = state.apply_algebraic_rewrites()
+
+        for i in range(4):
+            a = i & 1
+            self.assertEqual(rewritten.evaluate(i), a)
+
+        self.assertLess(rewritten.gate_count, state.gate_count)
+
+    def test_rewrite_xor_cancel_right(self) -> None:
+        """Test (a ^ b) ^ a -> b."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 2, 0),
+            ],
+            outputs=[(3, False)],
+            gate_count=2,
+        )
+        rewritten = state.apply_algebraic_rewrites()
+
+        for i in range(4):
+            b = (i >> 1) & 1
+            self.assertEqual(rewritten.evaluate(i), b)
+
+        self.assertLess(rewritten.gate_count, state.gate_count)
+
+    def test_rewrite_and_zero(self) -> None:
+        """Test x & 0 -> 0."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("const", 0, 1),
+                ("and", 0, 2),
+            ],
+            outputs=[(3, False)],
+            gate_count=2,
+        )
+        rewritten = state.apply_algebraic_rewrites()
+
+        for i in range(4):
+            self.assertEqual(rewritten.evaluate(i), 0)
+
+    def test_rewrite_and_one(self) -> None:
+        """Test x & 1 -> x."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("const", 1, 1),
+                ("and", 0, 2),
+            ],
+            outputs=[(3, False)],
+            gate_count=2,
+        )
+        rewritten = state.apply_algebraic_rewrites()
+
+        for i in range(4):
+            expected = i & 1
+            self.assertEqual(rewritten.evaluate(i), expected)
+
+        self.assertLessEqual(rewritten.gate_count, 1)
+
+    def test_rewrite_chain(self) -> None:
+        """Test that chained rewrites work correctly."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 2, 1),
+                ("xor", 3, 3),
+            ],
+            outputs=[(4, False)],
+            gate_count=3,
+        )
+        rewritten = state.apply_algebraic_rewrites()
+
+        for i in range(4):
+            self.assertEqual(rewritten.evaluate(i), 0)
+
+        self.assertLess(rewritten.gate_count, state.gate_count)
+
+
+class TestCommonSubexpressionElimination(unittest.TestCase):
+    def test_cse_removes_duplicates(self) -> None:
+        """CSE should merge identical gates."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=2,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 0, 1),
+                ("and", 0, 2),
+                ("and", 0, 2),
+            ],
+            outputs=[(3, False), (5, False)],
+            gate_count=4,
+        )
+        optimized = state.eliminate_common_subexpressions()
+        self.assertEqual(optimized.gate_count, 2)
+        self.assertEqual(len(optimized.gates), 2)
+        self.assertIn(("xor", 0, 1), optimized.gates)
+        self.assertIn(("and", 0, 2), optimized.gates)
+
+    def test_cse_preserves_correctness(self) -> None:
+        """Verify evaluate() gives same results before/after CSE."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=3,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 1, 0),
+                ("and", 1, 2),
+                ("and", 2, 1),
+                ("or", 0, 2),
+                ("or", 2, 0),
+            ],
+            outputs=[(3, False), (5, False), (7, True)],
+            gate_count=6,
+        )
+        optimized = state.eliminate_common_subexpressions()
+
+        for i in range(8):
+            original_result = state.evaluate(i)
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(
+                original_result,
+                optimized_result,
+                f"Mismatch at input {i}: original={original_result}, optimized={optimized_result}",
+            )
+
+        self.assertLess(optimized.gate_count, state.gate_count)
+
+    def test_cse_normalizes_commutative_ops(self) -> None:
+        """CSE should normalize commutative ops: (and, 5, 3) -> (and, 3, 5)."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=4,
+            output_bits=2,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 1, 0),
+                ("and", 2, 3),
+                ("and", 3, 2),
+            ],
+            outputs=[(4, False), (6, False)],
+            gate_count=4,
+        )
+        optimized = state.eliminate_common_subexpressions()
+        self.assertEqual(optimized.gate_count, 2)
+        self.assertEqual(len(optimized.gates), 2)
+
+        for i in range(16):
+            original_result = state.evaluate(i)
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(original_result, optimized_result)
+
+    def test_cse_handles_chains(self) -> None:
+        """CSE should handle chains of duplicate gates correctly."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=2,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 0, 1),
+                ("and", 2, 0),
+                ("and", 3, 0),
+            ],
+            outputs=[(4, False), (5, False)],
+            gate_count=4,
+        )
+        optimized = state.eliminate_common_subexpressions()
+        self.assertEqual(optimized.gate_count, 2)
+
+        for i in range(4):
+            original_result = state.evaluate(i)
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(original_result, optimized_result)
+
+    def test_cse_no_duplicates(self) -> None:
+        """CSE should not change circuit with no duplicates."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=2,
+            gates=[
+                ("xor", 0, 1),
+                ("and", 1, 2),
+            ],
+            outputs=[(3, False), (4, True)],
+            gate_count=2,
+        )
+        optimized = state.eliminate_common_subexpressions()
+        self.assertEqual(optimized.gate_count, state.gate_count)
+
+        for i in range(8):
+            original_result = state.evaluate(i)
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(original_result, optimized_result)
+
+    def test_cse_handles_not_gates(self) -> None:
+        """CSE should handle NOT gates correctly."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=2,
+            gates=[
+                ("not", 0, 0),
+                ("not", 0, 0),
+                ("xor", 2, 1),
+                ("xor", 3, 1),
+            ],
+            outputs=[(4, False), (5, False)],
+            gate_count=4,
+        )
+        optimized = state.eliminate_common_subexpressions()
+        self.assertEqual(optimized.gate_count, 2)
+
+        for i in range(4):
+            original_result = state.evaluate(i)
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(original_result, optimized_result)
+
+    def test_cse_handles_const_gates(self) -> None:
+        """CSE should handle const gates correctly."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=2,
+            gates=[
+                ("const", 1, 1),
+                ("const", 1, 1),
+                ("xor", 2, 0),
+                ("xor", 3, 0),
+            ],
+            outputs=[(4, False), (5, False)],
+            gate_count=4,
+        )
+        optimized = state.eliminate_common_subexpressions()
+        self.assertEqual(optimized.gate_count, 2)
+
+        for i in range(4):
+            original_result = state.evaluate(i)
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(original_result, optimized_result)
+
+    def test_cse_removes_unreferenced_gates(self) -> None:
+        """CSE should remove gates that become unreferenced after merging."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 0, 1),
+                ("and", 2, 2),
+            ],
+            outputs=[(4, False)],
+            gate_count=3,
+        )
+        optimized = state.eliminate_common_subexpressions()
+        self.assertEqual(optimized.gate_count, 2)
+
+        for i in range(4):
+            original_result = state.evaluate(i)
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(original_result, optimized_result)
+
+    def test_cse_preserves_output_inversions(self) -> None:
+        """CSE should preserve output inversions."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=2,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 0, 1),
+            ],
+            outputs=[(2, False), (3, True)],
+            gate_count=2,
+        )
+        optimized = state.eliminate_common_subexpressions()
+        self.assertEqual(optimized.gate_count, 1)
+
+        for i in range(4):
+            original_result = state.evaluate(i)
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(original_result, optimized_result)
+
+    def test_cse_empty_circuit(self) -> None:
+        """CSE should handle empty circuit."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[],
+            outputs=[(0, False)],
+            gate_count=0,
+        )
+        optimized = state.eliminate_common_subexpressions()
+        self.assertEqual(optimized.gate_count, 0)
+        self.assertEqual(optimized.outputs, [(0, False)])
+
+    def test_cse_input_as_output(self) -> None:
+        """CSE should handle input directly used as output."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=2,
+            gates=[
+                ("xor", 0, 1),
+            ],
+            outputs=[(0, False), (2, True)],
+            gate_count=1,
+        )
+        optimized = state.eliminate_common_subexpressions()
+        self.assertEqual(optimized.gate_count, 1)
+
+        for i in range(4):
+            original_result = state.evaluate(i)
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(original_result, optimized_result)
