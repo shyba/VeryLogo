@@ -404,9 +404,7 @@ class TestIncrementalOptimizer(unittest.TestCase):
 
             for i in range(256):
                 got = opt.best_state.evaluate(i)
-                self.assertEqual(
-                    got, AES_SBOX_TABLE[i], f"S-box mismatch at input {i}"
-                )
+                self.assertEqual(got, AES_SBOX_TABLE[i], f"S-box mismatch at input {i}")
 
             self.assertTrue(opt.verify())
             self.assertLess(opt.get_gate_count(), 1200)
@@ -440,9 +438,7 @@ class TestIncrementalOptimizer(unittest.TestCase):
                 self.assertTrue(loaded.verify())
 
                 for i in range(256):
-                    self.assertEqual(
-                        loaded.best_state.evaluate(i), AES_SBOX_TABLE[i]
-                    )
+                    self.assertEqual(loaded.best_state.evaluate(i), AES_SBOX_TABLE[i])
             finally:
                 if os.path.exists(temp_path):
                     os.unlink(temp_path)
@@ -475,3 +471,256 @@ class TestSynthesizedBitslice(unittest.TestCase):
                 self.assertEqual(
                     out_byte, expected, f"byte {i}: got {out_byte}, expected {expected}"
                 )
+
+
+class TestCircuitStateMetrics(unittest.TestCase):
+    def test_and_count(self) -> None:
+        """Test and_count property."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("and", 0, 1),
+                ("xor", 0, 1),
+                ("and", 2, 3),
+            ],
+            outputs=[(4, False)],
+            gate_count=3,
+        )
+        self.assertEqual(state.and_count, 2)
+
+    def test_xor_count(self) -> None:
+        """Test xor_count property."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 0, 2),
+                ("and", 2, 3),
+            ],
+            outputs=[(4, False)],
+            gate_count=3,
+        )
+        self.assertEqual(state.xor_count, 2)
+
+    def test_depth_simple_chain(self) -> None:
+        """Test depth property with a simple gate chain."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("and", 0, 2),
+                ("xor", 2, 3),
+            ],
+            outputs=[(4, False)],
+            gate_count=3,
+        )
+        self.assertEqual(state.depth, 3)
+
+    def test_depth_parallel(self) -> None:
+        """Test depth with parallel gates."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=4,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 2, 3),
+                ("and", 4, 5),
+            ],
+            outputs=[(6, False)],
+            gate_count=3,
+        )
+        self.assertEqual(state.depth, 2)
+
+    def test_multiplicative_depth_xor_only(self) -> None:
+        """Test multiplicative_depth with only XOR gates (should be 0)."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 2, 3),
+            ],
+            outputs=[(4, False)],
+            gate_count=2,
+        )
+        self.assertEqual(state.multiplicative_depth, 0)
+
+    def test_multiplicative_depth_and_chain(self) -> None:
+        """Test multiplicative_depth with AND chain."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=[
+                ("and", 0, 1),
+                ("and", 2, 3),
+            ],
+            outputs=[(4, False)],
+            gate_count=2,
+        )
+        self.assertEqual(state.multiplicative_depth, 2)
+
+    def test_multiplicative_depth_mixed(self) -> None:
+        """Test multiplicative_depth with mixed AND/XOR gates."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("and", 2, 3),
+                ("xor", 3, 4),
+                ("and", 4, 5),
+            ],
+            outputs=[(6, False)],
+            gate_count=4,
+        )
+        self.assertEqual(state.multiplicative_depth, 2)
+
+    def test_empty_circuit(self) -> None:
+        """Test metrics on circuit with no gates."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[],
+            outputs=[(0, False)],
+            gate_count=0,
+        )
+        self.assertEqual(state.and_count, 0)
+        self.assertEqual(state.xor_count, 0)
+        self.assertEqual(state.depth, 0)
+        self.assertEqual(state.multiplicative_depth, 0)
+
+    def test_not_gate_depth(self) -> None:
+        """Test that NOT gates contribute to depth but not multiplicative depth."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=1,
+            output_bits=1,
+            gates=[
+                ("not", 0, 0),
+                ("not", 1, 0),
+            ],
+            outputs=[(2, False)],
+            gate_count=2,
+        )
+        self.assertEqual(state.depth, 2)
+        self.assertEqual(state.multiplicative_depth, 0)
+
+
+class TestSlpExport(unittest.TestCase):
+    def test_slp_xor_and_circuit(self) -> None:
+        """Test SLP export with XOR and AND gates."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=2,
+            gates=[
+                ("xor", 0, 1),
+                ("and", 0, 2),
+            ],
+            outputs=[(2, False), (3, True)],
+            gate_count=2,
+        )
+        slp = state.to_slp()
+        lines = slp.split("\n")
+        self.assertEqual(lines[0], "t0 = x0 ^ x1")
+        self.assertEqual(lines[1], "t1 = x0 & t0")
+        self.assertEqual(lines[2], "y0 = t0")
+        self.assertEqual(lines[3], "y1 = ~t1")
+
+    def test_slp_all_ops(self) -> None:
+        """Test SLP export with all operation types."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=4,
+            gates=[
+                ("xor", 0, 1),
+                ("and", 1, 2),
+                ("or", 0, 2),
+                ("not", 3, 0),
+                ("const", 1, 1),
+            ],
+            outputs=[(3, False), (4, False), (5, True), (7, False)],
+            gate_count=5,
+        )
+        slp = state.to_slp()
+        lines = slp.split("\n")
+        self.assertEqual(lines[0], "t0 = x0 ^ x1")
+        self.assertEqual(lines[1], "t1 = x1 & x2")
+        self.assertEqual(lines[2], "t2 = x0 | x2")
+        self.assertEqual(lines[3], "t3 = ~t0")
+        self.assertEqual(lines[4], "t4 = 1")
+        self.assertEqual(lines[5], "y0 = t0")
+        self.assertEqual(lines[6], "y1 = t1")
+        self.assertEqual(lines[7], "y2 = ~t2")
+        self.assertEqual(lines[8], "y3 = t4")
+
+    def test_slp_input_as_output(self) -> None:
+        """Test SLP export when input is directly used as output."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=2,
+            gates=[],
+            outputs=[(0, False), (1, True)],
+            gate_count=0,
+        )
+        slp = state.to_slp()
+        lines = slp.split("\n")
+        self.assertEqual(lines[0], "y0 = x0")
+        self.assertEqual(lines[1], "y1 = ~x1")
+
+    def test_slp_empty_circuit(self) -> None:
+        """Test SLP export with empty circuit (no gates, no outputs)."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=0,
+            gates=[],
+            outputs=[],
+            gate_count=0,
+        )
+        slp = state.to_slp()
+        self.assertEqual(slp, "")
+
+    def test_slp_const_zero(self) -> None:
+        """Test SLP export with constant zero gate."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=1,
+            output_bits=1,
+            gates=[
+                ("const", 0, 1),
+            ],
+            outputs=[(1, False)],
+            gate_count=1,
+        )
+        slp = state.to_slp()
+        lines = slp.split("\n")
+        self.assertEqual(lines[0], "t0 = 0")
+        self.assertEqual(lines[1], "y0 = t0")

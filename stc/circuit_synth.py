@@ -1004,6 +1004,60 @@ class CircuitState:
     outputs: list[tuple[int, bool]]
     gate_count: int
 
+    @property
+    def and_count(self) -> int:
+        return sum(1 for op, _, _ in self.gates if op == "and")
+
+    @property
+    def xor_count(self) -> int:
+        return sum(1 for op, _, _ in self.gates if op == "xor")
+
+    @property
+    def depth(self) -> int:
+        node_depth: dict[int, int] = {}
+        for i in range(self.input_bits):
+            node_depth[i] = 0
+
+        for g_idx, (op, left, right) in enumerate(self.gates):
+            full_idx = self.input_bits + g_idx
+            if op == "const":
+                node_depth[full_idx] = 0
+            elif op == "not":
+                node_depth[full_idx] = node_depth.get(left, 0) + 1
+            else:
+                left_depth = node_depth.get(left, 0)
+                right_depth = node_depth.get(right, 0)
+                node_depth[full_idx] = max(left_depth, right_depth) + 1
+
+        if not self.outputs:
+            return 0
+        return max(node_depth.get(idx, 0) for idx, _ in self.outputs)
+
+    @property
+    def multiplicative_depth(self) -> int:
+        node_depth: dict[int, int] = {}
+        for i in range(self.input_bits):
+            node_depth[i] = 0
+
+        for g_idx, (op, left, right) in enumerate(self.gates):
+            full_idx = self.input_bits + g_idx
+            if op == "const":
+                node_depth[full_idx] = 0
+            elif op == "not":
+                node_depth[full_idx] = node_depth.get(left, 0)
+            elif op == "and":
+                left_depth = node_depth.get(left, 0)
+                right_depth = node_depth.get(right, 0)
+                node_depth[full_idx] = max(left_depth, right_depth) + 1
+            else:
+                left_depth = node_depth.get(left, 0)
+                right_depth = node_depth.get(right, 0)
+                node_depth[full_idx] = max(left_depth, right_depth)
+
+        if not self.outputs:
+            return 0
+        return max(node_depth.get(idx, 0) for idx, _ in self.outputs)
+
     def to_dict(self) -> dict:
         return {
             "input_bits": self.input_bits,
@@ -1029,9 +1083,13 @@ class CircuitState:
 
         for op, left, right in self.gates:
             if left >= len(node_vals):
-                raise IndexError(f"Invalid left index {left}, only {len(node_vals)} nodes")
+                raise IndexError(
+                    f"Invalid left index {left}, only {len(node_vals)} nodes"
+                )
             if op not in ("const", "not") and right >= len(node_vals):
-                raise IndexError(f"Invalid right index {right}, only {len(node_vals)} nodes")
+                raise IndexError(
+                    f"Invalid right index {right}, only {len(node_vals)} nodes"
+                )
 
             if op == "xor":
                 node_vals.append(node_vals[left] ^ node_vals[right])
@@ -1080,6 +1138,54 @@ class CircuitState:
             output_exprs.append(expr)
 
         return output_exprs
+
+    def to_slp(self) -> str:
+        """
+        Export circuit in standard Straight-Line Program (SLP) format.
+
+        Format:
+            t0 = x0 ^ x1
+            t1 = x2 & t0
+            ...
+            y0 = t42
+            y1 = ~t50
+
+        Where:
+            - x0, x1, ... are inputs
+            - t0, t1, ... are intermediate gates
+            - y0, y1, ... are outputs (with ~ prefix if inverted)
+            - ^ is XOR, & is AND, | is OR, ~ is NOT
+        """
+        lines = []
+
+        def node_name(idx: int) -> str:
+            if idx < self.input_bits:
+                return f"x{idx}"
+            else:
+                return f"t{idx - self.input_bits}"
+
+        for g_idx, (op, left, right) in enumerate(self.gates):
+            gate_name = f"t{g_idx}"
+            if op == "xor":
+                lines.append(f"{gate_name} = {node_name(left)} ^ {node_name(right)}")
+            elif op == "and":
+                lines.append(f"{gate_name} = {node_name(left)} & {node_name(right)}")
+            elif op == "or":
+                lines.append(f"{gate_name} = {node_name(left)} | {node_name(right)}")
+            elif op == "not":
+                lines.append(f"{gate_name} = ~{node_name(left)}")
+            elif op == "const":
+                lines.append(f"{gate_name} = {left & 1}")
+
+        for out_idx, (idx, invert) in enumerate(self.outputs):
+            output_name = f"y{out_idx}"
+            ref = node_name(idx)
+            if invert:
+                lines.append(f"{output_name} = ~{ref}")
+            else:
+                lines.append(f"{output_name} = {ref}")
+
+        return "\n".join(lines)
 
 
 def circuit_to_state(
@@ -1153,11 +1259,13 @@ class IncrementalOptimizer:
         input_bits: int = 8,
         output_bits: int = 8,
         initial_state: CircuitState | None = None,
+        seed: int | None = None,
     ):
         self.table = list(table)
         self.input_bits = input_bits
         self.output_bits = output_bits
         self.num_entries = 1 << input_bits
+        self.seed = seed
 
         if initial_state is not None:
             self.best_state = initial_state
@@ -1307,12 +1415,53 @@ class IncrementalOptimizer:
 
         return True
 
+    def _log_transformation(
+        self,
+        log_file: str | None,
+        transformation: str,
+        gate_count: int,
+        effective_seed: int | None = None,
+    ) -> None:
+        if log_file is None:
+            return
+        import json
+
+        entry = {
+            "timestamp": time.time(),
+            "iteration": self.iterations,
+            "transformation": transformation,
+            "gate_count": gate_count,
+            "and_count": self.best_state.and_count,
+            "xor_count": self.best_state.xor_count,
+        }
+        if effective_seed is not None:
+            entry["seed"] = effective_seed
+        with open(log_file, "a") as f:
+            f.write(json.dumps(entry) + "\n")
+
+    def _maybe_checkpoint(
+        self,
+        checkpoint_file: str | None,
+        checkpoint_interval: int | None,
+        iteration: int,
+    ) -> None:
+        if checkpoint_file is None or checkpoint_interval is None:
+            return
+        if checkpoint_interval <= 0:
+            return
+        if iteration % checkpoint_interval == 0:
+            self.save(checkpoint_file)
+
     def optimize(
         self,
         max_iterations: int = 100,
         timeout_ms_per_step: int = 5000,
         target_gates: int | None = None,
         callback: callable | None = None,
+        seed: int | None = None,
+        log_file: str | None = None,
+        checkpoint_interval: int | None = None,
+        checkpoint_file: str | None = None,
     ) -> CircuitState:
         """
         Run optimization loop.
@@ -1322,15 +1471,41 @@ class IncrementalOptimizer:
             timeout_ms_per_step: Timeout per optimization attempt
             target_gates: Stop if gate count reaches this target
             callback: Called after each iteration with (iteration, gate_count, improved)
+            seed: Random seed for reproducibility (overrides __init__ seed if provided)
+            log_file: Path to file for logging accepted transformations (JSON lines)
+            checkpoint_interval: Save checkpoint every N iterations
+            checkpoint_file: Path to checkpoint file
         """
+        import random
+
+        effective_seed = seed if seed is not None else self.seed
+        if effective_seed is not None:
+            random.seed(effective_seed)
+
+        if log_file is not None:
+            self._log_transformation(
+                log_file, "optimize_start", self.best_state.gate_count, effective_seed
+            )
+
         for i in range(max_iterations):
             if target_gates and self.best_state.gate_count <= target_gates:
                 break
 
+            old_gate_count = self.best_state.gate_count
             improved = self.optimize_step(timeout_ms_per_step)
+
+            if improved:
+                self._log_transformation(
+                    log_file, "optimize_step", self.best_state.gate_count
+                )
 
             if callback:
                 callback(i, self.best_state.gate_count, improved)
+
+            self._maybe_checkpoint(checkpoint_file, checkpoint_interval, i)
+
+        if checkpoint_file:
+            self.save(checkpoint_file)
 
         return self.best_state
 
@@ -1341,14 +1516,38 @@ class IncrementalOptimizer:
         cooling_rate: float = 0.995,
         timeout_seconds: float = 300.0,
         callback: callable | None = None,
+        seed: int | None = None,
+        log_file: str | None = None,
+        checkpoint_interval: int | None = None,
+        checkpoint_file: str | None = None,
     ) -> CircuitState:
         """
         Simulated annealing optimization.
 
         Randomly mutates circuit and accepts worse solutions with decreasing probability.
+
+        Args:
+            max_iterations: Maximum annealing iterations
+            initial_temp: Starting temperature
+            cooling_rate: Temperature multiplier per iteration (< 1.0)
+            timeout_seconds: Maximum wall-clock time
+            callback: Called on improvements with (iteration, gate_count, improved)
+            seed: Random seed for reproducibility (overrides __init__ seed if provided)
+            log_file: Path to file for logging accepted transformations (JSON lines)
+            checkpoint_interval: Save checkpoint every N iterations
+            checkpoint_file: Path to checkpoint file
         """
         import math
         import random
+
+        effective_seed = seed if seed is not None else self.seed
+        if effective_seed is not None:
+            random.seed(effective_seed)
+
+        if log_file is not None:
+            self._log_transformation(
+                log_file, "anneal_start", self.best_state.gate_count, effective_seed
+            )
 
         deadline = time.time() + timeout_seconds
 
@@ -1405,6 +1604,8 @@ class IncrementalOptimizer:
                     best_cost = actual_cost
                     self.improvements += 1
 
+                    self._log_transformation(log_file, "anneal_accept", best_cost)
+
                     if callback:
                         callback(i, best_cost, True)
                 elif callback and i % 100 == 0:
@@ -1412,6 +1613,11 @@ class IncrementalOptimizer:
 
             temp *= cooling_rate
             self.iterations += 1
+
+            self._maybe_checkpoint(checkpoint_file, checkpoint_interval, i)
+
+        if checkpoint_file:
+            self.save(checkpoint_file)
 
         return self.best_state
 
@@ -1469,7 +1675,9 @@ class IncrementalOptimizer:
                 value_to_nodes[val] = []
             value_to_nodes[val].append(idx)
 
-        duplicates = [(v, nodes) for v, nodes in value_to_nodes.items() if len(nodes) > 1]
+        duplicates = [
+            (v, nodes) for v, nodes in value_to_nodes.items() if len(nodes) > 1
+        ]
         if not duplicates:
             return None
 
@@ -1515,9 +1723,9 @@ class IncrementalOptimizer:
         op, left, right = gates[gate_idx]
         if op != "xor":
             return [idx]
-        return self._collect_xor_leaves(gates, left, depth + 1) + self._collect_xor_leaves(
-            gates, right, depth + 1
-        )
+        return self._collect_xor_leaves(
+            gates, left, depth + 1
+        ) + self._collect_xor_leaves(gates, right, depth + 1)
 
     def _build_xor_tree(
         self, gates: list, leaves: list[int], start_idx: int
@@ -1757,7 +1965,9 @@ class IncrementalOptimizer:
             node_vals = [(inp >> i) & 1 for i in range(self.input_bits)]
 
             for g_idx, (op, left, right) in enumerate(self.best_state.gates):
-                if left >= len(node_vals) or (right >= len(node_vals) and op not in ("const", "not")):
+                if left >= len(node_vals) or (
+                    right >= len(node_vals) and op not in ("const", "not")
+                ):
                     return False
 
                 if op == "xor":
@@ -2096,6 +2306,7 @@ class IncrementalOptimizer:
             "iterations": self.iterations,
             "improvements": self.improvements,
             "table": self.table,
+            "seed": self.seed,
         }
         with open(filepath, "w") as f:
             json.dump(data, f)
@@ -2114,6 +2325,7 @@ class IncrementalOptimizer:
             input_bits=state.input_bits,
             output_bits=state.output_bits,
             initial_state=state,
+            seed=data.get("seed"),
         )
         opt.iterations = data["iterations"]
         opt.improvements = data["improvements"]
