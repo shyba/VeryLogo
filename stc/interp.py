@@ -12,6 +12,7 @@ from stc.tick_ir import (
     Add,
     And,
     Bitcast,
+    BitTranspose,
     BitVecConst,
     BitVecType,
     BoolConst,
@@ -213,6 +214,17 @@ def infer_type(expr: Expr, ctx: dict[str, Type]) -> Type:
         if src_w != dst_w:
             raise TickIRValidationError("bitcast width mismatch")
         return dst_t
+
+    if isinstance(expr, BitTranspose):
+        src_t = infer_type(expr.x, ctx)
+        if not isinstance(src_t, SimdType):
+            raise TickIRValidationError("bit_transpose input must be simd")
+        if src_t.lane_width != expr.lane_width or src_t.lanes != expr.lanes:
+            raise TickIRValidationError(
+                f"bit_transpose layout mismatch: input is simd[{src_t.lane_width},{src_t.lanes}], "
+                f"expected simd[{expr.lane_width},{expr.lanes}]"
+            )
+        return SimdType(lane_width=expr.lanes, lanes=expr.lane_width)
 
     if isinstance(expr, SimdSplat):
         dst_t = expr.to
@@ -611,6 +623,20 @@ def eval_expr(
             return _as_int(x) & _mask(dst_t.width)
         assert isinstance(dst_t, SimdType)
         return _as_int(x) & _mask(dst_t.total_width)
+
+    if isinstance(expr, BitTranspose):
+        x = _as_int(eval_expr(expr.x, ctx_types, env))
+        lane_width = expr.lane_width
+        lanes = expr.lanes
+        total_bits = lane_width * lanes
+        out = 0
+        for lane in range(lanes):
+            for bit in range(lane_width):
+                src_pos = lane * lane_width + bit
+                dst_pos = bit * lanes + lane
+                if (x >> src_pos) & 1:
+                    out |= 1 << dst_pos
+        return out & _mask(total_bits)
 
     if isinstance(expr, SimdSplat):
         dst_t = expr.to

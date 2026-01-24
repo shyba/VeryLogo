@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from stc.interp import infer_type
 from stc.tick_ir import (
+    BitTranspose,
     BitVecConst,
     BitVecType,
     Bitcast,
@@ -136,6 +137,61 @@ def emit_x86_sse2_c(ir: TickIR) -> str:
     lines.append("  x.v = v;")
     lines.append("  p[0] = x.u64[0];")
     lines.append("  p[1] = x.u64[1];")
+    lines.append("}")
+    lines.append("")
+    lines.append("// Bit transpose: 16 bytes -> 8 16-bit words")
+    lines.append("// Output word[i] contains bit i from all 16 input bytes")
+    lines.append("static inline __m128i bit_transpose_8x16(__m128i x) {")
+    lines.append("  u128 in, out;")
+    lines.append("  in.v = x;")
+    lines.append("  uint16_t planes[8] = {0};")
+    lines.append("  for (int byte_idx = 0; byte_idx < 16; byte_idx++) {")
+    lines.append("    uint8_t byte_val = (byte_idx < 8) ?")
+    lines.append("      (in.u64[0] >> (byte_idx * 8)) & 0xFF :")
+    lines.append("      (in.u64[1] >> ((byte_idx - 8) * 8)) & 0xFF;")
+    lines.append("    for (int bit = 0; bit < 8; bit++) {")
+    lines.append("      if (byte_val & (1 << bit))")
+    lines.append("        planes[bit] |= (1 << byte_idx);")
+    lines.append("    }")
+    lines.append("  }")
+    lines.append("  out.u64[0] = (uint64_t)planes[0] | ((uint64_t)planes[1] << 16) |")
+    lines.append(
+        "               ((uint64_t)planes[2] << 32) | ((uint64_t)planes[3] << 48);"
+    )
+    lines.append("  out.u64[1] = (uint64_t)planes[4] | ((uint64_t)planes[5] << 16) |")
+    lines.append(
+        "               ((uint64_t)planes[6] << 32) | ((uint64_t)planes[7] << 48);"
+    )
+    lines.append("  return out.v;")
+    lines.append("}")
+    lines.append("")
+    lines.append("// Bit transpose: 8 16-bit words -> 16 bytes")
+    lines.append("// Output byte[j] contains bit j from all 8 input words")
+    lines.append("static inline __m128i bit_transpose_16x8(__m128i x) {")
+    lines.append("  u128 in, out;")
+    lines.append("  in.v = x;")
+    lines.append("  uint16_t planes[8];")
+    lines.append("  planes[0] = in.u64[0] & 0xFFFF;")
+    lines.append("  planes[1] = (in.u64[0] >> 16) & 0xFFFF;")
+    lines.append("  planes[2] = (in.u64[0] >> 32) & 0xFFFF;")
+    lines.append("  planes[3] = (in.u64[0] >> 48) & 0xFFFF;")
+    lines.append("  planes[4] = in.u64[1] & 0xFFFF;")
+    lines.append("  planes[5] = (in.u64[1] >> 16) & 0xFFFF;")
+    lines.append("  planes[6] = (in.u64[1] >> 32) & 0xFFFF;")
+    lines.append("  planes[7] = (in.u64[1] >> 48) & 0xFFFF;")
+    lines.append("  uint8_t bytes[16] = {0};")
+    lines.append("  for (int byte_idx = 0; byte_idx < 16; byte_idx++) {")
+    lines.append("    for (int bit = 0; bit < 8; bit++) {")
+    lines.append("      if (planes[bit] & (1 << byte_idx))")
+    lines.append("        bytes[byte_idx] |= (1 << bit);")
+    lines.append("    }")
+    lines.append("  }")
+    lines.append("  out.u64[0] = 0; out.u64[1] = 0;")
+    lines.append("  for (int i = 0; i < 8; i++)")
+    lines.append("    out.u64[0] |= ((uint64_t)bytes[i]) << (i * 8);")
+    lines.append("  for (int i = 0; i < 8; i++)")
+    lines.append("    out.u64[1] |= ((uint64_t)bytes[8 + i]) << (i * 8);")
+    lines.append("  return out.v;")
     lines.append("}")
     lines.append("")
 
@@ -551,6 +607,30 @@ def emit_x86_sse2_c(ir: TickIR) -> str:
                 raise CodegenError("unsupported lane_width for shifts")
 
             lines.append(f"  __m128i {name} = {op}({a}, {sh});")
+            memo[key] = name
+            return name
+
+        if isinstance(expr, BitTranspose):
+            x = emit_expr(expr.x)
+            src_t = _require_simd128(infer_type(expr.x, types))
+            name = f"t{tmp_id}"
+            tmp_id += 1
+            if src_t.lane_width == 8 and src_t.lanes == 16:
+                if expr.lane_width != 8 or expr.lanes != 16:
+                    raise CodegenError(
+                        "BitTranspose simd[8,16] requires lane_width=8, lanes=16"
+                    )
+                lines.append(f"  __m128i {name} = bit_transpose_8x16({x});")
+            elif src_t.lane_width == 16 and src_t.lanes == 8:
+                if expr.lane_width != 16 or expr.lanes != 8:
+                    raise CodegenError(
+                        "BitTranspose simd[16,8] requires lane_width=16, lanes=8"
+                    )
+                lines.append(f"  __m128i {name} = bit_transpose_16x8({x});")
+            else:
+                raise CodegenError(
+                    "sse2 BitTranspose only supports simd[8,16] and simd[16,8]"
+                )
             memo[key] = name
             return name
 

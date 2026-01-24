@@ -1053,6 +1053,27 @@ class Bitcast:
 
 
 @dataclass(frozen=True)
+class BitTranspose:
+    x: Expr
+    lane_width: int
+    lanes: int
+
+    def __post_init__(self) -> None:
+        if self.lane_width < 1:
+            raise ValueError("lane_width must be >= 1")
+        if self.lanes < 1:
+            raise ValueError("lanes must be >= 1")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "bit_transpose",
+            "x": self.x.to_dict(),
+            "lane_width": self.lane_width,
+            "lanes": self.lanes,
+        }
+
+
+@dataclass(frozen=True)
 class Delay:
     x: Expr
     ticks: int
@@ -1136,6 +1157,7 @@ Expr = (
     | Slice
     | Lut8
     | Bitcast
+    | BitTranspose
     | Delay
     | FNeg
     | FAbs

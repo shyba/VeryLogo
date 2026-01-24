@@ -25,6 +25,7 @@ import sys
 import tempfile
 import time
 
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.setrecursionlimit(10000)
 
 from stc.bitslice import AES_SBOX_TABLE
@@ -37,7 +38,7 @@ from stc.bitslice_codegen import (
 from stc.circuit_synth import IncrementalOptimizer
 
 
-BENCHMARK_TEMPLATE = '''
+BENCHMARK_TEMPLATE = """
 #include <stdio.h>
 #include <stdint.h>
 #include <string.h>
@@ -99,9 +100,9 @@ int main(int argc, char** argv) {{
 
     return 0;
 }}
-'''
+"""
 
-AESNI_CODE = '''
+AESNI_CODE = """
 #ifdef __AES__
 #include <wmmintrin.h>
 
@@ -128,15 +129,15 @@ void bench_aesni_round(int iterations) {
     (void)sink;
 }
 #endif
-'''
+"""
 
-AESNI_BENCH_CALL = '''
+AESNI_BENCH_CALL = """
 #ifdef __AES__
     bench_aesni_round(iterations);
 #endif
-'''
+"""
 
-BOYAR_PERALTA_CODE = '''
+BOYAR_PERALTA_CODE = """
 // Boyar-Peralta AES S-box circuit (~115 gates)
 // From: https://github.com/conorpp/bitsliced-aes
 // Based on: "A New Combinational Logic Minimization Technique" by Boyar & Peralta
@@ -426,14 +427,16 @@ void bench_boyar_peralta(int iterations) {
     printf("BP u64 (w/xpose):  %8.1f ns/eval, %10.0f evals/sec\\n",
            (elapsed / evals) * 1e9, evals / elapsed);
 }
-'''
+"""
 
 
 def generate_sbox_table_c() -> str:
     """Generate C array initializer for S-box table."""
     lines = []
     for i in range(0, 256, 16):
-        row = ", ".join(f"0x{AES_SBOX_TABLE[j]:02x}" for j in range(i, min(i + 16, 256)))
+        row = ", ".join(
+            f"0x{AES_SBOX_TABLE[j]:02x}" for j in range(i, min(i + 16, 256))
+        )
         lines.append(f"    {row},")
     return "\n".join(lines)
 
@@ -442,7 +445,7 @@ def generate_bitslice_bench_u64(state) -> str:
     """Generate uint64 bitslice benchmark code."""
     code = generate_bitslice_c(state, UINT64_CONFIG, "sbox_bitslice_u64")
 
-    bench = '''
+    bench = """
 void bench_bitslice_u64(int iterations) {
     uint8_t input[8];
     uint8_t output[8];
@@ -461,7 +464,7 @@ void bench_bitslice_u64(int iterations) {
     printf("Bitslice uint64:   %8.1f ns/eval, %10.0f evals/sec\\n",
            (elapsed / evals) * 1e9, evals / elapsed);
 }
-'''
+"""
     return code + "\n" + bench
 
 
@@ -469,7 +472,7 @@ def generate_bitslice_bench_sse2(state) -> str:
     """Generate SSE2 bitslice benchmark code."""
     code = generate_bitslice_c(state, SSE2_CONFIG, "sbox_bitslice_sse2")
 
-    bench = '''
+    bench = """
 void bench_bitslice_sse2(int iterations) {
     uint8_t input[16];
     uint8_t output[16];
@@ -488,7 +491,7 @@ void bench_bitslice_sse2(int iterations) {
     printf("Bitslice SSE2:     %8.1f ns/eval, %10.0f evals/sec\\n",
            (elapsed / evals) * 1e9, evals / elapsed);
 }
-'''
+"""
     return code + "\n" + bench
 
 
@@ -496,7 +499,7 @@ def generate_bitslice_bench_avx2(state) -> str:
     """Generate AVX2 bitslice benchmark code."""
     code = generate_bitslice_c(state, AVX2_CONFIG, "sbox_bitslice_avx2")
 
-    bench = '''
+    bench = """
 #ifdef __AVX2__
 void bench_bitslice_avx2(int iterations) {
     uint8_t input[32];
@@ -517,7 +520,7 @@ void bench_bitslice_avx2(int iterations) {
            (elapsed / evals) * 1e9, evals / elapsed);
 }
 #endif
-'''
+"""
     return code + "\n" + bench
 
 
@@ -541,7 +544,9 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="Comprehensive S-box benchmark")
     parser.add_argument("--iterations", type=int, default=1000000)
     parser.add_argument("--load", type=str, help="Load circuit from JSON")
-    parser.add_argument("--python-only", action="store_true", help="Only run Python benchmark")
+    parser.add_argument(
+        "--python-only", action="store_true", help="Only run Python benchmark"
+    )
     args = parser.parse_args()
 
     if args.load:
@@ -568,15 +573,19 @@ def main() -> None:
     bitslice_sse2 = generate_bitslice_bench_sse2(state)
     bitslice_avx2 = generate_bitslice_bench_avx2(state)
 
-    has_avx2 = subprocess.run(
-        ["grep", "-q", "avx2", "/proc/cpuinfo"],
-        capture_output=True
-    ).returncode == 0
+    has_avx2 = (
+        subprocess.run(
+            ["grep", "-q", "avx2", "/proc/cpuinfo"], capture_output=True
+        ).returncode
+        == 0
+    )
 
-    has_aesni = subprocess.run(
-        ["grep", "-q", "aes", "/proc/cpuinfo"],
-        capture_output=True
-    ).returncode == 0
+    has_aesni = (
+        subprocess.run(
+            ["grep", "-q", "aes", "/proc/cpuinfo"], capture_output=True
+        ).returncode
+        == 0
+    )
 
     avx2_bench_call = "    bench_bitslice_avx2(iterations);" if has_avx2 else ""
     bp_avx2_bench_call = "    bench_bp_avx2_circuit(iterations);" if has_avx2 else ""
@@ -625,7 +634,7 @@ def main() -> None:
             [exe_file, str(args.iterations)],
             capture_output=True,
             text=True,
-            timeout=300
+            timeout=300,
         )
         print(result.stdout)
         if result.stderr:

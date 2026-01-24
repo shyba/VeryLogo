@@ -131,12 +131,18 @@ def analyze_circuit(opt: IncrementalOptimizer) -> dict:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Test and benchmark AES S-box circuits")
+    parser = argparse.ArgumentParser(
+        description="Test and benchmark AES S-box circuits"
+    )
     parser.add_argument("--test", action="store_true", help="Test correctness")
     parser.add_argument("--bench", action="store_true", help="Benchmark performance")
-    parser.add_argument("--compare", action="store_true", help="Compare circuit vs table")
+    parser.add_argument(
+        "--compare", action="store_true", help="Compare circuit vs table"
+    )
     parser.add_argument("--vectors", action="store_true", help="Generate test vectors")
-    parser.add_argument("--analyze", action="store_true", help="Analyze circuit structure")
+    parser.add_argument(
+        "--analyze", action="store_true", help="Analyze circuit structure"
+    )
     parser.add_argument("--load", type=str, help="Load circuit from JSON file")
     parser.add_argument("--output", type=str, help="Output file for vectors")
     parser.add_argument(
@@ -193,7 +199,9 @@ def main() -> None:
         print("  Benchmarking table lookup...")
         table_results = benchmark_table_lookup(args.iterations)
 
-        print(f"\n  Circuit: {circuit_results['nanoseconds_per_evaluation']:.1f} ns/eval")
+        print(
+            f"\n  Circuit: {circuit_results['nanoseconds_per_evaluation']:.1f} ns/eval"
+        )
         print(f"  Table:   {table_results['nanoseconds_per_evaluation']:.1f} ns/eval")
 
         ratio = circuit_results["nanoseconds_per_evaluation"] / max(

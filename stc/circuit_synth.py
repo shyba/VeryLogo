@@ -1012,6 +1012,25 @@ class CircuitState:
     def xor_count(self) -> int:
         return sum(1 for op, _, _ in self.gates if op == "xor")
 
+    def weighted_cost(self, and_weight: float = 1.0, xor_weight: float = 1.0) -> float:
+        """
+        Compute weighted gate cost.
+
+        Different contexts have different gate costs:
+        - FHE: AND gates require expensive bootstrapping, XOR is nearly free (and_weight=100+)
+        - MPC: AND gates require communication rounds (and_weight=10-100)
+        - Hardware area: Similar cost (and_weight=1.5, xor_weight=1.0)
+        - Software bitslice: Equal cost (and_weight=1.0, xor_weight=1.0)
+
+        Args:
+            and_weight: Cost multiplier for AND gates
+            xor_weight: Cost multiplier for XOR gates
+
+        Returns:
+            Weighted total cost
+        """
+        return and_weight * self.and_count + xor_weight * self.xor_count
+
     @property
     def depth(self) -> int:
         node_depth: dict[int, int] = {}
@@ -1660,17 +1679,11 @@ class CircuitState:
         return "\n".join(lines)
 
     def optimize_linear_layers(self) -> "CircuitState":
-        """Replace all XOR regions with BP-optimized versions.
+        """Replace XOR regions with BP-optimized versions.
 
-        This method:
-        1. Partitions the circuit into linear cones (XOR-only regions)
-           and AND gate boundaries
-        2. For each linear cone:
-           a. Converts to GF(2) matrix representation
-           b. Runs Boyar-Peralta minimization
-           c. Converts back to gates
-        3. Stitches together with AND gates
-        4. Renumbers and returns the optimized circuit
+        Optimizes the pure linear layers at the top (before first AND) and
+        bottom (outputs) of the circuit. The interleaved middle section
+        with mixed AND/XOR gates is preserved unchanged.
 
         Returns:
             A new CircuitState with optimized linear regions.
@@ -1811,6 +1824,16 @@ class CircuitState:
 
         if and_input_xors:
             pre_cone = LinearCone.from_circuit(self, and_input_xors, stop_at)
+            upstream_ands = set(pre_cone.inputs) & set(and_gate_indices)
+
+            if upstream_ands:
+                return CircuitState(
+                    input_bits=self.input_bits,
+                    output_bits=self.output_bits,
+                    gates=list(self.gates),
+                    outputs=list(self.outputs),
+                    gate_count=self.gate_count,
+                )
 
             updated_pre_inputs = []
             for inp in pre_cone.inputs:
@@ -2303,6 +2326,8 @@ class CircuitState:
         timeout_per_window: int = 5000,
         max_iterations: int = 1000,
         checkpoint_file: str | None = None,
+        and_weight: float = 1.0,
+        xor_weight: float = 1.0,
     ) -> "CircuitState":
         """Repeatedly try to improve circuit via window resynthesis.
 
@@ -2318,9 +2343,14 @@ class CircuitState:
             timeout_per_window: SAT solver timeout in ms per window
             max_iterations: Max iterations through all gates
             checkpoint_file: If provided, save best circuit periodically
+            and_weight: Weight for AND gates in cost function (default 1.0)
+            xor_weight: Weight for XOR gates in cost function (default 1.0)
 
         Returns:
             Optimized CircuitState
+
+        Note: When and_weight > xor_weight, optimizer prioritizes reducing AND gates.
+              This is useful for FHE (and_weight=100+) or MPC (and_weight=10+).
         """
         import json
 
@@ -2364,6 +2394,8 @@ class CircuitState:
                     n_inputs=len(window.inputs),
                     max_gates=target_gates,
                     timeout_ms=timeout_per_window,
+                    and_weight=and_weight,
+                    xor_weight=xor_weight,
                 )
 
                 if new_gates is None:
@@ -2376,7 +2408,9 @@ class CircuitState:
                 try:
                     new_state = splice_window(current, window, new_gates)
 
-                    if new_state.gate_count < current.gate_count:
+                    old_cost = current.weighted_cost(and_weight, xor_weight)
+                    new_cost = new_state.weighted_cost(and_weight, xor_weight)
+                    if new_cost < old_cost:
                         current = new_state
                         improvements_this_round += 1
                         total_improvements += 1

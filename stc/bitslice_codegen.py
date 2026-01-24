@@ -10,6 +10,7 @@ For a circuit with N input bits and M output bits:
 - Evaluate: Execute gates on SIMD registers
 - Transpose: M SIMD registers -> K output values
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -106,9 +107,7 @@ def generate_bitslice_c(
 
     _emit_transpose_functions(lines, config)
 
-    lines.append(
-        f"void {function_name}(const uint8_t* input, uint8_t* output) {{"
-    )
+    lines.append(f"void {function_name}(const uint8_t* input, uint8_t* output) {{")
 
     for i in range(state.input_bits):
         lines.append(f"  {reg} b{i};")
@@ -269,7 +268,9 @@ def _emit_transpose_functions(lines: list[str], config: BitsliceConfig) -> None:
             + ", ".join(f"{reg} b{i}" for i in range(8))
             + ", uint8_t* output) {"
         )
-        lines.append(f"  union {{ {reg} v; uint64_t u64[{config.simd_width // 64}]; }} planes[8];")
+        lines.append(
+            f"  union {{ {reg} v; uint64_t u64[{config.simd_width // 64}]; }} planes[8];"
+        )
         for i in range(8):
             lines.append(f"  planes[{i}].v = b{i};")
         lines.append(f"  for (int i = 0; i < {parallel}; i++) {{")
@@ -338,7 +339,9 @@ def generate_test_harness(
     lines.append("")
     lines.append("  if (errors == 0) {")
     lines.append('    printf("PASS: All 256 S-box entries correct\\n");')
-    lines.append(f'    printf("Circuit: {state.gate_count} gates, {parallel} parallel evaluations\\n");')
+    lines.append(
+        f'    printf("Circuit: {state.gate_count} gates, {parallel} parallel evaluations\\n");'
+    )
     lines.append("    return 0;")
     lines.append("  } else {")
     lines.append('    printf("FAIL: %d errors\\n", errors);')

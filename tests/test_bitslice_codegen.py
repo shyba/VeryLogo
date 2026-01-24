@@ -70,7 +70,9 @@ class TestBitsliceCodegen(unittest.TestCase):
             run_result = subprocess.run(
                 [exe_file], capture_output=True, text=True, timeout=30
             )
-            self.assertEqual(run_result.returncode, 0, f"Test failed: {run_result.stdout}")
+            self.assertEqual(
+                run_result.returncode, 0, f"Test failed: {run_result.stdout}"
+            )
             self.assertIn("PASS", run_result.stdout)
 
 
@@ -82,5 +84,7 @@ class TestBitsliceCorrectness(unittest.TestCase):
         for i in range(256):
             got = opt.best_state.evaluate(i)
             self.assertEqual(
-                got, AES_SBOX_TABLE[i], f"Mismatch at input {i}: got {got}, expected {AES_SBOX_TABLE[i]}"
+                got,
+                AES_SBOX_TABLE[i],
+                f"Mismatch at input {i}: got {got}, expected {AES_SBOX_TABLE[i]}",
             )

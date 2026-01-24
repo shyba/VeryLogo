@@ -41,12 +41,16 @@ def main() -> None:
     parser.add_argument("--avx2", action="store_true", help="Generate AVX2 code")
     parser.add_argument("--avx512", action="store_true", help="Generate AVX-512 code")
     parser.add_argument("--sse2", action="store_true", help="Generate SSE2 code")
-    parser.add_argument("--uint64", action="store_true", help="Generate portable uint64 code")
+    parser.add_argument(
+        "--uint64", action="store_true", help="Generate portable uint64 code"
+    )
     parser.add_argument("--test", action="store_true", help="Generate test harness")
     parser.add_argument("--bench", action="store_true", help="Generate benchmark")
     parser.add_argument("--output", "-o", type=str, help="Output file")
     parser.add_argument("--load", type=str, help="Load circuit from JSON")
-    parser.add_argument("--compile", action="store_true", help="Compile the generated code")
+    parser.add_argument(
+        "--compile", action="store_true", help="Compile the generated code"
+    )
     parser.add_argument("--run", action="store_true", help="Run compiled code")
     args = parser.parse_args()
 
@@ -115,7 +119,9 @@ def main() -> None:
 
             if args.run:
                 print(f"Running {exe_file}...")
-                result = subprocess.run([f"./{exe_file}"], capture_output=True, text=True)
+                result = subprocess.run(
+                    [f"./{exe_file}"], capture_output=True, text=True
+                )
                 print(result.stdout)
                 if result.stderr:
                     print(result.stderr)

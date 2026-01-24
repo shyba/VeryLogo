@@ -263,10 +263,13 @@ def synthesize_exact(
     max_gates: int,
     gate_types: list[str] | None = None,
     timeout_ms: int = 10000,
+    and_weight: float = 1.0,
+    xor_weight: float = 1.0,
 ) -> list[tuple[str, int, int]] | None:
     """Find minimum circuit implementing truth tables using SAT/Z3.
 
     Uses iterative deepening: tries g=0, g=1, ... until SAT or g > max_gates.
+    When and_weight != xor_weight, searches for circuits minimizing weighted cost.
 
     Args:
         truth_tables: List of truth tables (one per output), each as a bitvector
@@ -275,6 +278,8 @@ def synthesize_exact(
         max_gates: Maximum number of gates to search for.
         gate_types: List of allowed gate types. Defaults to ["xor", "and"].
         timeout_ms: Timeout in milliseconds for each gate count attempt.
+        and_weight: Weight for AND gates (higher = prefer fewer ANDs).
+        xor_weight: Weight for XOR gates.
 
     Returns:
         List of gates [(op, left, right), ...] or None if no solution found.
@@ -285,14 +290,187 @@ def synthesize_exact(
 
     time_per_attempt = max(timeout_ms // (max_gates + 1), 100)
 
+    use_weighted = and_weight != xor_weight and and_weight > 0 and xor_weight > 0
+
     for num_gates in range(max_gates + 1):
-        result = _try_synth_with_g_gates(
-            truth_tables, n_inputs, num_gates, gate_types, time_per_attempt
-        )
+        if use_weighted:
+            result = _try_synth_with_g_gates_weighted(
+                truth_tables, n_inputs, num_gates, gate_types, time_per_attempt,
+                and_weight, xor_weight
+            )
+        else:
+            result = _try_synth_with_g_gates(
+                truth_tables, n_inputs, num_gates, gate_types, time_per_attempt
+            )
         if result is not None:
             return result
 
     return None
+
+
+def _try_synth_with_g_gates_weighted(
+    truth_tables: list[int],
+    n_inputs: int,
+    g: int,
+    gate_types: list[str],
+    timeout_ms: int,
+    and_weight: float,
+    xor_weight: float,
+) -> list[tuple[str, int, int]] | None:
+    """Try to synthesize with exactly g gates, minimizing AND gates.
+
+    Uses iterative refinement: first find any solution, then try to find
+    solutions with fewer AND gates (more XOR gates) while keeping total gates fixed.
+    """
+    result = _try_synth_with_g_gates(truth_tables, n_inputs, g, gate_types, timeout_ms)
+    if result is None:
+        return None
+
+    current_ands = sum(1 for op, _, _ in result if op == "and")
+    if current_ands == 0:
+        return result
+
+    best_result = result
+    best_ands = current_ands
+
+    remaining_time = timeout_ms
+    time_per_refine = max(remaining_time // (current_ands + 1), 50)
+
+    for target_ands in range(current_ands - 1, -1, -1):
+        refined = _try_synth_with_g_gates_max_ands(
+            truth_tables, n_inputs, g, gate_types, time_per_refine, target_ands
+        )
+        if refined is not None:
+            new_ands = sum(1 for op, _, _ in refined if op == "and")
+            if new_ands < best_ands:
+                best_result = refined
+                best_ands = new_ands
+        else:
+            break
+
+    return best_result
+
+
+def _try_synth_with_g_gates_max_ands(
+    truth_tables: list[int],
+    n_inputs: int,
+    g: int,
+    gate_types: list[str],
+    timeout_ms: int,
+    max_ands: int,
+) -> list[tuple[str, int, int]] | None:
+    """Try to synthesize with exactly g gates and at most max_ands AND gates."""
+    num_entries = 1 << n_inputs
+    num_outputs = len(truth_tables)
+
+    input_patterns = []
+    for bit in range(n_inputs):
+        pattern = sum(((j >> bit) & 1) << j for j in range(num_entries))
+        input_patterns.append(pattern)
+
+    if g == 0:
+        output_indices = []
+        for target in truth_tables:
+            found_idx = None
+            for inp in range(n_inputs):
+                if input_patterns[inp] == target:
+                    found_idx = inp
+                    break
+            if found_idx is None:
+                return None
+            output_indices.append(found_idx)
+        if len(output_indices) == 1 and output_indices[0] == 0:
+            return []
+        return [("wire", i, 0) for i in output_indices]
+
+    solver = z3.Solver()
+    solver.set("timeout", timeout_ms)
+
+    OP_XOR = 0
+    OP_AND = 1
+    OP_OR = 2
+
+    type_to_op = {"xor": OP_XOR, "and": OP_AND, "or": OP_OR}
+    allowed_ops = [type_to_op[t] for t in gate_types if t in type_to_op]
+
+    gate_op = [z3.Int(f"op_{i}") for i in range(g)]
+    gate_left = [z3.Int(f"left_{i}") for i in range(g)]
+    gate_right = [z3.Int(f"right_{i}") for i in range(g)]
+    gate_val = [z3.BitVec(f"val_{i}", num_entries) for i in range(g)]
+
+    for i in range(g):
+        if len(allowed_ops) == 1:
+            solver.add(gate_op[i] == allowed_ops[0])
+        else:
+            solver.add(z3.Or([gate_op[i] == op for op in allowed_ops]))
+
+        num_avail = n_inputs + i
+        solver.add(gate_left[i] >= 0, gate_left[i] < num_avail)
+        solver.add(gate_right[i] >= 0, gate_right[i] < num_avail)
+        solver.add(gate_left[i] <= gate_right[i])
+
+    if OP_AND in allowed_ops and max_ands < g:
+        is_and = [z3.If(gate_op[i] == OP_AND, 1, 0) for i in range(g)]
+        solver.add(z3.Sum(is_and) <= max_ands)
+
+    def get_node_val(idx: int, g_limit: int) -> z3.BitVecRef:
+        if idx < n_inputs:
+            return z3.BitVecVal(input_patterns[idx], num_entries)
+        else:
+            return gate_val[idx - n_inputs]
+
+    for i in range(g):
+        num_avail = n_inputs + i
+        left_val = z3.BitVec(f"lv_{i}", num_entries)
+        right_val = z3.BitVec(f"rv_{i}", num_entries)
+
+        for j in range(num_avail):
+            nv = get_node_val(j, i)
+            solver.add(z3.Implies(gate_left[i] == j, left_val == nv))
+            solver.add(z3.Implies(gate_right[i] == j, right_val == nv))
+
+        solver.add(
+            z3.Implies(gate_op[i] == OP_XOR, gate_val[i] == (left_val ^ right_val))
+        )
+        solver.add(
+            z3.Implies(gate_op[i] == OP_AND, gate_val[i] == (left_val & right_val))
+        )
+        solver.add(
+            z3.Implies(gate_op[i] == OP_OR, gate_val[i] == (left_val | right_val))
+        )
+
+    output_sels = [z3.Int(f"out_{o}") for o in range(num_outputs)]
+    total_nodes = n_inputs + g
+
+    for out_idx in range(num_outputs):
+        solver.add(output_sels[out_idx] >= 0, output_sels[out_idx] < total_nodes)
+
+        output_val = z3.BitVec(f"out_val_{out_idx}", num_entries)
+        for j in range(total_nodes):
+            nv = get_node_val(j, g)
+            solver.add(z3.Implies(output_sels[out_idx] == j, output_val == nv))
+
+        target_bv = z3.BitVecVal(truth_tables[out_idx], num_entries)
+        solver.add(output_val == target_bv)
+
+    if solver.check() != z3.sat:
+        return None
+
+    model = solver.model()
+
+    def get_int(v: z3.ExprRef) -> int:
+        return model.eval(v, model_completion=True).as_long()
+
+    op_to_str = {OP_XOR: "xor", OP_AND: "and", OP_OR: "or"}
+
+    result_gates = []
+    for i in range(g):
+        op = get_int(gate_op[i])
+        left = get_int(gate_left[i])
+        right = get_int(gate_right[i])
+        result_gates.append((op_to_str[op], left, right))
+
+    return result_gates
 
 
 def _try_synth_with_g_gates(
