@@ -419,11 +419,10 @@ def splice_window(
 ) -> CircuitState:
     """Replace window's internal gates with new implementation.
 
-    1. Map new gate inputs to window.inputs indices
-    2. Remove old internal gates
-    3. Insert new gates
-    4. Update all references to window outputs to point to new outputs
-    5. Renumber everything, clean up dead code
+    1. Add replacement gates for the window
+    2. Map window outputs to new outputs
+    3. Process non-internal gates with updated references
+    4. Renumber everything, clean up dead code
 
     Args:
         state: The original circuit state.
@@ -443,26 +442,9 @@ def splice_window(
 
     new_gates_list: list[tuple[str, int, int]] = []
 
-    for old_gate_idx in range(len(state.gates)):
-        full_idx = state.input_bits + old_gate_idx
-
-        if full_idx in internal_set:
-            continue
-
-        op, left, right = state.gates[old_gate_idx]
-        new_left = old_to_new.get(left, left)
-        if op not in ("const", "not"):
-            new_right = old_to_new.get(right, right)
-        else:
-            new_right = right
-
-        new_idx = state.input_bits + len(new_gates_list)
-        new_gates_list.append((op, new_left, new_right))
-        old_to_new[full_idx] = new_idx
-
     local_to_full: dict[int, int] = {}
     for i, inp_idx in enumerate(window.inputs):
-        local_to_full[i] = old_to_new.get(inp_idx, inp_idx)
+        local_to_full[i] = inp_idx
 
     wire_gates = [g for g in new_gates if g[0] == "wire"]
     real_gates = [g for g in new_gates if g[0] != "wire"]
@@ -496,6 +478,23 @@ def splice_window(
 
     for old_out in window.outputs:
         old_to_new[old_out] = final_new_output
+
+    for old_gate_idx in range(len(state.gates)):
+        full_idx = state.input_bits + old_gate_idx
+
+        if full_idx in internal_set:
+            continue
+
+        op, left, right = state.gates[old_gate_idx]
+        new_left = old_to_new.get(left, left)
+        if op not in ("const", "not"):
+            new_right = old_to_new.get(right, right)
+        else:
+            new_right = right
+
+        new_idx = state.input_bits + len(new_gates_list)
+        new_gates_list.append((op, new_left, new_right))
+        old_to_new[full_idx] = new_idx
 
     new_outputs: list[tuple[int, bool]] = []
     for out_idx, inv in state.outputs:

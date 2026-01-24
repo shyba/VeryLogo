@@ -1825,9 +1825,7 @@ class TestOptimizeLinearLayers(unittest.TestCase):
             print(
                 f"AES S-box linear optimization: {original_gate_count} -> {optimized.gate_count} gates"
             )
-            print(
-                f"  XOR gates: {original_xor_count} -> {optimized.xor_count}"
-            )
+            print(f"  XOR gates: {original_xor_count} -> {optimized.xor_count}")
         finally:
             sys.setrecursionlimit(old_limit)
 
@@ -1881,3 +1879,115 @@ class TestOptimizeLinearLayers(unittest.TestCase):
                 optimized_result,
                 f"Mismatch at input {i}: original={original_result}, optimized={optimized_result}",
             )
+
+
+class TestSatWindowResynthesis(unittest.TestCase):
+    def test_sat_window_resynthesis_simple(self) -> None:
+        """Simple circuit gets optimized via window resynthesis."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 3, 2),
+                ("xor", 4, 3),
+                ("xor", 5, 3),
+            ],
+            outputs=[(6, False)],
+            gate_count=4,
+        )
+
+        original_outputs = [state.evaluate(i) for i in range(8)]
+
+        optimized = state.sat_window_resynthesis(
+            max_window_inputs=6, timeout_per_window=5000, max_iterations=10
+        )
+
+        for i in range(8):
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(
+                optimized_result,
+                original_outputs[i],
+                f"Mismatch at input {i}: got {optimized_result}, expected {original_outputs[i]}",
+            )
+
+        self.assertLessEqual(
+            optimized.gate_count,
+            state.gate_count,
+            f"Gate count should not increase: {optimized.gate_count} > {state.gate_count}",
+        )
+
+    def test_sat_window_resynthesis_no_change(self) -> None:
+        """Already optimal circuit unchanged via window resynthesis."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+            ],
+            outputs=[(2, False)],
+            gate_count=1,
+        )
+
+        original_outputs = [state.evaluate(i) for i in range(4)]
+
+        optimized = state.sat_window_resynthesis(
+            max_window_inputs=6, timeout_per_window=5000, max_iterations=10
+        )
+
+        for i in range(4):
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(
+                optimized_result,
+                original_outputs[i],
+                f"Mismatch at input {i}: got {optimized_result}, expected {original_outputs[i]}",
+            )
+
+        self.assertEqual(
+            optimized.gate_count,
+            state.gate_count,
+            f"Gate count should remain the same: {optimized.gate_count} != {state.gate_count}",
+        )
+
+    def test_sat_window_resynthesis_correctness(self) -> None:
+        """Output behavior preserved after window resynthesis."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=4,
+            output_bits=2,
+            gates=[
+                ("xor", 0, 1),
+                ("and", 2, 3),
+                ("xor", 4, 5),
+                ("xor", 6, 0),
+                ("and", 6, 1),
+                ("xor", 7, 8),
+            ],
+            outputs=[(7, False), (9, False)],
+            gate_count=6,
+        )
+
+        original_outputs = [state.evaluate(i) for i in range(16)]
+
+        optimized = state.sat_window_resynthesis(
+            max_window_inputs=6, timeout_per_window=5000, max_iterations=20
+        )
+
+        for i in range(16):
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(
+                optimized_result,
+                original_outputs[i],
+                f"Mismatch at input {i}: got {optimized_result}, expected {original_outputs[i]}",
+            )
+
+        self.assertLessEqual(
+            optimized.gate_count,
+            state.gate_count,
+            f"Gate count should not increase: {optimized.gate_count} > {state.gate_count}",
+        )

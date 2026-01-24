@@ -2297,6 +2297,114 @@ class CircuitState:
             gate_count=len(new_gates),
         )
 
+    def sat_window_resynthesis(
+        self,
+        max_window_inputs: int = 6,
+        timeout_per_window: int = 5000,
+        max_iterations: int = 1000,
+        checkpoint_file: str | None = None,
+    ) -> "CircuitState":
+        """Repeatedly try to improve circuit via window resynthesis.
+
+        Loop:
+        1. For each gate (round-robin), try to extract a window
+        2. If window exists and has <= max_window_inputs:
+           a. Try to synthesize with fewer gates than current window
+           b. If success, splice the optimized window
+        3. Continue until max_iterations or no improvement possible
+
+        Args:
+            max_window_inputs: Max inputs for windows (default 6, since 2^6=64 combos)
+            timeout_per_window: SAT solver timeout in ms per window
+            max_iterations: Max iterations through all gates
+            checkpoint_file: If provided, save best circuit periodically
+
+        Returns:
+            Optimized CircuitState
+        """
+        import json
+
+        from stc.window_synth import (
+            compute_fanouts,
+            extract_window,
+            splice_window,
+            synthesize_exact,
+        )
+
+        current = CircuitState(
+            input_bits=self.input_bits,
+            output_bits=self.output_bits,
+            gates=list(self.gates),
+            outputs=list(self.outputs),
+            gate_count=self.gate_count,
+        )
+
+        best_gate_count = current.gate_count
+        improvements_this_round = 0
+        total_improvements = 0
+        checkpoint_interval = 10
+
+        for iteration in range(max_iterations):
+            improved_in_iteration = False
+
+            for gate_idx in range(len(current.gates)):
+                root_idx = current.input_bits + gate_idx
+
+                window = extract_window(current, root_idx, max_inputs=max_window_inputs)
+                if window is None:
+                    continue
+
+                current_window_gates = len(window.internal)
+                if current_window_gates <= 1:
+                    continue
+
+                target_gates = current_window_gates - 1
+                new_gates = synthesize_exact(
+                    window.truth_tables,
+                    n_inputs=len(window.inputs),
+                    max_gates=target_gates,
+                    timeout_ms=timeout_per_window,
+                )
+
+                if new_gates is None:
+                    continue
+
+                actual_new_gates = len([g for g in new_gates if g[0] != "wire"])
+                if actual_new_gates >= current_window_gates:
+                    continue
+
+                try:
+                    new_state = splice_window(current, window, new_gates)
+
+                    if new_state.gate_count < current.gate_count:
+                        current = new_state
+                        improvements_this_round += 1
+                        total_improvements += 1
+                        improved_in_iteration = True
+
+                        if (
+                            checkpoint_file is not None
+                            and total_improvements % checkpoint_interval == 0
+                        ):
+                            with open(checkpoint_file, "w") as f:
+                                json.dump(current.to_dict(), f)
+
+                        break
+                except (IndexError, KeyError):
+                    continue
+
+            if not improved_in_iteration:
+                break
+
+            if current.gate_count < best_gate_count:
+                best_gate_count = current.gate_count
+
+        if checkpoint_file is not None and total_improvements > 0:
+            with open(checkpoint_file, "w") as f:
+                json.dump(current.to_dict(), f)
+
+        return current
+
 
 def circuit_to_state(
     exprs: list[Expr], input_bits: int, output_bits: int
