@@ -235,9 +235,7 @@ class LinearCone:
 
         return gates
 
-    def get_output_signals_optimized(
-        self, max_inputs_for_bp: int = 64
-    ) -> list[int]:
+    def get_output_signals_optimized(self, max_inputs_for_bp: int = 64) -> list[int]:
         """Get the signal indices for outputs after to_xor_circuit_optimized.
 
         Returns indices into the combined input+gates space based on the
