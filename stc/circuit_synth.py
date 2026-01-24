@@ -1467,6 +1467,150 @@ class CircuitState:
             gate_count=len(final_gates),
         )
 
+    def flatten_xor_trees(self) -> "CircuitState":
+        """
+        Flatten XOR trees into balanced binary trees for lower depth.
+
+        For each XOR gate, collects all leaf inputs through XOR chains.
+        Duplicate leaves cancel (x ^ x = 0). Rebuilds XORs as balanced trees.
+        Does not flatten through AND gates.
+        """
+        gate_refs: dict[int, int] = {}
+        for op, left, right in self.gates:
+            gate_refs[left] = gate_refs.get(left, 0) + 1
+            if op not in ("const", "not"):
+                gate_refs[right] = gate_refs.get(right, 0) + 1
+        for out_idx, _ in self.outputs:
+            gate_refs[out_idx] = gate_refs.get(out_idx, 0) + 1
+
+        def get_gate_def(idx: int) -> tuple[str, int, int] | None:
+            if idx < self.input_bits:
+                return None
+            gate_idx = idx - self.input_bits
+            if gate_idx < 0 or gate_idx >= len(self.gates):
+                return None
+            return self.gates[gate_idx]
+
+        def is_xor_only_used_by(idx: int, parent_idx: int) -> bool:
+            g = get_gate_def(idx)
+            if g is None or g[0] != "xor":
+                return False
+            return gate_refs.get(idx, 0) == 1
+
+        def collect_xor_leaves(idx: int, parent_idx: int | None = None) -> list[int]:
+            g = get_gate_def(idx)
+            if g is None:
+                return [idx]
+            op, left, right = g
+            if op != "xor":
+                return [idx]
+            if parent_idx is not None and not is_xor_only_used_by(idx, parent_idx):
+                return [idx]
+            left_leaves = collect_xor_leaves(left, idx)
+            right_leaves = collect_xor_leaves(right, idx)
+            return left_leaves + right_leaves
+
+        def simplify_leaves(leaves: list[int]) -> list[int]:
+            counts: dict[int, int] = {}
+            for leaf in leaves:
+                counts[leaf] = counts.get(leaf, 0) + 1
+            return [leaf for leaf, count in sorted(counts.items()) if count % 2 == 1]
+
+        new_gates: list[tuple[str, int, int]] = []
+        old_to_new: dict[int, int] = {i: i for i in range(self.input_bits)}
+        const_zero_idx: int | None = None
+
+        def ensure_const_zero() -> int:
+            nonlocal const_zero_idx
+            if const_zero_idx is not None:
+                return const_zero_idx
+            const_zero_idx = self.input_bits + len(new_gates)
+            new_gates.append(("const", 0, 1))
+            return const_zero_idx
+
+        def build_balanced_xor(leaves: list[int]) -> int:
+            if len(leaves) == 0:
+                return ensure_const_zero()
+            if len(leaves) == 1:
+                return leaves[0]
+            mid = len(leaves) // 2
+            left_result = build_balanced_xor(leaves[:mid])
+            right_result = build_balanced_xor(leaves[mid:])
+            new_idx = self.input_bits + len(new_gates)
+            new_gates.append(("xor", left_result, right_result))
+            return new_idx
+
+        processed_as_xor_tree: set[int] = set()
+
+        def process_gate(old_full_idx: int) -> int:
+            if old_full_idx in old_to_new:
+                return old_to_new[old_full_idx]
+
+            if old_full_idx in processed_as_xor_tree:
+                return old_to_new[old_full_idx]
+
+            g = get_gate_def(old_full_idx)
+            if g is None:
+                old_to_new[old_full_idx] = old_full_idx
+                return old_full_idx
+
+            op, left, right = g
+
+            if op == "xor":
+                old_leaves = collect_xor_leaves(old_full_idx, None)
+                for leaf_idx in old_leaves:
+                    if leaf_idx >= self.input_bits:
+                        process_gate(leaf_idx)
+
+                new_leaves = [old_to_new.get(l, l) for l in old_leaves]
+                simplified = simplify_leaves(new_leaves)
+                result = build_balanced_xor(simplified)
+                old_to_new[old_full_idx] = result
+
+                for leaf_idx in old_leaves:
+                    if leaf_idx >= self.input_bits and leaf_idx != old_full_idx:
+                        lg = get_gate_def(leaf_idx)
+                        if lg is not None and lg[0] == "xor":
+                            processed_as_xor_tree.add(leaf_idx)
+                            if leaf_idx not in old_to_new:
+                                old_to_new[leaf_idx] = result
+
+                return result
+
+            if op == "const":
+                new_idx = self.input_bits + len(new_gates)
+                new_gates.append(("const", left, right))
+                old_to_new[old_full_idx] = new_idx
+                return new_idx
+
+            if op == "not":
+                new_left = process_gate(left)
+                new_idx = self.input_bits + len(new_gates)
+                new_gates.append(("not", new_left, 0))
+                old_to_new[old_full_idx] = new_idx
+                return new_idx
+
+            new_left = process_gate(left)
+            new_right = process_gate(right)
+            new_idx = self.input_bits + len(new_gates)
+            new_gates.append((op, new_left, new_right))
+            old_to_new[old_full_idx] = new_idx
+            return new_idx
+
+        for out_idx, _ in self.outputs:
+            process_gate(out_idx)
+
+        new_outputs = [(old_to_new.get(idx, idx), inv) for idx, inv in self.outputs]
+
+        result = CircuitState(
+            input_bits=self.input_bits,
+            output_bits=self.output_bits,
+            gates=new_gates,
+            outputs=new_outputs,
+            gate_count=len(new_gates),
+        )
+        return result.eliminate_dead_code()
+
     def to_slp(self) -> str:
         """
         Export circuit in standard Straight-Line Program (SLP) format.
@@ -1514,6 +1658,390 @@ class CircuitState:
                 lines.append(f"{output_name} = {ref}")
 
         return "\n".join(lines)
+
+    def try_local_rewrites(self, max_window: int = 3) -> "CircuitState":
+        """
+        Apply window-based local rewriting to reduce gate count.
+
+        For each gate, considers windows of 2 and 3 gates, computes the truth table
+        for the window, and enumerates all smaller implementations. If a smaller
+        implementation matches the truth table, it replaces the window.
+
+        Args:
+            max_window: Maximum window size (2 or 3)
+
+        Returns:
+            A new CircuitState with local rewrites applied.
+        """
+        current = CircuitState(
+            input_bits=self.input_bits,
+            output_bits=self.output_bits,
+            gates=list(self.gates),
+            outputs=list(self.outputs),
+            gate_count=self.gate_count,
+        )
+
+        changed = True
+        while changed:
+            changed = False
+            result = current._try_single_local_rewrite(max_window)
+            if result is not None:
+                current = result
+                changed = True
+
+        return current
+
+    def _try_single_local_rewrite(self, max_window: int) -> "CircuitState | None":
+        """Try a single local rewrite pass. Returns new state if improvement found."""
+        for gate_idx in range(len(self.gates)):
+            for window_size in range(2, max_window + 1):
+                result = self._try_rewrite_window(gate_idx, window_size)
+                if result is not None:
+                    return result
+        return None
+
+    def _try_rewrite_window(
+        self, root_gate_idx: int, window_size: int
+    ) -> "CircuitState | None":
+        """
+        Try to rewrite a window of gates rooted at root_gate_idx.
+
+        Returns a new CircuitState if a smaller implementation was found, None otherwise.
+        """
+        root_idx = self.input_bits + root_gate_idx
+        if root_gate_idx >= len(self.gates):
+            return None
+
+        window_gates = self._collect_window(root_gate_idx, window_size)
+        if len(window_gates) < 2:
+            return None
+
+        if not self._can_replace_window(root_gate_idx, window_gates):
+            return None
+
+        window_inputs = self._get_window_inputs(window_gates)
+        if len(window_inputs) > 4:
+            return None
+
+        truth_table = self._compute_window_truth_table(
+            root_idx, window_gates, window_inputs
+        )
+
+        replacement = self._find_smaller_implementation(
+            truth_table, window_inputs, len(window_gates)
+        )
+        if replacement is None:
+            return None
+
+        return self._apply_replacement(
+            root_gate_idx, window_gates, window_inputs, replacement
+        )
+
+    def _can_replace_window(self, root_gate_idx: int, window_gates: list[int]) -> bool:
+        """
+        Check if the window can be safely replaced.
+
+        Returns True only if no gate outside the window references any non-root gate
+        in the window. This ensures we can replace the entire window with a single
+        output without breaking any dependencies.
+        """
+        window_gate_set = set(window_gates)
+        window_full = set(self.input_bits + g for g in window_gates)
+        root_full = self.input_bits + root_gate_idx
+
+        for gate_idx, (op, left, right) in enumerate(self.gates):
+            if gate_idx in window_gate_set:
+                continue
+
+            if left in window_full and left != root_full:
+                return False
+            if (
+                op not in ("const", "not")
+                and right in window_full
+                and right != root_full
+            ):
+                return False
+
+        for out_idx, _ in self.outputs:
+            if out_idx in window_full and out_idx != root_full:
+                return False
+
+        return True
+
+    def _collect_window(self, root_gate_idx: int, max_size: int) -> list[int]:
+        """
+        Collect gate indices that form a window rooted at root_gate_idx.
+
+        Returns gate indices (not full indices) in the window.
+        """
+        if root_gate_idx >= len(self.gates):
+            return []
+
+        window = []
+        to_visit = [root_gate_idx]
+        visited = set()
+
+        while to_visit and len(window) < max_size:
+            gate_idx = to_visit.pop(0)
+            if gate_idx in visited:
+                continue
+            if gate_idx >= len(self.gates):
+                continue
+            visited.add(gate_idx)
+            window.append(gate_idx)
+
+            op, left, right = self.gates[gate_idx]
+            if left >= self.input_bits:
+                child_idx = left - self.input_bits
+                if child_idx not in visited and child_idx < len(self.gates):
+                    to_visit.append(child_idx)
+            if op not in ("const", "not") and right >= self.input_bits:
+                child_idx = right - self.input_bits
+                if child_idx not in visited and child_idx < len(self.gates):
+                    to_visit.append(child_idx)
+
+        return window
+
+    def _get_window_inputs(self, window_gates: list[int]) -> list[int]:
+        """
+        Get the inputs to the window (indices outside the window).
+
+        Returns list of node indices that are inputs to the window.
+        """
+        window_full = set(self.input_bits + g for g in window_gates)
+        inputs = set()
+
+        for gate_idx in window_gates:
+            op, left, right = self.gates[gate_idx]
+            if left not in window_full:
+                inputs.add(left)
+            if op not in ("const", "not") and right not in window_full:
+                inputs.add(right)
+
+        return sorted(inputs)
+
+    def _compute_window_truth_table(
+        self, root_idx: int, window_gates: list[int], window_inputs: list[int]
+    ) -> list[int]:
+        """
+        Compute the truth table for the window output given window inputs.
+
+        Returns a list of output bits for each combination of window input values.
+        """
+        num_window_inputs = len(window_inputs)
+        table = []
+
+        for val in range(1 << num_window_inputs):
+            input_vals = {}
+            for i, inp_idx in enumerate(window_inputs):
+                input_vals[inp_idx] = (val >> i) & 1
+
+            gate_vals = {}
+            for gate_idx in sorted(window_gates):
+                op, left, right = self.gates[gate_idx]
+                full_idx = self.input_bits + gate_idx
+
+                left_val = input_vals.get(left) or gate_vals.get(left, 0)
+                right_val = input_vals.get(right) or gate_vals.get(right, 0)
+
+                if op == "xor":
+                    gate_vals[full_idx] = left_val ^ right_val
+                elif op == "and":
+                    gate_vals[full_idx] = left_val & right_val
+                elif op == "or":
+                    gate_vals[full_idx] = left_val | right_val
+                elif op == "not":
+                    gate_vals[full_idx] = left_val ^ 1
+                elif op == "const":
+                    gate_vals[full_idx] = left & 1
+                else:
+                    gate_vals[full_idx] = 0
+
+            table.append(gate_vals.get(root_idx, 0))
+
+        return table
+
+    def _find_smaller_implementation(
+        self, truth_table: list[int], inputs: list[int], current_gates: int
+    ) -> list[tuple[str, int, int]] | None:
+        """
+        Find a smaller implementation that produces the same truth table.
+
+        Returns list of gates for the replacement, or None if no improvement.
+        """
+        num_inputs = len(inputs)
+
+        for i, inp in enumerate(inputs):
+            if all(truth_table[v] == ((v >> i) & 1) for v in range(len(truth_table))):
+                return []
+            if all(
+                truth_table[v] == (1 - ((v >> i) & 1)) for v in range(len(truth_table))
+            ):
+                return [("not", i, 0)]
+
+        if current_gates <= 1:
+            return None
+
+        for i in range(num_inputs):
+            for j in range(i, num_inputs):
+                for op in ["xor", "and", "or"]:
+                    matches = True
+                    for v in range(len(truth_table)):
+                        a = (v >> i) & 1
+                        b = (v >> j) & 1
+                        if op == "xor":
+                            expected = a ^ b
+                        elif op == "and":
+                            expected = a & b
+                        else:
+                            expected = a | b
+                        if truth_table[v] != expected:
+                            matches = False
+                            break
+                    if matches:
+                        return [(op, i, j)]
+
+        if current_gates <= 2:
+            return None
+
+        for i in range(num_inputs):
+            for j in range(i, num_inputs):
+                for op1 in ["xor", "and", "or"]:
+                    for k in range(num_inputs):
+                        for op2 in ["xor", "and", "or"]:
+                            matches = True
+                            for v in range(len(truth_table)):
+                                a = (v >> i) & 1
+                                b = (v >> j) & 1
+                                if op1 == "xor":
+                                    intermediate = a ^ b
+                                elif op1 == "and":
+                                    intermediate = a & b
+                                else:
+                                    intermediate = a | b
+
+                                c = (v >> k) & 1
+
+                                if op2 == "xor":
+                                    expected = intermediate ^ c
+                                elif op2 == "and":
+                                    expected = intermediate & c
+                                else:
+                                    expected = intermediate | c
+
+                                if truth_table[v] != expected:
+                                    matches = False
+                                    break
+
+                            if matches:
+                                return [(op1, i, j), (op2, num_inputs, k)]
+
+        return None
+
+    def _apply_replacement(
+        self,
+        root_gate_idx: int,
+        window_gates: list[int],
+        window_inputs: list[int],
+        replacement: list[tuple[str, int, int]],
+    ) -> "CircuitState":
+        """
+        Apply a replacement to the circuit, substituting the window with replacement gates.
+
+        The approach is to rebuild the circuit preserving topological order:
+        1. Identify the earliest position in window_gates where we can insert replacement
+        2. Build new gate list, skipping window gates and inserting replacement at that position
+        3. Update all references accordingly
+        """
+        root_full = self.input_bits + root_gate_idx
+        window_gate_set = set(window_gates)
+
+        min_window_gate = min(window_gates)
+        earliest_position = min_window_gate
+
+        local_to_full = {i: idx for i, idx in enumerate(window_inputs)}
+
+        old_to_new: dict[int, int] = {i: i for i in range(self.input_bits)}
+        new_gates: list[tuple[str, int, int]] = []
+
+        replacement_inserted = False
+        result_idx = None
+
+        for old_gate_idx, (op, left, right) in enumerate(self.gates):
+            if old_gate_idx == earliest_position and not replacement_inserted:
+                for rep_op, rep_left, rep_right in replacement:
+                    new_left = local_to_full.get(rep_left, rep_left)
+                    new_right = local_to_full.get(rep_right, rep_right)
+                    if rep_left >= len(window_inputs):
+                        rep_offset = rep_left - len(window_inputs)
+                        new_left = (
+                            self.input_bits
+                            + len(new_gates)
+                            - len(replacement)
+                            + rep_offset
+                            + 1
+                        )
+                    if rep_right >= len(window_inputs):
+                        rep_offset = rep_right - len(window_inputs)
+                        new_right = (
+                            self.input_bits
+                            + len(new_gates)
+                            - len(replacement)
+                            + rep_offset
+                            + 1
+                        )
+
+                    new_idx = self.input_bits + len(new_gates)
+                    new_gates.append((rep_op, new_left, new_right))
+                    local_to_full[len(window_inputs) + len(new_gates) - 1] = new_idx
+                    result_idx = new_idx
+
+                replacement_inserted = True
+
+                if not replacement:
+                    result_idx = window_inputs[0] if window_inputs else 0
+
+            if old_gate_idx in window_gate_set:
+                old_full = self.input_bits + old_gate_idx
+                if old_full == root_full:
+                    old_to_new[old_full] = result_idx
+                continue
+
+            new_left = old_to_new.get(left, left)
+            new_right = (
+                old_to_new.get(right, right) if op not in ("const", "not") else right
+            )
+
+            new_idx = self.input_bits + len(new_gates)
+            old_to_new[self.input_bits + old_gate_idx] = new_idx
+            new_gates.append((op, new_left, new_right))
+
+        if not replacement_inserted:
+            for rep_op, rep_left, rep_right in replacement:
+                new_left = local_to_full.get(rep_left, rep_left)
+                new_right = local_to_full.get(rep_right, rep_right)
+
+                new_idx = self.input_bits + len(new_gates)
+                new_gates.append((rep_op, new_left, new_right))
+                result_idx = new_idx
+
+            if not replacement:
+                result_idx = window_inputs[0] if window_inputs else 0
+
+        old_to_new[root_full] = result_idx
+
+        new_outputs = []
+        for out_idx, inv in self.outputs:
+            new_out = old_to_new.get(out_idx, out_idx)
+            new_outputs.append((new_out, inv))
+
+        return CircuitState(
+            input_bits=self.input_bits,
+            output_bits=self.output_bits,
+            gates=new_gates,
+            outputs=new_outputs,
+            gate_count=len(new_gates),
+        )
 
 
 def circuit_to_state(

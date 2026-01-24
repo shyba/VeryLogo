@@ -1429,3 +1429,295 @@ class TestCommonSubexpressionElimination(unittest.TestCase):
             original_result = state.evaluate(i)
             optimized_result = optimized.evaluate(i)
             self.assertEqual(original_result, optimized_result)
+
+
+class TestXorTreeFlattening(unittest.TestCase):
+    def test_flatten_simple_chain(self) -> None:
+        """Test x ^ (y ^ z) -> balanced tree."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=[
+                ("xor", 1, 2),
+                ("xor", 0, 3),
+            ],
+            outputs=[(4, False)],
+            gate_count=2,
+        )
+        flattened = state.flatten_xor_trees()
+
+        for i in range(8):
+            original_result = state.evaluate(i)
+            flattened_result = flattened.evaluate(i)
+            self.assertEqual(
+                original_result,
+                flattened_result,
+                f"Mismatch at input {i}: original={original_result}, flattened={flattened_result}",
+            )
+
+        self.assertLessEqual(flattened.depth, state.depth)
+
+    def test_flatten_with_cancellation(self) -> None:
+        """Test x ^ (y ^ (x ^ z)) -> y ^ z (x cancels)."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=4,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 3),
+                ("xor", 1, 4),
+                ("xor", 0, 5),
+            ],
+            outputs=[(6, False)],
+            gate_count=3,
+        )
+
+        for i in range(16):
+            x0 = (i >> 0) & 1
+            x1 = (i >> 1) & 1
+            x3 = (i >> 3) & 1
+            expected = x1 ^ x3
+            actual = state.evaluate(i)
+            self.assertEqual(
+                actual,
+                x0 ^ x1 ^ x0 ^ x3,
+                f"Input {i}: expected x0^x1^x0^x3={x0 ^ x1 ^ x0 ^ x3}",
+            )
+
+        flattened = state.flatten_xor_trees()
+
+        for i in range(16):
+            original_result = state.evaluate(i)
+            flattened_result = flattened.evaluate(i)
+            self.assertEqual(
+                original_result,
+                flattened_result,
+                f"Mismatch at input {i}: original={original_result}, flattened={flattened_result}",
+            )
+
+        self.assertLess(
+            flattened.gate_count,
+            state.gate_count,
+            f"Expected fewer gates due to x^x cancellation, got {flattened.gate_count} vs {state.gate_count}",
+        )
+
+    def test_flatten_preserves_and_gates(self) -> None:
+        """Test that flattening does not flatten through AND gates."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("and", 2, 3),
+                ("xor", 3, 4),
+            ],
+            outputs=[(5, False)],
+            gate_count=3,
+        )
+        flattened = state.flatten_xor_trees()
+
+        for i in range(8):
+            original_result = state.evaluate(i)
+            flattened_result = flattened.evaluate(i)
+            self.assertEqual(
+                original_result,
+                flattened_result,
+                f"Mismatch at input {i}: original={original_result}, flattened={flattened_result}",
+            )
+
+        and_count = sum(1 for op, _, _ in flattened.gates if op == "and")
+        self.assertEqual(and_count, 1, "AND gate should be preserved")
+
+    def test_flatten_no_change_already_flat(self) -> None:
+        """Test that already flat tree returns equivalent circuit."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+            ],
+            outputs=[(2, False)],
+            gate_count=1,
+        )
+        flattened = state.flatten_xor_trees()
+
+        for i in range(4):
+            original_result = state.evaluate(i)
+            flattened_result = flattened.evaluate(i)
+            self.assertEqual(original_result, flattened_result)
+
+        self.assertEqual(flattened.gate_count, 1)
+
+    def test_flatten_aes_sbox(self) -> None:
+        """Verify correctness on AES S-box after flattening."""
+        from stc.circuit_synth import (
+            CircuitState,
+            IncrementalOptimizer,
+            circuit_to_state,
+            synthesize_multi_output_anf,
+        )
+
+        result = synthesize_multi_output_anf(
+            AES_SBOX_TABLE, input_bits=8, output_bits=8
+        )
+        state = circuit_to_state(result.circuit, input_bits=8, output_bits=8)
+
+        flattened = state.flatten_xor_trees()
+
+        for i in range(256):
+            expected = AES_SBOX_TABLE[i]
+            original_result = state.evaluate(i)
+            flattened_result = flattened.evaluate(i)
+            self.assertEqual(
+                original_result,
+                expected,
+                f"Original mismatch at {i}: got {original_result}, expected {expected}",
+            )
+            self.assertEqual(
+                flattened_result,
+                expected,
+                f"Flattened mismatch at {i}: got {flattened_result}, expected {expected}",
+            )
+
+        self.assertLessEqual(flattened.gate_count, state.gate_count)
+
+
+class TestLocalRewrites(unittest.TestCase):
+    def test_local_rewrite_xor_cancel(self) -> None:
+        """Test (a ^ b) ^ b -> a."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 2, 1),
+            ],
+            outputs=[(3, False)],
+            gate_count=2,
+        )
+        rewritten = state.try_local_rewrites()
+
+        for i in range(4):
+            a = i & 1
+            self.assertEqual(rewritten.evaluate(i), a)
+
+        self.assertLess(rewritten.gate_count, state.gate_count)
+
+    def test_local_rewrite_and_identity(self) -> None:
+        """Test (a & b) & a -> a & b."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("and", 0, 1),
+                ("and", 2, 0),
+            ],
+            outputs=[(3, False)],
+            gate_count=2,
+        )
+        rewritten = state.try_local_rewrites()
+
+        for i in range(4):
+            a = i & 1
+            b = (i >> 1) & 1
+            expected = a & b
+            self.assertEqual(rewritten.evaluate(i), expected)
+
+        self.assertLessEqual(rewritten.gate_count, state.gate_count)
+
+    def test_local_rewrite_nested_xor(self) -> None:
+        """Test ((a ^ b) ^ c) ^ b -> a ^ c."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 3, 2),
+                ("xor", 4, 1),
+            ],
+            outputs=[(5, False)],
+            gate_count=3,
+        )
+        rewritten = state.try_local_rewrites()
+
+        for i in range(8):
+            a = i & 1
+            b = (i >> 1) & 1
+            c = (i >> 2) & 1
+            expected = a ^ c
+            self.assertEqual(
+                rewritten.evaluate(i),
+                expected,
+                f"Mismatch at {i}: got {rewritten.evaluate(i)}, expected {expected}",
+            )
+
+        self.assertLess(rewritten.gate_count, state.gate_count)
+
+    def test_local_rewrite_no_change(self) -> None:
+        """Test that already optimal circuit is unchanged."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("and", 3, 2),
+            ],
+            outputs=[(4, False)],
+            gate_count=2,
+        )
+        rewritten = state.try_local_rewrites()
+
+        for i in range(8):
+            original_result = state.evaluate(i)
+            rewritten_result = rewritten.evaluate(i)
+            self.assertEqual(original_result, rewritten_result)
+
+        self.assertEqual(rewritten.gate_count, state.gate_count)
+
+    def test_local_rewrite_aes_sbox(self) -> None:
+        """Verify correctness on AES S-box after local rewrites."""
+        import sys
+
+        from stc.circuit_synth import (
+            CircuitState,
+            circuit_to_state,
+            synthesize_multi_output_anf,
+        )
+
+        old_limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(5000)
+        try:
+            result = synthesize_multi_output_anf(
+                AES_SBOX_TABLE, input_bits=8, output_bits=8
+            )
+            state = circuit_to_state(result.circuit, input_bits=8, output_bits=8)
+
+            rewritten = state.try_local_rewrites(max_window=3)
+
+            for i in range(256):
+                expected = AES_SBOX_TABLE[i]
+                rewritten_result = rewritten.evaluate(i)
+                self.assertEqual(
+                    rewritten_result,
+                    expected,
+                    f"S-box mismatch at {i}: got {rewritten_result}, expected {expected}",
+                )
+
+            self.assertLessEqual(rewritten.gate_count, state.gate_count)
+        finally:
+            sys.setrecursionlimit(old_limit)
