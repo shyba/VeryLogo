@@ -1721,3 +1721,163 @@ class TestLocalRewrites(unittest.TestCase):
             self.assertLessEqual(rewritten.gate_count, state.gate_count)
         finally:
             sys.setrecursionlimit(old_limit)
+
+
+class TestOptimizeLinearLayers(unittest.TestCase):
+    def test_optimize_linear_layers_simple(self) -> None:
+        """Simple XOR chain gets optimized."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=4,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 4, 2),
+                ("xor", 5, 3),
+            ],
+            outputs=[(6, False)],
+            gate_count=3,
+        )
+
+        optimized = state.optimize_linear_layers()
+
+        for i in range(16):
+            original_result = state.evaluate(i)
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(
+                original_result,
+                optimized_result,
+                f"Mismatch at input {i}: original={original_result}, optimized={optimized_result}",
+            )
+
+        self.assertLessEqual(optimized.xor_count, state.xor_count)
+
+    def test_optimize_linear_layers_with_and(self) -> None:
+        """AND boundaries are preserved during optimization."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=4,
+            output_bits=1,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 2, 3),
+                ("and", 4, 5),
+                ("xor", 6, 0),
+            ],
+            outputs=[(7, False)],
+            gate_count=4,
+        )
+
+        optimized = state.optimize_linear_layers()
+
+        for i in range(16):
+            original_result = state.evaluate(i)
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(
+                original_result,
+                optimized_result,
+                f"Mismatch at input {i}: original={original_result}, optimized={optimized_result}",
+            )
+
+        and_count = sum(1 for op, _, _ in optimized.gates if op == "and")
+        self.assertEqual(and_count, 1, "AND gate should be preserved")
+
+    def test_optimize_linear_layers_aes_sbox(self) -> None:
+        """Verify correctness AND check gate count reduced on AES S-box."""
+        import sys
+
+        from stc.circuit_synth import (
+            CircuitState,
+            circuit_to_state,
+            synthesize_multi_output_anf,
+        )
+
+        old_limit = sys.getrecursionlimit()
+        sys.setrecursionlimit(5000)
+        try:
+            result = synthesize_multi_output_anf(
+                AES_SBOX_TABLE, input_bits=8, output_bits=8
+            )
+            state = circuit_to_state(result.circuit, input_bits=8, output_bits=8)
+
+            original_xor_count = state.xor_count
+            original_gate_count = state.gate_count
+
+            optimized = state.optimize_linear_layers()
+
+            for i in range(256):
+                expected = AES_SBOX_TABLE[i]
+                optimized_result = optimized.evaluate(i)
+                self.assertEqual(
+                    optimized_result,
+                    expected,
+                    f"S-box mismatch at {i}: got {optimized_result}, expected {expected}",
+                )
+
+            self.assertLessEqual(
+                optimized.gate_count,
+                original_gate_count,
+                f"Gate count increased: {optimized.gate_count} > {original_gate_count}",
+            )
+
+            print(
+                f"AES S-box linear optimization: {original_gate_count} -> {optimized.gate_count} gates"
+            )
+            print(
+                f"  XOR gates: {original_xor_count} -> {optimized.xor_count}"
+            )
+        finally:
+            sys.setrecursionlimit(old_limit)
+
+    def test_optimize_linear_layers_no_xor(self) -> None:
+        """Circuit with no XOR gates is unchanged."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("and", 0, 1),
+            ],
+            outputs=[(2, False)],
+            gate_count=1,
+        )
+
+        optimized = state.optimize_linear_layers()
+
+        for i in range(4):
+            original_result = state.evaluate(i)
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(original_result, optimized_result)
+
+        self.assertEqual(optimized.gate_count, state.gate_count)
+
+    def test_optimize_linear_layers_shared_xor(self) -> None:
+        """Test that shared XOR subexpressions are handled correctly."""
+        from stc.circuit_synth import CircuitState
+
+        state = CircuitState(
+            input_bits=3,
+            output_bits=2,
+            gates=[
+                ("xor", 0, 1),
+                ("xor", 3, 2),
+                ("and", 0, 1),
+                ("xor", 5, 3),
+            ],
+            outputs=[(4, False), (6, False)],
+            gate_count=4,
+        )
+
+        optimized = state.optimize_linear_layers()
+
+        for i in range(8):
+            original_result = state.evaluate(i)
+            optimized_result = optimized.evaluate(i)
+            self.assertEqual(
+                original_result,
+                optimized_result,
+                f"Mismatch at input {i}: original={original_result}, optimized={optimized_result}",
+            )

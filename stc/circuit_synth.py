@@ -1659,6 +1659,255 @@ class CircuitState:
 
         return "\n".join(lines)
 
+    def optimize_linear_layers(self) -> "CircuitState":
+        """Replace all XOR regions with BP-optimized versions.
+
+        This method:
+        1. Partitions the circuit into linear cones (XOR-only regions)
+           and AND gate boundaries
+        2. For each linear cone:
+           a. Converts to GF(2) matrix representation
+           b. Runs Boyar-Peralta minimization
+           c. Converts back to gates
+        3. Stitches together with AND gates
+        4. Renumbers and returns the optimized circuit
+
+        Returns:
+            A new CircuitState with optimized linear regions.
+        """
+        from stc.linear_opt import LinearCone
+
+        and_gate_indices: list[int] = []
+        for g_idx, (op, _, _) in enumerate(self.gates):
+            if op == "and":
+                and_gate_indices.append(self.input_bits + g_idx)
+
+        if not and_gate_indices:
+            all_xors = [
+                self.input_bits + g_idx
+                for g_idx, (op, _, _) in enumerate(self.gates)
+                if op == "xor"
+            ]
+            if not all_xors:
+                return CircuitState(
+                    input_bits=self.input_bits,
+                    output_bits=self.output_bits,
+                    gates=list(self.gates),
+                    outputs=list(self.outputs),
+                    gate_count=self.gate_count,
+                )
+
+            output_xors = [
+                idx for idx, _ in self.outputs
+                if idx >= self.input_bits
+                and self.gates[idx - self.input_bits][0] == "xor"
+            ]
+            if not output_xors:
+                return CircuitState(
+                    input_bits=self.input_bits,
+                    output_bits=self.output_bits,
+                    gates=list(self.gates),
+                    outputs=list(self.outputs),
+                    gate_count=self.gate_count,
+                )
+
+            cone = LinearCone.from_circuit(self, output_xors, set())
+            optimized_gates = cone.to_xor_circuit_optimized()
+            optimized_output_signals = cone.get_output_signals_optimized()
+
+            new_gates: list[tuple[str, int, int]] = []
+            old_to_new: dict[int, int] = {i: i for i in range(self.input_bits)}
+
+            opt_gate_to_new: dict[int, int] = {}
+            for local_idx, (op, left, right) in enumerate(optimized_gates):
+                if left < len(cone.inputs):
+                    new_left = cone.inputs[left]
+                else:
+                    new_left = opt_gate_to_new[left]
+                if right < len(cone.inputs):
+                    new_right = cone.inputs[right]
+                else:
+                    new_right = opt_gate_to_new[right]
+                new_idx = self.input_bits + len(new_gates)
+                new_gates.append((op, new_left, new_right))
+                opt_gate_to_new[len(cone.inputs) + local_idx] = new_idx
+
+            for i, out_idx in enumerate(output_xors):
+                local_signal = optimized_output_signals[i]
+                if local_signal == -1:
+                    row = cone.matrix[i]
+                    if row == 0:
+                        pass
+                    elif bin(row).count("1") == 1:
+                        bit_pos = row.bit_length() - 1
+                        old_to_new[out_idx] = cone.inputs[bit_pos]
+                elif local_signal < len(cone.inputs):
+                    old_to_new[out_idx] = cone.inputs[local_signal]
+                else:
+                    old_to_new[out_idx] = opt_gate_to_new.get(local_signal, local_signal)
+
+            new_outputs: list[tuple[int, bool]] = []
+            for out_idx, inv in self.outputs:
+                new_idx = old_to_new.get(out_idx, out_idx)
+                new_outputs.append((new_idx, inv))
+
+            result = CircuitState(
+                input_bits=self.input_bits,
+                output_bits=self.output_bits,
+                gates=new_gates,
+                outputs=new_outputs,
+                gate_count=len(new_gates),
+            )
+            return result.eliminate_dead_code()
+
+        stop_at = set(and_gate_indices)
+
+        and_inputs: list[int] = []
+        for and_idx in and_gate_indices:
+            gate_idx = and_idx - self.input_bits
+            _, left, right = self.gates[gate_idx]
+            if left not in stop_at and left >= self.input_bits:
+                and_inputs.append(left)
+            if right not in stop_at and right >= self.input_bits:
+                and_inputs.append(right)
+
+        and_input_xors = [
+            idx for idx in and_inputs
+            if self.gates[idx - self.input_bits][0] == "xor"
+        ]
+
+        output_indices = [idx for idx, _ in self.outputs]
+        post_and_xors = [
+            idx for idx in output_indices
+            if idx >= self.input_bits
+            and idx not in stop_at
+            and self.gates[idx - self.input_bits][0] == "xor"
+        ]
+
+        new_gates: list[tuple[str, int, int]] = []
+        old_to_new: dict[int, int] = {i: i for i in range(self.input_bits)}
+
+        for g_idx, (op, left, right) in enumerate(self.gates):
+            full_idx = self.input_bits + g_idx
+            if op in ("const", "not", "or"):
+                if op == "not":
+                    new_left = old_to_new.get(left, left)
+                    new_idx = self.input_bits + len(new_gates)
+                    new_gates.append(("not", new_left, 0))
+                    old_to_new[full_idx] = new_idx
+                elif op == "const":
+                    new_idx = self.input_bits + len(new_gates)
+                    new_gates.append(("const", left, right))
+                    old_to_new[full_idx] = new_idx
+                elif op == "or":
+                    new_left = old_to_new.get(left, left)
+                    new_right = old_to_new.get(right, right)
+                    new_idx = self.input_bits + len(new_gates)
+                    new_gates.append(("or", new_left, new_right))
+                    old_to_new[full_idx] = new_idx
+
+        if and_input_xors:
+            pre_cone = LinearCone.from_circuit(self, and_input_xors, stop_at)
+
+            updated_pre_inputs = []
+            for inp in pre_cone.inputs:
+                updated_pre_inputs.append(old_to_new.get(inp, inp))
+
+            pre_gates = pre_cone.to_xor_circuit_optimized()
+            pre_output_signals = pre_cone.get_output_signals_optimized()
+
+            opt_gate_to_new: dict[int, int] = {}
+            for local_idx, (op, left, right) in enumerate(pre_gates):
+                if left < len(updated_pre_inputs):
+                    new_left = updated_pre_inputs[left]
+                else:
+                    new_left = opt_gate_to_new[left]
+                if right < len(updated_pre_inputs):
+                    new_right = updated_pre_inputs[right]
+                else:
+                    new_right = opt_gate_to_new[right]
+                new_idx = self.input_bits + len(new_gates)
+                new_gates.append((op, new_left, new_right))
+                opt_gate_to_new[len(updated_pre_inputs) + local_idx] = new_idx
+
+            for i, out_idx in enumerate(and_input_xors):
+                local_signal = pre_output_signals[i]
+                if local_signal == -1:
+                    row = pre_cone.matrix[i]
+                    if row == 0:
+                        pass
+                    elif bin(row).count("1") == 1:
+                        bit_pos = row.bit_length() - 1
+                        old_to_new[out_idx] = updated_pre_inputs[bit_pos]
+                elif local_signal < len(updated_pre_inputs):
+                    old_to_new[out_idx] = updated_pre_inputs[local_signal]
+                else:
+                    old_to_new[out_idx] = opt_gate_to_new.get(local_signal, local_signal)
+
+        for and_idx in sorted(and_gate_indices):
+            gate_idx = and_idx - self.input_bits
+            _, left, right = self.gates[gate_idx]
+            new_left = old_to_new.get(left, left)
+            new_right = old_to_new.get(right, right)
+            new_idx = self.input_bits + len(new_gates)
+            new_gates.append(("and", new_left, new_right))
+            old_to_new[and_idx] = new_idx
+
+        if post_and_xors:
+            post_cone = LinearCone.from_circuit(self, post_and_xors, stop_at)
+
+            updated_inputs = []
+            for inp in post_cone.inputs:
+                updated_inputs.append(old_to_new.get(inp, inp))
+
+            post_gates = post_cone.to_xor_circuit_optimized()
+            post_output_signals = post_cone.get_output_signals_optimized()
+
+            opt_gate_to_new_post: dict[int, int] = {}
+            for local_idx, (op, left, right) in enumerate(post_gates):
+                if left < len(updated_inputs):
+                    new_left = updated_inputs[left]
+                else:
+                    new_left = opt_gate_to_new_post[left]
+                if right < len(updated_inputs):
+                    new_right = updated_inputs[right]
+                else:
+                    new_right = opt_gate_to_new_post[right]
+                new_idx = self.input_bits + len(new_gates)
+                new_gates.append((op, new_left, new_right))
+                opt_gate_to_new_post[len(updated_inputs) + local_idx] = new_idx
+
+            for i, out_idx in enumerate(post_and_xors):
+                local_signal = post_output_signals[i]
+                if local_signal == -1:
+                    row = post_cone.matrix[i]
+                    if row == 0:
+                        pass
+                    elif bin(row).count("1") == 1:
+                        bit_pos = row.bit_length() - 1
+                        old_to_new[out_idx] = updated_inputs[bit_pos]
+                elif local_signal < len(updated_inputs):
+                    old_to_new[out_idx] = updated_inputs[local_signal]
+                else:
+                    old_to_new[out_idx] = opt_gate_to_new_post.get(
+                        local_signal, local_signal
+                    )
+
+        new_outputs: list[tuple[int, bool]] = []
+        for out_idx, inv in self.outputs:
+            new_idx = old_to_new.get(out_idx, out_idx)
+            new_outputs.append((new_idx, inv))
+
+        result = CircuitState(
+            input_bits=self.input_bits,
+            output_bits=self.output_bits,
+            gates=new_gates,
+            outputs=new_outputs,
+            gate_count=len(new_gates),
+        )
+
+        return result.eliminate_dead_code()
+
     def try_local_rewrites(self, max_window: int = 3) -> "CircuitState":
         """
         Apply window-based local rewriting to reduce gate count.
