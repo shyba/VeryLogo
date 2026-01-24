@@ -1698,7 +1698,8 @@ class CircuitState:
                 )
 
             output_xors = [
-                idx for idx, _ in self.outputs
+                idx
+                for idx, _ in self.outputs
                 if idx >= self.input_bits
                 and self.gates[idx - self.input_bits][0] == "xor"
             ]
@@ -1744,7 +1745,9 @@ class CircuitState:
                 elif local_signal < len(cone.inputs):
                     old_to_new[out_idx] = cone.inputs[local_signal]
                 else:
-                    old_to_new[out_idx] = opt_gate_to_new.get(local_signal, local_signal)
+                    old_to_new[out_idx] = opt_gate_to_new.get(
+                        local_signal, local_signal
+                    )
 
             new_outputs: list[tuple[int, bool]] = []
             for out_idx, inv in self.outputs:
@@ -1772,13 +1775,13 @@ class CircuitState:
                 and_inputs.append(right)
 
         and_input_xors = [
-            idx for idx in and_inputs
-            if self.gates[idx - self.input_bits][0] == "xor"
+            idx for idx in and_inputs if self.gates[idx - self.input_bits][0] == "xor"
         ]
 
         output_indices = [idx for idx, _ in self.outputs]
         post_and_xors = [
-            idx for idx in output_indices
+            idx
+            for idx in output_indices
             if idx >= self.input_bits
             and idx not in stop_at
             and self.gates[idx - self.input_bits][0] == "xor"
@@ -1842,7 +1845,9 @@ class CircuitState:
                 elif local_signal < len(updated_pre_inputs):
                     old_to_new[out_idx] = updated_pre_inputs[local_signal]
                 else:
-                    old_to_new[out_idx] = opt_gate_to_new.get(local_signal, local_signal)
+                    old_to_new[out_idx] = opt_gate_to_new.get(
+                        local_signal, local_signal
+                    )
 
         for and_idx in sorted(and_gate_indices):
             gate_idx = and_idx - self.input_bits
@@ -2914,12 +2919,15 @@ class IncrementalOptimizer:
             if idx < self.input_bits:
                 return
             gate_idx = idx - self.input_bits
+            if gate_idx < 0 or gate_idx >= len(self.best_state.gates):
+                return
             if gate_idx in used:
                 return
             used.add(gate_idx)
-            _, left, right = self.best_state.gates[gate_idx]
+            op, left, right = self.best_state.gates[gate_idx]
             mark_used(left)
-            mark_used(right)
+            if op not in ("const", "not"):
+                mark_used(right)
 
         for idx, _ in self.best_state.outputs:
             mark_used(idx)
