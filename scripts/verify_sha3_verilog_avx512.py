@@ -63,6 +63,16 @@ def _bits_to_bytes_le(bits: list[int]) -> bytes:
     return bytes(out)
 
 
+def _out_bits_to_digest_bytes(bits_512_lsb_first: list[int]) -> bytes:
+    # Circuit output bits are LSB-first (bit0 is LSB). The Verilog top reorders
+    # bytes and the common presentation is MSB-first. Match the Verilator
+    # harness by reversing the byte order after packing.
+    raw = _bits_to_bytes_le(bits_512_lsb_first)
+    if len(raw) != 64:
+        raise ValueError("expected 512 bits")
+    return raw[::-1]
+
+
 def _set_field_bits(packed: list[int], *, lsb: int, width: int, value: int) -> None:
     for i in range(width):
         packed[lsb + i] = (value >> i) & 1
@@ -242,15 +252,13 @@ def simulate_sha3_512_once(lib_path: Path, layout_path: Path, message: bytes) ->
         )
         last_out = out_bits_only
         if ready:
-            out_bytes = _bits_to_bytes_le(out_bits_only)
-            return out_bytes[:64]
+            return bytes(out_bits_only[:512])
 
     if last_out is None:
         raise RuntimeError("no output observed")
     # Some optimization settings can disrupt `out_ready` timing; fall back to a
     # fixed-latency grab of the current output for debugging/bring-up.
-    out_bytes = _bits_to_bytes_le(last_out)
-    return out_bytes[:64]
+    return bytes(last_out[:512])
 
 
 def main() -> int:
@@ -292,11 +300,18 @@ def main() -> int:
         _build_shared(c_path, so_path)
 
         msg = args.msg.encode("utf-8")
-        got = simulate_sha3_512_once(so_path, layout_path, msg)
-        exp = hashlib.sha3_512(msg).digest()
+        got_bits = simulate_sha3_512_once(so_path, layout_path, msg)
+        got = _out_bits_to_digest_bytes(list(got_bits))
+
+        from stc.keccak_ref import keccak_512
+
+        exp_keccak = keccak_512(msg, pad_byte=0x01)
+        exp_sha3 = hashlib.sha3_512(msg).digest()
+
         print("got:", got.hex())
-        print("exp:", exp.hex())
-        if got != exp:
+        print("exp_keccak:", exp_keccak.hex())
+        print("exp_sha3:  ", exp_sha3.hex())
+        if got != exp_keccak:
             raise SystemExit("MISMATCH")
         print("PASS")
         return 0

@@ -19,8 +19,8 @@ class TestSha3VerilogAvx512Optional(unittest.TestCase):
         if not Path("external-sha3-verilog/low_throughput_core/rtl").exists():
             self.skipTest("external-sha3-verilog not present")
 
-        # Runs an end-to-end smoke+correctness check against hashlib for a tiny message.
-        # Uses the generated AVX-512 circuit and simulates the sequential core.
+        # Runs an end-to-end smoke+correctness check for Keccak-512 (0x01 padding).
+        # This core is named "sha3" upstream but implements Keccak padding, not SHA3.
         cmd = [
             os.environ.get("PYTHON", ".venv/bin/python"),
             "scripts/verify_sha3_verilog_avx512.py",
