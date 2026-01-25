@@ -212,13 +212,13 @@ def build_bp_sbox() -> CircuitState:
     # Build outputs: S[i] maps to output bit i
     # Inversions from bs.c: S[6], S[5], S[1], S[0] are inverted
     outputs = [
-        (wire_map["S0"], True),   # bit 0, inverted (~)
-        (wire_map["S1"], True),   # bit 1, inverted (~)
+        (wire_map["S0"], True),  # bit 0, inverted (~)
+        (wire_map["S1"], True),  # bit 1, inverted (~)
         (wire_map["S2"], False),  # bit 2
         (wire_map["S3"], False),  # bit 3
         (wire_map["S4"], False),  # bit 4
-        (wire_map["S5"], True),   # bit 5, inverted (~)
-        (wire_map["S6"], True),   # bit 6, inverted (~)
+        (wire_map["S5"], True),  # bit 5, inverted (~)
+        (wire_map["S6"], True),  # bit 6, inverted (~)
         (wire_map["S7"], False),  # bit 7
     ]
 
@@ -253,7 +253,9 @@ def main():
     print()
 
     circuit = build_bp_sbox()
-    print(f"Circuit: {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)")
+    print(
+        f"Circuit: {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)"
+    )
     print()
 
     correct = verify_sbox(circuit, "BP circuit")
@@ -287,7 +289,9 @@ def main():
     print(f"After XOR flatten: {opt.gate_count} gates")
 
     opt = opt.try_local_rewrites()
-    print(f"After local rewrites: {opt.gate_count} gates ({opt.and_count} AND, {opt.xor_count} XOR)")
+    print(
+        f"After local rewrites: {opt.gate_count} gates ({opt.and_count} AND, {opt.xor_count} XOR)"
+    )
 
     # Verify still correct
     if not verify_sbox(opt, "After Phase 1"):
@@ -304,7 +308,9 @@ def main():
     print()
     print("Applying Phase 3 SAT window resynthesis (10 iterations)...")
     opt = opt.sat_window_resynthesis(max_iterations=10, max_window_inputs=6)
-    print(f"After Phase 3: {opt.gate_count} gates ({opt.and_count} AND, {opt.xor_count} XOR)")
+    print(
+        f"After Phase 3: {opt.gate_count} gates ({opt.and_count} AND, {opt.xor_count} XOR)"
+    )
 
     if not verify_sbox(opt, "After Phase 3"):
         print("ERROR: SAT resynthesis broke correctness!")
@@ -312,7 +318,9 @@ def main():
 
     print()
     print("SUCCESS: Optimizer works correctly on BP-style circuit!")
-    print(f"Final circuit: {opt.gate_count} gates ({opt.and_count} AND, {opt.xor_count} XOR)")
+    print(
+        f"Final circuit: {opt.gate_count} gates ({opt.and_count} AND, {opt.xor_count} XOR)"
+    )
 
 
 if __name__ == "__main__":

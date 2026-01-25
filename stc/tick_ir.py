@@ -1044,6 +1044,40 @@ class Lut8:
 
 
 @dataclass(frozen=True)
+class TernaryLut:
+    """Ternary lookup table: output[i] = truth_table[a[i]*4 + b[i]*2 + c[i]].
+
+    Implements any 3-input boolean function per bit lane.
+    Maps to PTX lop3.b32 and x86 vpternlogd/q.
+
+    The imm8 encodes the truth table:
+      bit 0: output when (a,b,c) = (0,0,0)
+      bit 1: output when (a,b,c) = (0,0,1)
+      bit 2: output when (a,b,c) = (0,1,0)
+      ...
+      bit 7: output when (a,b,c) = (1,1,1)
+    """
+
+    a: Expr
+    b: Expr
+    c: Expr
+    imm8: int
+
+    def __post_init__(self) -> None:
+        if not (0 <= self.imm8 <= 255):
+            raise ValueError(f"imm8 must be 0-255, got {self.imm8}")
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "ternary_lut",
+            "a": self.a.to_dict(),
+            "b": self.b.to_dict(),
+            "c": self.c.to_dict(),
+            "imm8": self.imm8,
+        }
+
+
+@dataclass(frozen=True)
 class Bitcast:
     to: Type
     x: Expr
@@ -1253,6 +1287,7 @@ EXPR_CLASSES = (
     Concat,
     Slice,
     Lut8,
+    TernaryLut,
     Bitcast,
     Delay,
     FNeg,
@@ -1518,6 +1553,13 @@ def expr_from_dict(data: dict[str, Any]) -> Expr:
         if not isinstance(t, list):
             raise ValueError("lut8 table must be a list")
         return Lut8(x=expr_from_dict(data["x"]), table=[int(v) for v in t])
+    if kind == "ternary_lut":
+        return TernaryLut(
+            a=expr_from_dict(data["a"]),
+            b=expr_from_dict(data["b"]),
+            c=expr_from_dict(data["c"]),
+            imm8=int(data["imm8"]),
+        )
     if kind == "bitcast":
         return Bitcast(to=type_from_dict(data["to"]), x=expr_from_dict(data["x"]))
     if kind == "delay":

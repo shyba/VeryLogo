@@ -21,90 +21,102 @@ from stc.bitslice import AES_SBOX_TABLE
 def generate_avx2_c(circuit) -> str:
     """Generate AVX2 C code from CircuitState."""
     lines = []
-    lines.append('#include <immintrin.h>')
-    lines.append('#include <stdint.h>')
-    lines.append('')
-    lines.append('// STC-generated bitsliced AES S-box circuit')
-    lines.append(f'// {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)')
-    lines.append('')
+    lines.append("#include <immintrin.h>")
+    lines.append("#include <stdint.h>")
+    lines.append("")
+    lines.append("// STC-generated bitsliced AES S-box circuit")
+    lines.append(
+        f"// {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)"
+    )
+    lines.append("")
 
-    lines.append('void sbox_stc(const uint8_t* input, uint8_t* output) {')
+    lines.append("void sbox_stc(const uint8_t* input, uint8_t* output) {")
 
     # Generate bit plane extraction from input (transpose bytes to bit planes)
-    lines.append('  // Transpose 32 input bytes to 8 bit planes')
-    lines.append('  uint64_t planes[8][4];')
-    lines.append('  for (int w = 0; w < 4; w++) {')
-    lines.append('    for (int bit = 0; bit < 8; bit++) planes[bit][w] = 0;')
-    lines.append('  }')
-    lines.append('  for (int i = 0; i < 32; i++) {')
-    lines.append('    uint8_t byte = input[i];')
-    lines.append('    int word = i / 64;')
-    lines.append('    int shift = i % 64;')
-    lines.append('    for (int bit = 0; bit < 8; bit++) {')
-    lines.append('      if (byte & (1 << bit))')
-    lines.append('        planes[bit][word] |= (1ULL << shift);')
-    lines.append('    }')
-    lines.append('  }')
-    lines.append('')
+    lines.append("  // Transpose 32 input bytes to 8 bit planes")
+    lines.append("  uint64_t planes[8][4];")
+    lines.append("  for (int w = 0; w < 4; w++) {")
+    lines.append("    for (int bit = 0; bit < 8; bit++) planes[bit][w] = 0;")
+    lines.append("  }")
+    lines.append("  for (int i = 0; i < 32; i++) {")
+    lines.append("    uint8_t byte = input[i];")
+    lines.append("    int word = i / 64;")
+    lines.append("    int shift = i % 64;")
+    lines.append("    for (int bit = 0; bit < 8; bit++) {")
+    lines.append("      if (byte & (1 << bit))")
+    lines.append("        planes[bit][word] |= (1ULL << shift);")
+    lines.append("    }")
+    lines.append("  }")
+    lines.append("")
 
     # Load input bit planes into AVX2 registers
     for i in range(8):
-        lines.append(f'  __m256i b{i} = _mm256_set_epi64x(planes[{i}][3], planes[{i}][2], planes[{i}][1], planes[{i}][0]);')
-    lines.append('')
+        lines.append(
+            f"  __m256i b{i} = _mm256_set_epi64x(planes[{i}][3], planes[{i}][2], planes[{i}][1], planes[{i}][0]);"
+        )
+    lines.append("")
 
     # Generate gate operations
-    lines.append('  // Execute circuit')
+    lines.append("  // Execute circuit")
     for g_idx, (op, left, right) in enumerate(circuit.gates):
-        g_name = f'g{g_idx}'
-        left_name = f'b{left}' if left < 8 else f'g{left - 8}'
-        right_name = f'b{right}' if right < 8 else f'g{right - 8}'
+        g_name = f"g{g_idx}"
+        left_name = f"b{left}" if left < 8 else f"g{left - 8}"
+        right_name = f"b{right}" if right < 8 else f"g{right - 8}"
 
-        if op == 'xor':
-            lines.append(f'  __m256i {g_name} = _mm256_xor_si256({left_name}, {right_name});')
-        elif op == 'and':
-            lines.append(f'  __m256i {g_name} = _mm256_and_si256({left_name}, {right_name});')
-        elif op == 'not':
-            lines.append(f'  __m256i {g_name} = _mm256_xor_si256({left_name}, _mm256_set1_epi32(-1));')
-    lines.append('')
+        if op == "xor":
+            lines.append(
+                f"  __m256i {g_name} = _mm256_xor_si256({left_name}, {right_name});"
+            )
+        elif op == "and":
+            lines.append(
+                f"  __m256i {g_name} = _mm256_and_si256({left_name}, {right_name});"
+            )
+        elif op == "not":
+            lines.append(
+                f"  __m256i {g_name} = _mm256_xor_si256({left_name}, _mm256_set1_epi32(-1));"
+            )
+    lines.append("")
 
     # Generate output collection with inversions
-    lines.append('  // Collect output bit planes')
+    lines.append("  // Collect output bit planes")
     out_names = []
     for bit, (idx, invert) in enumerate(circuit.outputs):
         out_idx = idx
-        out_name = f'b{out_idx}' if out_idx < 8 else f'g{out_idx - 8}'
+        out_name = f"b{out_idx}" if out_idx < 8 else f"g{out_idx - 8}"
         if invert:
-            inv_name = f'out{bit}'
-            lines.append(f'  __m256i {inv_name} = _mm256_xor_si256({out_name}, _mm256_set1_epi32(-1));')
+            inv_name = f"out{bit}"
+            lines.append(
+                f"  __m256i {inv_name} = _mm256_xor_si256({out_name}, _mm256_set1_epi32(-1));"
+            )
             out_names.append(inv_name)
         else:
             out_names.append(out_name)
-    lines.append('')
+    lines.append("")
 
     # Transpose bit planes back to bytes
-    lines.append('  // Transpose bit planes back to output bytes')
-    lines.append('  union { __m256i v; uint64_t u64[4]; } out_planes[8];')
+    lines.append("  // Transpose bit planes back to output bytes")
+    lines.append("  union { __m256i v; uint64_t u64[4]; } out_planes[8];")
     for i, name in enumerate(out_names):
-        lines.append(f'  out_planes[{i}].v = {name};')
+        lines.append(f"  out_planes[{i}].v = {name};")
 
-    lines.append('  for (int i = 0; i < 32; i++) {')
-    lines.append('    int word = i / 64;')
-    lines.append('    int shift = i % 64;')
-    lines.append('    uint8_t byte = 0;')
-    lines.append('    for (int bit = 0; bit < 8; bit++) {')
-    lines.append('      if (out_planes[bit].u64[word] & (1ULL << shift))')
-    lines.append('        byte |= (1 << bit);')
-    lines.append('    }')
-    lines.append('    output[i] = byte;')
-    lines.append('  }')
-    lines.append('}')
+    lines.append("  for (int i = 0; i < 32; i++) {")
+    lines.append("    int word = i / 64;")
+    lines.append("    int shift = i % 64;")
+    lines.append("    uint8_t byte = 0;")
+    lines.append("    for (int bit = 0; bit < 8; bit++) {")
+    lines.append("      if (out_planes[bit].u64[word] & (1ULL << shift))")
+    lines.append("        byte |= (1 << bit);")
+    lines.append("    }")
+    lines.append("    output[i] = byte;")
+    lines.append("  }")
+    lines.append("}")
 
-    return '\n'.join(lines)
+    return "\n".join(lines)
 
 
 def generate_reference_c() -> str:
     """Generate reference BP circuit C code (hand-transcribed from bs.c)."""
-    return '''#include <immintrin.h>
+    return """#include <immintrin.h>
 #include <stdint.h>
 
 // Reference hand-written Boyar-Peralta AES S-box
@@ -290,12 +302,12 @@ void sbox_ref(const uint8_t* input, uint8_t* output) {
     output[i] = byte;
   }
 }
-'''
+"""
 
 
 def generate_main_c() -> str:
     """Generate benchmark main() function."""
-    return '''#include <stdio.h>
+    return """#include <stdio.h>
 #include <time.h>
 #include <string.h>
 
@@ -406,13 +418,15 @@ int main() {
 
     return 0;
 }
-'''
+"""
 
 
 def main():
     print("Building BP circuit from scripts/bp_circuit_sbox.py...")
     circuit = build_bp_sbox()
-    print(f"Circuit: {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)")
+    print(
+        f"Circuit: {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)"
+    )
     print()
 
     # Verify circuit correctness first
@@ -423,7 +437,9 @@ def main():
         if result != AES_SBOX_TABLE[i]:
             errors += 1
             if errors <= 5:
-                print(f"  Error: input {i:#04x} -> {result:#04x}, expected {AES_SBOX_TABLE[i]:#04x}")
+                print(
+                    f"  Error: input {i:#04x} -> {result:#04x}, expected {AES_SBOX_TABLE[i]:#04x}"
+                )
     if errors:
         print(f"  {errors} errors total - FAILED!")
         return 1
@@ -442,19 +458,25 @@ def main():
         main_path = os.path.join(tmpdir, "main.c")
         exe_path = os.path.join(tmpdir, "bench")
 
-        with open(stc_path, 'w') as f:
+        with open(stc_path, "w") as f:
             f.write(stc_code)
-        with open(ref_path, 'w') as f:
+        with open(ref_path, "w") as f:
             f.write(ref_code)
-        with open(main_path, 'w') as f:
+        with open(main_path, "w") as f:
             f.write(main_code)
 
         # Compile
         print("Compiling...")
         cmd = [
-            "cc", "-O3", "-march=native", "-mavx2",
-            "-o", exe_path,
-            stc_path, ref_path, main_path
+            "cc",
+            "-O3",
+            "-march=native",
+            "-mavx2",
+            "-o",
+            exe_path,
+            stc_path,
+            ref_path,
+            main_path,
         ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:

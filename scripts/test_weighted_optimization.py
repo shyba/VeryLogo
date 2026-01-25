@@ -131,9 +131,9 @@ def test_bp_circuit_weighted_optimization():
     """Test weighted optimization on BP circuit."""
     from scripts.bp_circuit_sbox import build_bp_sbox, verify_sbox
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("BP Circuit Weighted Optimization Test")
-    print("="*60)
+    print("=" * 60)
 
     circuit = build_bp_sbox()
     print(f"\nOriginal BP circuit:")
@@ -150,8 +150,10 @@ def test_bp_circuit_weighted_optimization():
         max_window_inputs=5,
         timeout_per_window=2000,
     )
-    print(f"  After optimization: {opt_default.gate_count} gates "
-          f"({opt_default.and_count} AND, {opt_default.xor_count} XOR)")
+    print(
+        f"  After optimization: {opt_default.gate_count} gates "
+        f"({opt_default.and_count} AND, {opt_default.xor_count} XOR)"
+    )
 
     # Try optimization with high AND weight (minimize ANDs)
     print(f"\nOptimizing with weighted (AND=10, XOR=1)...")
@@ -162,8 +164,10 @@ def test_bp_circuit_weighted_optimization():
         and_weight=10.0,
         xor_weight=1.0,
     )
-    print(f"  After optimization: {opt_weighted.gate_count} gates "
-          f"({opt_weighted.and_count} AND, {opt_weighted.xor_count} XOR)")
+    print(
+        f"  After optimization: {opt_weighted.gate_count} gates "
+        f"({opt_weighted.and_count} AND, {opt_weighted.xor_count} XOR)"
+    )
 
     # Verify both are still correct
     if not verify_sbox(opt_default, "opt_default"):
@@ -171,12 +175,18 @@ def test_bp_circuit_weighted_optimization():
     if not verify_sbox(opt_weighted, "opt_weighted"):
         print("ERROR: Weighted optimization broke correctness!")
 
-    print("\n" + "="*60)
+    print("\n" + "=" * 60)
     print("Summary")
-    print("="*60)
-    print(f"Original:     {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)")
-    print(f"Default opt:  {opt_default.gate_count} gates ({opt_default.and_count} AND, {opt_default.xor_count} XOR)")
-    print(f"Weighted opt: {opt_weighted.gate_count} gates ({opt_weighted.and_count} AND, {opt_weighted.xor_count} XOR)")
+    print("=" * 60)
+    print(
+        f"Original:     {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)"
+    )
+    print(
+        f"Default opt:  {opt_default.gate_count} gates ({opt_default.and_count} AND, {opt_default.xor_count} XOR)"
+    )
+    print(
+        f"Weighted opt: {opt_weighted.gate_count} gates ({opt_weighted.and_count} AND, {opt_weighted.xor_count} XOR)"
+    )
 
 
 if __name__ == "__main__":

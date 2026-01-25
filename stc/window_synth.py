@@ -295,8 +295,13 @@ def synthesize_exact(
     for num_gates in range(max_gates + 1):
         if use_weighted:
             result = _try_synth_with_g_gates_weighted(
-                truth_tables, n_inputs, num_gates, gate_types, time_per_attempt,
-                and_weight, xor_weight
+                truth_tables,
+                n_inputs,
+                num_gates,
+                gate_types,
+                time_per_attempt,
+                and_weight,
+                xor_weight,
             )
         else:
             result = _try_synth_with_g_gates(

@@ -6,6 +6,8 @@ from pathlib import Path
 
 from stc.backend_avr import emit_avr_c
 from stc.avr_project import emit_avr_project
+from stc.backend_sched import generate_scheduled_code, get_schedule_stats
+from stc.circuit_synth import CircuitState
 from stc.extract import extract_tick_ir
 from stc.infer_simd import infer_simd_types
 from stc.io_map import default_io_map, load_io_map, validate_io_map
@@ -45,6 +47,7 @@ def run_pipeline(
     no_backend: bool = False,
     io_map: Path | None = None,
     avr_project: bool = False,
+    backend: str = "generic",
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -73,6 +76,7 @@ def run_pipeline(
         superopt=superopt,
         superopt_max_nodes=superopt_max_nodes,
         superopt_timeout_ms=superopt_timeout_ms,
+        backend=backend,
     )
     validate_tick_ir(reduced)
 
@@ -114,24 +118,132 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--no-backend", action="store_true", default=False)
     p.add_argument("--io-map", type=Path, default=None)
     p.add_argument("--avr-project", action="store_true", default=False)
+    p.add_argument(
+        "--backend",
+        "-b",
+        choices=["generic", "avr", "ptx", "x86-avx2", "x86-avx512"],
+        default="generic",
+        help="Target backend for optimization",
+    )
+    p.add_argument(
+        "--depth-budget", type=int, default=None, help="Maximum allowed circuit depth"
+    )
+    p.add_argument(
+        "--anytime",
+        action="store_true",
+        default=False,
+        help="Enable anytime optimization with checkpointing",
+    )
+    p.add_argument(
+        "--timeout",
+        type=float,
+        default=300.0,
+        help="Optimization timeout in seconds (default: 300)",
+    )
+    p.add_argument(
+        "--no-improvement-timeout",
+        type=float,
+        default=60.0,
+        help="Stop if no improvement for this many seconds (default: 60)",
+    )
+    p.add_argument(
+        "--checkpoint-dir",
+        type=Path,
+        default=None,
+        help="Directory for checkpoints (default: output_dir/checkpoints)",
+    )
+    p.add_argument(
+        "--seed",
+        type=int,
+        default=None,
+        help="Random seed for deterministic optimization",
+    )
+    p.add_argument(
+        "--scheduler",
+        choices=["list", "pipelined", "auto"],
+        default=None,
+        help="Scheduling algorithm for code generation",
+    )
+    p.add_argument(
+        "--emit-target",
+        choices=["avx2", "avx512", "ptx"],
+        default=None,
+        help="Target for scheduled code emission",
+    )
     return p.parse_args(argv)
+
+
+def _load_circuit_state(path: Path) -> CircuitState | None:
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if all(k in data for k in ("input_bits", "output_bits", "gates", "outputs")):
+            return CircuitState.from_dict(data)
+    except (json.JSONDecodeError, KeyError, TypeError):
+        pass
+    return None
+
+
+def _select_scheduler(scheduler: str, target: str) -> str:
+    if scheduler == "auto":
+        return "pipelined" if target == "ptx" else "list"
+    return scheduler
+
+
+def run_scheduled_backend(
+    input_path: Path,
+    out_dir: Path,
+    *,
+    scheduler: str,
+    emit_target: str,
+    function_name: str = "circuit",
+) -> None:
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    circuit = _load_circuit_state(input_path)
+    if circuit is None:
+        raise ValueError(f"Input must be a CircuitState JSON file: {input_path}")
+
+    scheduler = _select_scheduler(scheduler, emit_target)
+
+    code = generate_scheduled_code(
+        circuit,
+        target=emit_target,
+        scheduler=scheduler,
+        function_name=function_name,
+    )
+
+    stats = get_schedule_stats(circuit, emit_target, scheduler)
+
+    ext = "ptx" if emit_target == "ptx" else "c"
+    (out_dir / f"{function_name}.{ext}").write_text(code, encoding="utf-8")
+    _write_json(out_dir / "schedule_stats.json", stats)
 
 
 def main(argv: list[str] | None = None) -> int:
     ns = parse_args([] if argv is None else argv)
-    run_pipeline(
-        ns.input,
-        ns.out,
-        top=ns.top,
-        bound=ns.bound,
-        infer_simd=ns.infer_simd,
-        autovec=ns.autovec,
-        autovec_timeout_ms=ns.autovec_timeout_ms,
-        superopt=ns.superopt,
-        superopt_max_nodes=ns.superopt_max_nodes,
-        superopt_timeout_ms=ns.superopt_timeout_ms,
-        no_backend=ns.no_backend,
-        io_map=ns.io_map,
-        avr_project=ns.avr_project,
-    )
+
+    if ns.scheduler is not None and ns.emit_target is not None:
+        run_scheduled_backend(
+            ns.input,
+            ns.out,
+            scheduler=ns.scheduler,
+            emit_target=ns.emit_target,
+        )
+    else:
+        run_pipeline(
+            ns.input,
+            ns.out,
+            top=ns.top,
+            bound=ns.bound,
+            infer_simd=ns.infer_simd,
+            autovec=ns.autovec,
+            autovec_timeout_ms=ns.autovec_timeout_ms,
+            superopt=ns.superopt,
+            superopt_max_nodes=ns.superopt_max_nodes,
+            superopt_timeout_ms=ns.superopt_timeout_ms,
+            no_backend=ns.no_backend,
+            io_map=ns.io_map,
+            avr_project=ns.avr_project,
+            backend=ns.backend,
+        )
     return 0

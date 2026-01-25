@@ -29,6 +29,7 @@ from stc.tick_ir import (
     Shl,
     Slice,
     Lut8,
+    TernaryLut,
     SimdAdd,
     SimdAddSatS,
     SimdAddSatU,
@@ -274,4 +275,11 @@ def replace_vars(expr: Expr, repl: dict[str, Expr]) -> Expr:
         return Slice(x=replace_vars(expr.x, repl), offset=expr.offset, width=expr.width)
     if isinstance(expr, Lut8):
         return Lut8(x=replace_vars(expr.x, repl), table=list(expr.table))
+    if isinstance(expr, TernaryLut):
+        return TernaryLut(
+            a=replace_vars(expr.a, repl),
+            b=replace_vars(expr.b, repl),
+            c=replace_vars(expr.c, repl),
+            imm8=expr.imm8,
+        )
     raise TypeError("unsupported expression kind")

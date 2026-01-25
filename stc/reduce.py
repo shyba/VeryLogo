@@ -144,6 +144,14 @@ def reduce_expr(
             return BitVecConst(width=8, value=int(expr.table[int(x.value) & 0xFF]))
         return Lut8(x=x, table=list(expr.table))
 
+    from stc.tick_ir import TernaryLut
+
+    if isinstance(expr, TernaryLut):
+        a = reduce_expr(expr.a, types)
+        b = reduce_expr(expr.b, types)
+        c = reduce_expr(expr.c, types)
+        return TernaryLut(a=a, b=b, c=c, imm8=expr.imm8)
+
     if isinstance(expr, Not):
         x = reduce_expr(expr.x, types)
         if isinstance(x, BoolConst):
@@ -607,11 +615,28 @@ def optimize_tick_ir(
     superopt: bool = False,
     superopt_max_nodes: int = 6,
     superopt_timeout_ms: int = 200,
+    backend: str = "generic",
 ) -> TickIR:
     from stc.delay_lower import lower_delays
 
     ir = lower_delays(ir)
     ir = reduce_tick_ir(ir)
+
+    if backend != "generic":
+        from stc.tech import get_technology
+        from stc.mapping.ternary import TernaryMappingPass
+        from stc.passmgr import PassContext
+
+        tech = get_technology(backend)
+        ctx = PassContext(
+            technology=tech,
+            cost_model=tech.cost_model(),
+            depth_model=tech.depth_model(),
+        )
+
+        ternary_pass = TernaryMappingPass()
+        if ternary_pass.should_run(ctx):
+            ir, _ = ternary_pass.run(ir, ctx)
     if autovec:
         from stc.autovec_pass import autovectorize_tick_ir
 
@@ -684,3 +709,112 @@ def optimize_tick_ir(
             output_exprs=new_output_exprs,
         )
     )
+
+
+def fold_constants(ir: TickIR) -> tuple[TickIR, bool]:
+    """Fold constants in IR. Returns (new_ir, changed)."""
+    new_ir = reduce_tick_ir(ir)
+    changed = new_ir != ir
+    return new_ir, changed
+
+
+def canonicalize_ir(ir: TickIR) -> tuple[TickIR, bool]:
+    """Canonicalize IR (commutativity, associativity). Returns (new_ir, changed)."""
+    new_ir = reduce_tick_ir(ir)
+    changed = new_ir != ir
+    return new_ir, changed
+
+
+def eliminate_dead_state(ir: TickIR, bound: int = 100) -> TickIR:
+    """Eliminate dead state variables. Wrapper for remove_dead_state."""
+    return remove_dead_state(ir, bound)
+
+
+from stc.passmgr import Pass, PassContext, PassMetrics, PassManager, PassSchedule
+from stc.tech import Technology, get_technology
+
+
+class ConstFoldPass(Pass):
+    """Constant folding and simplification."""
+
+    @property
+    def name(self) -> str:
+        return "const-fold"
+
+    def run(self, ir: TickIR, ctx: PassContext) -> tuple[TickIR, PassMetrics]:
+        new_ir, changed = fold_constants(ir)
+        return new_ir, PassMetrics(changed=changed)
+
+
+class CanonicalizePass(Pass):
+    """Canonicalization (commutativity, associativity normalization)."""
+
+    @property
+    def name(self) -> str:
+        return "canonicalize"
+
+    def run(self, ir: TickIR, ctx: PassContext) -> tuple[TickIR, PassMetrics]:
+        new_ir, changed = canonicalize_ir(ir)
+        return new_ir, PassMetrics(changed=changed)
+
+
+class DeadCodePass(Pass):
+    """Dead code elimination."""
+
+    def __init__(self, bound: int = 100):
+        self.bound = bound
+
+    @property
+    def name(self) -> str:
+        return "dce"
+
+    def run(self, ir: TickIR, ctx: PassContext) -> tuple[TickIR, PassMetrics]:
+        new_ir = eliminate_dead_state(ir, self.bound)
+        changed = new_ir != ir
+        return new_ir, PassMetrics(changed=changed)
+
+
+def build_default_schedule(
+    include_superopt: bool = False, use_ternary_mapping: bool = True
+) -> PassSchedule:
+    """Build the default optimization schedule."""
+    schedule = PassSchedule(max_iterations=50)
+    schedule.add(CanonicalizePass())
+    schedule.add(ConstFoldPass())
+    schedule.add(DeadCodePass())
+
+    if use_ternary_mapping:
+        from stc.mapping.ternary import TernaryMappingPass
+
+        schedule.add(TernaryMappingPass())
+
+    if include_superopt:
+        from stc.superopt import SuperoptPass
+
+        schedule.add(SuperoptPass())
+
+    return schedule
+
+
+def optimize_tick_ir_passmanager(
+    ir: TickIR,
+    technology: str = "generic",
+    include_superopt: bool = False,
+    depth_budget: int | None = None,
+    verbosity: int = 0,
+) -> TickIR:
+    """Optimization entry point using pass manager architecture."""
+    tech = get_technology(technology)
+    ctx = PassContext(
+        technology=tech,
+        cost_model=tech.cost_model(),
+        depth_model=tech.depth_model(),
+        depth_budget=depth_budget,
+        verbosity=verbosity,
+    )
+
+    schedule = build_default_schedule(include_superopt=include_superopt)
+    mgr = PassManager(schedule)
+
+    result_ir, metrics = mgr.run(ir, ctx)
+    return result_ir

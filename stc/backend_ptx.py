@@ -381,6 +381,43 @@ def emit_ptx_steps(
             memo[key] = v
             return v
 
+        from stc.tick_ir import TernaryLut
+
+        if isinstance(expr, TernaryLut):
+            a = emit_expr(expr.a)
+            b = emit_expr(expr.b)
+            c = emit_expr(expr.c)
+
+            if a.kind == "pred" and a.pred is not None:
+                a_t = infer_type(expr.a, ctx_types)
+                if isinstance(a_t, BoolType):
+                    a = emit_bool_to_bits(a.pred, 1)
+
+            if not (a.kind == "bits" and a.words):
+                raise CodegenError("TernaryLut input must be bits")
+
+            width = a.width or 1
+            result_words = []
+
+            for word_idx in range(len(a.words)):
+                a_word = a.words[word_idx] if word_idx < len(a.words) else "0"
+                b_word = (
+                    b.words[word_idx] if b.words and word_idx < len(b.words) else "0"
+                )
+                c_word = (
+                    c.words[word_idx] if c.words and word_idx < len(c.words) else "0"
+                )
+
+                r = new_r()
+                body.append(
+                    f"  lop3.b32 {r}, {a_word}, {b_word}, {c_word}, {expr.imm8};"
+                )
+                result_words.append(r)
+
+            v = _V(kind="bits", width=width, words=result_words)
+            memo[key] = v
+            return v
+
         if isinstance(expr, Not):
             t = infer_type(expr.x, ctx_types)
             x = emit_expr(expr.x)

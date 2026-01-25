@@ -1146,6 +1146,59 @@ def encode_expr(
             raise Z3EncodeError("lut8 select type mismatch")
         return sel
 
+    from stc.tick_ir import TernaryLut
+
+    if isinstance(expr, TernaryLut):
+        a = encode_expr(expr.a, types, vars)
+        b = encode_expr(expr.b, types, vars)
+        c = encode_expr(expr.c, types, vars)
+
+        if isinstance(a, z3.BoolRef):
+            a_bv = z3.If(a, z3.BitVecVal(1, 1), z3.BitVecVal(0, 1))
+            b_bv = z3.If(b, z3.BitVecVal(1, 1), z3.BitVecVal(0, 1))
+            c_bv = z3.If(c, z3.BitVecVal(1, 1), z3.BitVecVal(0, 1))
+        else:
+            a_bv = a
+            b_bv = b
+            c_bv = c
+
+        if not isinstance(a_bv, z3.BitVecRef):
+            raise Z3EncodeError("TernaryLut inputs must be bitvectors")
+
+        width = a_bv.size()
+        result_bits = []
+
+        for bit_idx in range(width):
+            a_bit = z3.Extract(bit_idx, bit_idx, a_bv)
+            b_bit = z3.Extract(bit_idx, bit_idx, b_bv)
+            c_bit = z3.Extract(bit_idx, bit_idx, c_bv)
+
+            output_bit = z3.BitVecVal(0, 1)
+            for i in range(8):
+                a_val = (i >> 2) & 1
+                b_val = (i >> 1) & 1
+                c_val = i & 1
+                out_val = (expr.imm8 >> i) & 1
+
+                if out_val:
+                    match = z3.And(
+                        a_bit == z3.BitVecVal(a_val, 1),
+                        b_bit == z3.BitVecVal(b_val, 1),
+                        c_bit == z3.BitVecVal(c_val, 1),
+                    )
+                    output_bit = z3.If(match, z3.BitVecVal(1, 1), output_bit)
+
+            result_bits.append(output_bit)
+
+        if len(result_bits) == 1:
+            result = result_bits[0]
+        else:
+            result = z3.Concat(*reversed(result_bits))
+
+        if isinstance(a, z3.BoolRef):
+            return result == z3.BitVecVal(1, 1)
+        return result
+
     if isinstance(expr, Slice):
         x = encode_expr(expr.x, types, vars)
         src_t = infer_type(expr.x, types)

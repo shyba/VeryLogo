@@ -1,19 +1,25 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, fields, is_dataclass
+from typing import TYPE_CHECKING
 
 from stc.tick_ir import (
+    And,
     BitVecType,
     BitVecConst,
     BoolConst,
     BoolType,
     Expr,
     EXPR_CLASSES,
+    Not,
     SimdConst,
     SimdType,
     TickIR,
     Var,
 )
+
+if TYPE_CHECKING:
+    from stc.tech import DepthModel
 
 
 @dataclass(frozen=True)
@@ -64,6 +70,49 @@ def _depth(expr: Expr) -> int:
     if not children:
         return 1
     return 1 + max(_depth(c) for c in children)
+
+
+def _get_op_name(expr: Expr) -> str:
+    """Get operation name from expression type."""
+    if isinstance(expr, And):
+        return "and"
+    elif isinstance(expr, Not):
+        return "not"
+    elif isinstance(expr, (Var, BoolConst, BitVecConst, SimdConst)):
+        return "const"
+    else:
+        return expr.__class__.__name__.lower()
+
+
+def compute_depth(expr: Expr, depth_model: DepthModel) -> int:
+    """Compute expression depth using provided depth model."""
+    children = _expr_children(expr)
+    if not children:
+        op_name = _get_op_name(expr)
+        return depth_model.op_depth(op_name)
+
+    child_depths = [compute_depth(c, depth_model) for c in children]
+    op_name = _get_op_name(expr)
+    return depth_model.op_depth(op_name) + max(child_depths)
+
+
+def and_depth(expr: Expr) -> int:
+    """Compute AND-depth (only AND gates count, for FHE/MPC)."""
+    if isinstance(expr, And):
+        children = _expr_children(expr)
+        child_depths = [and_depth(c) for c in children]
+        return 1 + max(child_depths)
+
+    children = _expr_children(expr)
+    if not children:
+        return 0
+
+    return max((and_depth(c) for c in children), default=0)
+
+
+def multiplicative_depth(expr: Expr) -> int:
+    """Compute multiplicative depth (AND gates only, for FHE)."""
+    return and_depth(expr)
 
 
 def compute_metrics(ir: TickIR) -> IRMetrics:

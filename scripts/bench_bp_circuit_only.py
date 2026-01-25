@@ -17,49 +17,59 @@ from scripts.bp_circuit_sbox import build_bp_sbox
 def generate_circuit_only_c(circuit) -> str:
     """Generate AVX2 C code for circuit-only benchmark (no transpose)."""
     lines = []
-    lines.append('#include <immintrin.h>')
-    lines.append('#include <stdint.h>')
-    lines.append('')
-    lines.append('// STC-generated bitsliced AES S-box circuit (circuit only)')
-    lines.append(f'// {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)')
-    lines.append('')
-    lines.append('// Takes 8 bit planes as input, returns 8 bit planes as output')
-    lines.append('void sbox_circuit(__m256i* U, __m256i* S) {')
-    lines.append('  __m256i b0 = U[0], b1 = U[1], b2 = U[2], b3 = U[3];')
-    lines.append('  __m256i b4 = U[4], b5 = U[5], b6 = U[6], b7 = U[7];')
-    lines.append('')
+    lines.append("#include <immintrin.h>")
+    lines.append("#include <stdint.h>")
+    lines.append("")
+    lines.append("// STC-generated bitsliced AES S-box circuit (circuit only)")
+    lines.append(
+        f"// {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)"
+    )
+    lines.append("")
+    lines.append("// Takes 8 bit planes as input, returns 8 bit planes as output")
+    lines.append("void sbox_circuit(__m256i* U, __m256i* S) {")
+    lines.append("  __m256i b0 = U[0], b1 = U[1], b2 = U[2], b3 = U[3];")
+    lines.append("  __m256i b4 = U[4], b5 = U[5], b6 = U[6], b7 = U[7];")
+    lines.append("")
 
     # Generate gate operations
     for g_idx, (op, left, right) in enumerate(circuit.gates):
-        g_name = f'g{g_idx}'
-        left_name = f'b{left}' if left < 8 else f'g{left - 8}'
-        right_name = f'b{right}' if right < 8 else f'g{right - 8}'
+        g_name = f"g{g_idx}"
+        left_name = f"b{left}" if left < 8 else f"g{left - 8}"
+        right_name = f"b{right}" if right < 8 else f"g{right - 8}"
 
-        if op == 'xor':
-            lines.append(f'  __m256i {g_name} = _mm256_xor_si256({left_name}, {right_name});')
-        elif op == 'and':
-            lines.append(f'  __m256i {g_name} = _mm256_and_si256({left_name}, {right_name});')
-        elif op == 'not':
-            lines.append(f'  __m256i {g_name} = _mm256_xor_si256({left_name}, _mm256_set1_epi32(-1));')
-    lines.append('')
+        if op == "xor":
+            lines.append(
+                f"  __m256i {g_name} = _mm256_xor_si256({left_name}, {right_name});"
+            )
+        elif op == "and":
+            lines.append(
+                f"  __m256i {g_name} = _mm256_and_si256({left_name}, {right_name});"
+            )
+        elif op == "not":
+            lines.append(
+                f"  __m256i {g_name} = _mm256_xor_si256({left_name}, _mm256_set1_epi32(-1));"
+            )
+    lines.append("")
 
     # Generate output collection with inversions
-    lines.append('  // Collect outputs')
+    lines.append("  // Collect outputs")
     for bit, (idx, invert) in enumerate(circuit.outputs):
         out_idx = idx
-        out_name = f'b{out_idx}' if out_idx < 8 else f'g{out_idx - 8}'
+        out_name = f"b{out_idx}" if out_idx < 8 else f"g{out_idx - 8}"
         if invert:
-            lines.append(f'  S[{bit}] = _mm256_xor_si256({out_name}, _mm256_set1_epi32(-1));')
+            lines.append(
+                f"  S[{bit}] = _mm256_xor_si256({out_name}, _mm256_set1_epi32(-1));"
+            )
         else:
-            lines.append(f'  S[{bit}] = {out_name};')
+            lines.append(f"  S[{bit}] = {out_name};")
 
-    lines.append('}')
-    return '\n'.join(lines)
+    lines.append("}")
+    return "\n".join(lines)
 
 
 def generate_reference_circuit_c() -> str:
     """Generate reference BP circuit (circuit only)."""
-    return '''#include <immintrin.h>
+    return """#include <immintrin.h>
 #include <stdint.h>
 
 void sbox_ref_circuit(__m256i* U, __m256i* S) {
@@ -200,11 +210,11 @@ void sbox_ref_circuit(__m256i* U, __m256i* S) {
   S[1] = _mm256_xor_si256(_mm256_xor_si256(L13, L27), ones);
   S[0] = _mm256_xor_si256(_mm256_xor_si256(L6, L23), ones);
 }
-'''
+"""
 
 
 def generate_main_c() -> str:
-    return '''#include <stdio.h>
+    return """#include <stdio.h>
 #include <time.h>
 #include <immintrin.h>
 
@@ -256,13 +266,15 @@ int main() {
 
     return 0;
 }
-'''
+"""
 
 
 def main():
     print("Building BP circuit...")
     circuit = build_bp_sbox()
-    print(f"Circuit: {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)")
+    print(
+        f"Circuit: {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)"
+    )
     print()
 
     print("Generating circuit-only C code...")
@@ -276,16 +288,25 @@ def main():
         main_path = os.path.join(tmpdir, "main.c")
         exe_path = os.path.join(tmpdir, "bench")
 
-        with open(stc_path, 'w') as f:
+        with open(stc_path, "w") as f:
             f.write(stc_code)
-        with open(ref_path, 'w') as f:
+        with open(ref_path, "w") as f:
             f.write(ref_code)
-        with open(main_path, 'w') as f:
+        with open(main_path, "w") as f:
             f.write(main_code)
 
         print("Compiling...")
-        cmd = ["cc", "-O3", "-march=native", "-mavx2", "-o", exe_path,
-               stc_path, ref_path, main_path]
+        cmd = [
+            "cc",
+            "-O3",
+            "-march=native",
+            "-mavx2",
+            "-o",
+            exe_path,
+            stc_path,
+            ref_path,
+            main_path,
+        ]
         result = subprocess.run(cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print(f"Compilation failed: {result.stderr}")

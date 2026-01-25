@@ -197,6 +197,32 @@ def emit_x86_avx512_c(ir: TickIR) -> str:
             memo[key] = name
             return name
 
+        from stc.tick_ir import TernaryLut
+
+        if isinstance(expr, TernaryLut):
+            a = emit_expr(expr.a)
+            b = emit_expr(expr.b)
+            c = emit_expr(expr.c)
+            name = f"t{tmp_id}"
+            tmp_id += 1
+
+            t = infer_type(expr.a, types)
+            if isinstance(t, SimdType):
+                if t.lane_width in [32, 64]:
+                    suffix = "epi32" if t.lane_width == 32 else "epi64"
+                    lines.append(
+                        f"  __m512i {name} = _mm512_ternarylogic_{suffix}({a}, {b}, {c}, {expr.imm8});"
+                    )
+                else:
+                    raise CodegenError(
+                        f"TernaryLut for SIMD lane_width {t.lane_width} not supported in AVX-512"
+                    )
+            else:
+                raise CodegenError("TernaryLut requires SIMD type in AVX-512 backend")
+
+            memo[key] = name
+            return name
+
         if isinstance(expr, (SimdAdd, SimdSub)):
             a = emit_expr(expr.a)
             b = emit_expr(expr.b)

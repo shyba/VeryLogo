@@ -206,13 +206,13 @@ def build_tower_field_sbox() -> CircuitState:
     # Build outputs (with constant 0x63 = 01100011 added via inversions)
     # Affine constant bits: [1,1,0,0,0,1,1,0] for bits 0-7
     outputs = [
-        (y0, True),   # bit 0: inverted (constant bit = 1)
-        (y1, True),   # bit 1: inverted (constant bit = 1)
+        (y0, True),  # bit 0: inverted (constant bit = 1)
+        (y1, True),  # bit 1: inverted (constant bit = 1)
         (y2, False),  # bit 2: not inverted
         (y3, False),  # bit 3: not inverted
         (y4, False),  # bit 4: not inverted
-        (y5, True),   # bit 5: inverted (constant bit = 1)
-        (y6, True),   # bit 6: inverted (constant bit = 1)
+        (y5, True),  # bit 5: inverted (constant bit = 1)
+        (y6, True),  # bit 6: inverted (constant bit = 1)
         (y7, False),  # bit 7: not inverted
     ]
 
@@ -524,8 +524,7 @@ def build_canright_sbox() -> CircuitState:
 
     # ah' = al * d^-1
     ah_p_H_1, ah_p_H_0, ah_p_L_1, ah_p_L_0 = gf16_mul(
-        al_H_1, al_H_0, al_L_1, al_L_0,
-        d_inv_H_1, d_inv_H_0, d_inv_L_1, d_inv_L_0
+        al_H_1, al_H_0, al_L_1, al_L_0, d_inv_H_1, d_inv_H_0, d_inv_L_1, d_inv_L_0
     )
 
     # al' = (ah + al) * d^-1
@@ -535,16 +534,30 @@ def build_canright_sbox() -> CircuitState:
     ah_al_L_0 = b.xor(ah_L_0, al_L_0)
 
     al_p_H_1, al_p_H_0, al_p_L_1, al_p_L_0 = gf16_mul(
-        ah_al_H_1, ah_al_H_0, ah_al_L_1, ah_al_L_0,
-        d_inv_H_1, d_inv_H_0, d_inv_L_1, d_inv_L_0
+        ah_al_H_1,
+        ah_al_H_0,
+        ah_al_L_1,
+        ah_al_L_0,
+        d_inv_H_1,
+        d_inv_H_0,
+        d_inv_L_1,
+        d_inv_L_0,
     )
 
     # Now we have the inverse in tower basis: (ah', al')
     # Map back to polynomial basis and apply affine transform
 
     # Inverse tower basis bits:
-    inv = [al_p_L_0, al_p_L_1, al_p_H_0, al_p_H_1,
-           ah_p_L_0, ah_p_L_1, ah_p_H_0, ah_p_H_1]
+    inv = [
+        al_p_L_0,
+        al_p_L_1,
+        al_p_H_0,
+        al_p_H_1,
+        ah_p_L_0,
+        ah_p_L_1,
+        ah_p_H_0,
+        ah_p_H_1,
+    ]
 
     # Change of basis: tower -> polynomial
     # Then apply AES affine transformation
@@ -573,13 +586,13 @@ def build_canright_sbox() -> CircuitState:
 
     # Output with affine constant 0x63 = 01100011
     outputs = [
-        (y0, True),   # constant bit 1
-        (y1, True),   # constant bit 1
+        (y0, True),  # constant bit 1
+        (y1, True),  # constant bit 1
         (y2, False),
         (y3, False),
         (y4, False),
-        (y5, True),   # constant bit 1
-        (y6, True),   # constant bit 1
+        (y5, True),  # constant bit 1
+        (y6, True),  # constant bit 1
         (y7, False),
     ]
 
@@ -600,7 +613,9 @@ def verify_sbox(circuit: CircuitState, name: str) -> bool:
         expected = AES_SBOX_TABLE[i]
         if result != expected:
             if errors < 5:
-                print(f"  {name} error at {i}: got {result:#04x}, expected {expected:#04x}")
+                print(
+                    f"  {name} error at {i}: got {result:#04x}, expected {expected:#04x}"
+                )
             errors += 1
     if errors:
         print(f"  {name}: {errors} errors out of 256")
@@ -615,7 +630,9 @@ def main():
     # Try the first implementation
     print("Method 1: Direct tower field construction")
     circuit1 = build_tower_field_sbox()
-    print(f"  Gates: {circuit1.gate_count} ({circuit1.and_count} AND, {circuit1.xor_count} XOR)")
+    print(
+        f"  Gates: {circuit1.gate_count} ({circuit1.and_count} AND, {circuit1.xor_count} XOR)"
+    )
     correct1 = verify_sbox(circuit1, "Method 1")
     print(f"  Correct: {correct1}")
     print()
@@ -623,7 +640,9 @@ def main():
     # Try Canright's method
     print("Method 2: Canright's tower field")
     circuit2 = build_canright_sbox()
-    print(f"  Gates: {circuit2.gate_count} ({circuit2.and_count} AND, {circuit2.xor_count} XOR)")
+    print(
+        f"  Gates: {circuit2.gate_count} ({circuit2.and_count} AND, {circuit2.xor_count} XOR)"
+    )
     correct2 = verify_sbox(circuit2, "Method 2")
     print(f"  Correct: {correct2}")
     print()
@@ -636,11 +655,15 @@ def main():
         opt = opt.apply_algebraic_rewrites()
         opt = opt.eliminate_dead_code()
         opt = opt.flatten_xor_trees()
-        print(f"  After Phase 1: {opt.gate_count} gates ({opt.and_count} AND, {opt.xor_count} XOR)")
+        print(
+            f"  After Phase 1: {opt.gate_count} gates ({opt.and_count} AND, {opt.xor_count} XOR)"
+        )
 
         # Try BP linear optimization
         opt = opt.optimize_linear_layers()
-        print(f"  After BP: {opt.gate_count} gates ({opt.and_count} AND, {opt.xor_count} XOR)")
+        print(
+            f"  After BP: {opt.gate_count} gates ({opt.and_count} AND, {opt.xor_count} XOR)"
+        )
 
         # Verify still correct
         if verify_sbox(opt, "Optimized"):
@@ -653,10 +676,14 @@ def main():
         opt = opt.apply_algebraic_rewrites()
         opt = opt.eliminate_dead_code()
         opt = opt.flatten_xor_trees()
-        print(f"  After Phase 1: {opt.gate_count} gates ({opt.and_count} AND, {opt.xor_count} XOR)")
+        print(
+            f"  After Phase 1: {opt.gate_count} gates ({opt.and_count} AND, {opt.xor_count} XOR)"
+        )
 
         opt = opt.optimize_linear_layers()
-        print(f"  After BP: {opt.gate_count} gates ({opt.and_count} AND, {opt.xor_count} XOR)")
+        print(
+            f"  After BP: {opt.gate_count} gates ({opt.and_count} AND, {opt.xor_count} XOR)"
+        )
 
         if verify_sbox(opt, "Optimized"):
             print("  Still correct after optimization!")

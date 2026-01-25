@@ -571,6 +571,16 @@ def infer_type(expr: Expr, ctx: dict[str, Type]) -> Type:
             raise TickIRValidationError("lut8 input must be bitvec8")
         return BitVecType(width=8)
 
+    from stc.tick_ir import TernaryLut
+
+    if isinstance(expr, TernaryLut):
+        a_t = infer_type(expr.a, ctx)
+        b_t = infer_type(expr.b, ctx)
+        c_t = infer_type(expr.c, ctx)
+        if a_t != b_t or b_t != c_t:
+            raise TickIRValidationError("TernaryLut inputs must have same type")
+        return a_t
+
     raise TypeError("unsupported expression type")
 
 
@@ -1444,6 +1454,34 @@ def eval_expr(
     if isinstance(expr, Lut8):
         idx = _as_int(eval_expr(expr.x, ctx_types, env)) & 0xFF
         return int(expr.table[idx]) & 0xFF
+
+    from stc.tick_ir import TernaryLut
+
+    if isinstance(expr, TernaryLut):
+        a_val = _as_int(eval_expr(expr.a, ctx_types, env))
+        b_val = _as_int(eval_expr(expr.b, ctx_types, env))
+        c_val = _as_int(eval_expr(expr.c, ctx_types, env))
+
+        a_t = infer_type(expr.a, ctx_types)
+        if isinstance(a_t, BoolType):
+            width = 1
+        elif isinstance(a_t, BitVecType):
+            width = a_t.width
+        elif isinstance(a_t, SimdType):
+            width = a_t.total_width
+        else:
+            raise TypeError(f"TernaryLut input has unsupported type {a_t}")
+
+        result = 0
+        for bit in range(width):
+            a_bit = (a_val >> bit) & 1
+            b_bit = (b_val >> bit) & 1
+            c_bit = (c_val >> bit) & 1
+            idx = (a_bit << 2) | (b_bit << 1) | c_bit
+            out_bit = (expr.imm8 >> idx) & 1
+            result |= out_bit << bit
+
+        return result
 
     raise TypeError("unsupported expression type")
 
