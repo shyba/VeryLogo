@@ -118,9 +118,15 @@ class ListScheduler(BaseScheduler):
                                 ready_at[succ] = pred_ready
                         else:
                             node_idx = input_bits + g
-                            succ_left = gates[succ][1]
-                            succ_right = gates[succ][2] if len(gates[succ]) > 2 else -1
-                            if succ_left == node_idx or succ_right == node_idx:
+                            succ_gate = gates[succ]
+                            succ_op = succ_gate[0]
+                            if succ_op == "ternary":
+                                succ_operands = succ_gate[1:4]
+                            elif succ_op in ("const", "not"):
+                                succ_operands = [succ_gate[1]]
+                            else:
+                                succ_operands = succ_gate[1:3]
+                            if node_idx in succ_operands:
                                 ready_at[succ] = max(ready_at[succ], result_ready)
 
             cycle += 1

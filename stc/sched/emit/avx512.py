@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from stc.sched.emit.base import BaseEmitter
-from stc.sched.schedule import Schedule
 from stc.sched.regalloc import RegAllocation
+from stc.sched.schedule import Schedule
 
 
-class AVX2Emitter(BaseEmitter):
+class AVX512Emitter(BaseEmitter):
     @property
     def name(self) -> str:
-        return "avx2"
+        return "avx512"
 
     def emit(
         self,
@@ -22,22 +22,19 @@ class AVX2Emitter(BaseEmitter):
         lines: list[str] = []
         lines.append("#include <immintrin.h>")
         lines.append("")
-        lines.append(f"void {function_name}(__m256i* in, __m256i* out) {{")
+        lines.append(f"void {function_name}(__m512i* in, __m512i* out) {{")
 
         used_regs = set(allocation.reg_assignment.values())
         used_regs.update(reg for _, reg, _ in allocation.loads if reg >= 0)
         used_regs.update(reg for _, reg, _ in allocation.stores if reg >= 0)
         max_reg = max([input_bits - 1, *used_regs]) if input_bits > 0 else 0
         for r in range(max_reg + 1):
-            lines.append(f"    __m256i r{r};")
+            lines.append(f"    __m512i r{r};")
 
         needs_ones = self._needs_ones_constant(gates, outputs)
         if needs_ones:
-            lines.append("    __m256i ones = _mm256_set1_epi32(-1);")
+            lines.append("    __m512i ones = _mm512_set1_epi32(-1);")
 
-        # Track which node currently resides in which register at each point in
-        # the schedule. This is required for correctness when the allocator
-        # introduces spills and reloads into temporary registers.
         node_in_reg: dict[int, int] = {}
         reg_holds_node: dict[int, int] = {}
 
@@ -49,9 +46,6 @@ class AVX2Emitter(BaseEmitter):
             node_in_reg[node] = reg
 
         for i in range(input_bits):
-            # Treat inputs as always-available named temporaries (r0..r{input_bits-1}).
-            # This decouples codegen correctness from allocator decisions about spilling
-            # input live ranges.
             reg = i
             lines.append(f"    r{reg} = in[{i}];")
             _assign_reg(i, reg)
@@ -70,14 +64,13 @@ class AVX2Emitter(BaseEmitter):
             spill_slots_used.add(slot)
 
         for slot in sorted(spill_slots_used):
-            lines.append(f"    __m256i stack{slot};")
+            lines.append(f"    __m512i stack{slot};")
 
         gates_by_cycle: dict[int, list[int]] = {}
         for g_idx, cycle in schedule.gate_cycle.items():
             gates_by_cycle.setdefault(cycle, []).append(g_idx)
 
-        total_cycles = schedule.total_cycles
-        for cycle in range(total_cycles):
+        for cycle in range(schedule.total_cycles):
             if cycle in stores_by_cycle:
                 for node, reg, _ in stores_by_cycle[cycle]:
                     slot = self._get_spill_slot(node, allocation)
@@ -95,41 +88,20 @@ class AVX2Emitter(BaseEmitter):
                     dst_reg = allocation.reg_assignment.get(node_idx, -1)
                     if dst_reg < 0:
                         continue
-
-                    gate = gates[g_idx]
-                    line = self._emit_gate(gate, dst_reg, allocation, node_in_reg)
+                    line = self._emit_gate(gates[g_idx], dst_reg, allocation, node_in_reg)
                     lines.append(f"    {line}")
                     _assign_reg(node_idx, dst_reg)
 
         for out_idx, (node_idx, inverted) in enumerate(outputs):
             expr = self._node_expr(node_idx, allocation, node_in_reg)
             if inverted:
-                lines.append(f"    out[{out_idx}] = _mm256_xor_si256({expr}, ones);")
+                lines.append(f"    out[{out_idx}] = _mm512_xor_si512({expr}, ones);")
             else:
                 lines.append(f"    out[{out_idx}] = {expr};")
 
         lines.append("}")
         lines.append("")
         return "\n".join(lines)
-
-    def _node_expr(
-        self,
-        node: int,
-        allocation: RegAllocation,
-        node_in_reg: dict[int, int],
-    ) -> str:
-        reg = node_in_reg.get(node)
-        if reg is not None and reg >= 0:
-            return f"r{reg}"
-        try:
-            slot = allocation.spills.index(node)
-            return f"stack{slot}"
-        except ValueError:
-            pass
-        reg = allocation.reg_assignment.get(node, -1)
-        if reg >= 0:
-            return f"r{reg}"
-        return "_mm256_setzero_si256()"
 
     def _needs_ones_constant(self, gates: list, outputs: list) -> bool:
         for gate in gates:
@@ -149,6 +121,25 @@ class AVX2Emitter(BaseEmitter):
         except ValueError:
             return 0
 
+    def _node_expr(
+        self,
+        node: int,
+        allocation: RegAllocation,
+        node_in_reg: dict[int, int],
+    ) -> str:
+        reg = node_in_reg.get(node)
+        if reg is not None and reg >= 0:
+            return f"r{reg}"
+        try:
+            slot = allocation.spills.index(node)
+            return f"stack{slot}"
+        except ValueError:
+            pass
+        reg = allocation.reg_assignment.get(node, -1)
+        if reg >= 0:
+            return f"r{reg}"
+        return "_mm512_setzero_si512()"
+
     def _emit_gate(
         self,
         gate: tuple,
@@ -165,30 +156,25 @@ class AVX2Emitter(BaseEmitter):
             c = -1
             imm8 = 0
 
-        def _src_expr(node: int) -> str:
+        def _src(node: int) -> str:
             return self._node_expr(node, allocation, node_in_reg)
 
         if op == "ternary":
-            a_expr = _src_expr(a)
-            b_expr = _src_expr(b)
-            c_expr = _src_expr(c)
-            return f"r{dst_reg} = _mm256_ternarylogic_epi32({a_expr}, {b_expr}, {c_expr}, {imm8});"
-
-        left_expr = _src_expr(a)
-        right_expr = _src_expr(b)
+            return (
+                f"r{dst_reg} = _mm512_ternarylogic_epi32({_src(a)}, {_src(b)}, {_src(c)}, {imm8});"
+            )
 
         if op == "xor":
-            return f"r{dst_reg} = _mm256_xor_si256({left_expr}, {right_expr});"
-        elif op == "and":
-            return f"r{dst_reg} = _mm256_and_si256({left_expr}, {right_expr});"
-        elif op == "or":
-            return f"r{dst_reg} = _mm256_or_si256({left_expr}, {right_expr});"
-        elif op == "not":
-            return f"r{dst_reg} = _mm256_xor_si256({left_expr}, ones);"
-        elif op == "const":
+            return f"r{dst_reg} = _mm512_xor_si512({_src(a)}, {_src(b)});"
+        if op == "and":
+            return f"r{dst_reg} = _mm512_and_si512({_src(a)}, {_src(b)});"
+        if op == "or":
+            return f"r{dst_reg} = _mm512_or_si512({_src(a)}, {_src(b)});"
+        if op == "not":
+            return f"r{dst_reg} = _mm512_xor_si512({_src(a)}, ones);"
+        if op == "const":
             if a == 0:
-                return f"r{dst_reg} = _mm256_setzero_si256();"
-            else:
-                return f"r{dst_reg} = _mm256_set1_epi32(-1);"
-        else:
-            return f"r{dst_reg} = _mm256_setzero_si256();"
+                return f"r{dst_reg} = _mm512_setzero_si512();"
+            return f"r{dst_reg} = _mm512_set1_epi32(-1);"
+        return f"r{dst_reg} = _mm512_setzero_si512();"
+

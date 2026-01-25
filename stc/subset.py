@@ -20,6 +20,7 @@ SUPPORTED_CELL_TYPES = {
     "$or",
     "$xor",
     "$mux",
+    "$pmux",
     "$add",
     "$sub",
     "$shl",
@@ -41,6 +42,7 @@ SUPPORTED_CELL_TYPES = {
     "$sdffe",
     "$reduce_or",
     "$reduce_bool",
+    "$scopeinfo",
 }
 
 

@@ -13,6 +13,7 @@ from stc.infer_simd import infer_simd_types
 from stc.io_map import default_io_map, load_io_map, validate_io_map
 from stc.metrics import compute_metrics
 from stc.reduce import optimize_tick_ir
+from stc.tick_ir_to_circuit_state import lower_tick_ir_to_circuit_state
 from stc.tick_ir import SimdType, TickIR
 from stc.tick_ir_validate import validate_tick_ir
 from stc.yosys_json import load_design
@@ -48,6 +49,7 @@ def run_pipeline(
     io_map: Path | None = None,
     avr_project: bool = False,
     backend: str = "generic",
+    ternary_mapping: bool | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -77,6 +79,7 @@ def run_pipeline(
         superopt_max_nodes=superopt_max_nodes,
         superopt_timeout_ms=superopt_timeout_ms,
         backend=backend,
+        ternary_mapping=ternary_mapping,
     )
     validate_tick_ir(reduced)
 
@@ -84,6 +87,30 @@ def run_pipeline(
     _write_json(out_dir / "reduced_tick_ir.json", reduced.to_dict())
     _write_json(out_dir / "metrics.json", compute_metrics(tick_ir).to_dict())
     _write_json(out_dir / "reduced_metrics.json", compute_metrics(reduced).to_dict())
+    # `io_map.json` and AVR artifacts only apply to the AVR backend. When
+    # `--no-backend` is set, users may be targeting non-AVR outputs and the
+    # reduced IR may have many outputs that cannot fit the default PORTB map.
+    if no_backend:
+        return
+
+    # Non-AVR scheduled backends: lower TickIR to CircuitState and emit scheduled code.
+    # This enables full Verilog-derived designs (including wide state) to target AVX-512.
+    if backend in {"x86-avx512", "x86-avx2"}:
+        target = "avx512" if backend == "x86-avx512" else "avx2"
+        circuit, layout = lower_tick_ir_to_circuit_state(reduced)
+        _write_json(out_dir / "circuit_state.json", circuit.to_dict())
+        _write_json(out_dir / "io_layout.json", layout.to_dict())
+
+        code = generate_scheduled_code(
+            circuit,
+            target=target,
+            scheduler="list",
+            function_name="circuit",
+        )
+        (out_dir / f"circuit_{target}.c").write_text(code, encoding="utf-8")
+        _write_json(out_dir / "schedule_stats.json", get_schedule_stats(circuit, target, "list"))
+        return
+
     if not _has_simd_types(reduced):
         if io_map is None:
             iom = default_io_map(reduced)
@@ -124,6 +151,19 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         choices=["generic", "avr", "ptx", "x86-avx2", "x86-avx512"],
         default="generic",
         help="Target backend for optimization",
+    )
+    p.add_argument(
+        "--ternary-mapping",
+        action="store_true",
+        dest="ternary_mapping",
+        default=None,
+        help="Enable ternary LUT mapping (auto-enabled for ptx, x86-avx512)",
+    )
+    p.add_argument(
+        "--no-ternary-mapping",
+        action="store_false",
+        dest="ternary_mapping",
+        help="Disable ternary LUT mapping",
     )
     p.add_argument(
         "--depth-budget", type=int, default=None, help="Maximum allowed circuit depth"
@@ -245,5 +285,6 @@ def main(argv: list[str] | None = None) -> int:
             io_map=ns.io_map,
             avr_project=ns.avr_project,
             backend=ns.backend,
+            ternary_mapping=ns.ternary_mapping,
         )
     return 0

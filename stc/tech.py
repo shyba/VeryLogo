@@ -227,6 +227,58 @@ class AVX512Technology(Technology):
         return True
 
 
+class AVRTechnology(Technology):
+    """ATtiny85/AVR backend - basic gates only."""
+
+    @property
+    def name(self) -> str:
+        return "avr"
+
+    def primitives(self) -> Sequence[Primitive]:
+        return [
+            Primitive("and", 2, 1, 1, 1.0, {}),
+            Primitive("or", 2, 1, 1, 1.0, {}),
+            Primitive("xor", 2, 1, 1, 1.0, {}),
+            Primitive("not", 1, 1, 0, 1.0, {}),
+        ]
+
+    def cost_model(self) -> CostModel:
+        return DefaultCostModel()
+
+    def depth_model(self) -> DepthModel:
+        return DefaultDepthModel()
+
+    def is_legal(self, expr: Expr) -> bool:
+        return True
+
+
+class AVX2Technology(Technology):
+    """x86 AVX2 backend - no ternary LUTs."""
+
+    @property
+    def name(self) -> str:
+        return "x86-avx2"
+
+    def primitives(self) -> Sequence[Primitive]:
+        return [
+            Primitive("and", 2, 1, 1, 1.0, {}),
+            Primitive("or", 2, 1, 1, 1.0, {}),
+            Primitive("xor", 2, 1, 1, 1.0, {}),
+            Primitive("not", 1, 1, 0, 1.0, {}),
+        ]
+
+    def cost_model(self) -> CostModel:
+        return DefaultCostModel()
+
+    def depth_model(self) -> DepthModel:
+        return DefaultDepthModel()
+
+    def is_legal(self, expr: Expr) -> bool:
+        return True
+
+
 register_technology(GenericTechnology())
 register_technology(PTXTechnology())
 register_technology(AVX512Technology())
+register_technology(AVRTechnology())
+register_technology(AVX2Technology())

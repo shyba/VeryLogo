@@ -41,6 +41,20 @@ def live_state_within_bound(ir: TickIR, bound: int) -> set[str]:
 def remove_dead_state(ir: TickIR, bound: int) -> TickIR:
     validate_tick_ir(ir)
     live = live_state_within_bound(ir, bound)
+
+    # Ensure the IR remains well-formed after removal: any state variable that
+    # is referenced by the next-state expression of a kept register must also
+    # be kept, even if it does not influence outputs within the chosen bound.
+    state_names = set(ir.state.keys())
+    changed = True
+    while changed:
+        changed = False
+        expanded = set(live)
+        for reg in live:
+            expanded |= _deps_in_state(ir.next_state[reg], state_names)
+        if expanded != live:
+            live = expanded
+            changed = True
     if live == set(ir.state.keys()):
         return ir
 

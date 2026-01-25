@@ -102,6 +102,25 @@ class Cuda:
         self.lib.cuCtxSynchronize.argtypes = []
         self.lib.cuCtxSynchronize.restype = ctypes.c_int
 
+        self.lib.cuEventCreate.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_uint]
+        self.lib.cuEventCreate.restype = ctypes.c_int
+
+        self.lib.cuEventDestroy_v2.argtypes = [ctypes.c_void_p]
+        self.lib.cuEventDestroy_v2.restype = ctypes.c_int
+
+        self.lib.cuEventRecord.argtypes = [ctypes.c_void_p, ctypes.c_void_p]
+        self.lib.cuEventRecord.restype = ctypes.c_int
+
+        self.lib.cuEventSynchronize.argtypes = [ctypes.c_void_p]
+        self.lib.cuEventSynchronize.restype = ctypes.c_int
+
+        self.lib.cuEventElapsedTime.argtypes = [
+            ctypes.POINTER(ctypes.c_float),
+            ctypes.c_void_p,
+            ctypes.c_void_p,
+        ]
+        self.lib.cuEventElapsedTime.restype = ctypes.c_int
+
     def _check(self, code: int, msg: str) -> None:
         if code != 0:
             raise CudaError(msg, code=code)
@@ -148,6 +167,17 @@ class Cuda:
     def module_load_ptx(self, ptx: str) -> ctypes.c_void_p:
         mod = ctypes.c_void_p()
         buf = ctypes.create_string_buffer(ptx.encode("utf-8"))
+        self._check(
+            self.lib.cuModuleLoadDataEx(
+                ctypes.byref(mod), ctypes.cast(buf, ctypes.c_void_p), 0, None, None
+            ),
+            "cuModuleLoadDataEx failed",
+        )
+        return mod
+
+    def module_load_data(self, data: bytes) -> ctypes.c_void_p:
+        mod = ctypes.c_void_p()
+        buf = ctypes.create_string_buffer(data)
         self._check(
             self.lib.cuModuleLoadDataEx(
                 ctypes.byref(mod), ctypes.cast(buf, ctypes.c_void_p), 0, None, None
@@ -234,3 +264,25 @@ class Cuda:
 
     def synchronize(self) -> None:
         self._check(self.lib.cuCtxSynchronize(), "cuCtxSynchronize failed")
+
+    def event_create(self) -> ctypes.c_void_p:
+        ev = ctypes.c_void_p()
+        self._check(self.lib.cuEventCreate(ctypes.byref(ev), 0), "cuEventCreate failed")
+        return ev
+
+    def event_destroy(self, ev: ctypes.c_void_p) -> None:
+        self._check(self.lib.cuEventDestroy_v2(ev), "cuEventDestroy failed")
+
+    def event_record(self, ev: ctypes.c_void_p) -> None:
+        self._check(self.lib.cuEventRecord(ev, None), "cuEventRecord failed")
+
+    def event_synchronize(self, ev: ctypes.c_void_p) -> None:
+        self._check(self.lib.cuEventSynchronize(ev), "cuEventSynchronize failed")
+
+    def event_elapsed_ms(self, start: ctypes.c_void_p, end: ctypes.c_void_p) -> float:
+        ms = ctypes.c_float()
+        self._check(
+            self.lib.cuEventElapsedTime(ctypes.byref(ms), start, end),
+            "cuEventElapsedTime failed",
+        )
+        return float(ms.value)

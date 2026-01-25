@@ -84,12 +84,20 @@ class Schedule:
     ) -> list[int]:
         last_use = {}
 
-        for g_idx, (op, left, right) in enumerate(gates):
+        for g_idx, gate in enumerate(gates):
+            op = gate[0]
             cycle = self.gate_cycle.get(g_idx, 0)
-            if left >= 0:
-                last_use[left] = max(last_use.get(left, 0), cycle)
-            if op not in ("const", "not") and right >= 0:
-                last_use[right] = max(last_use.get(right, 0), cycle)
+
+            if op == "ternary":
+                operands = gate[1:4]
+            elif op in ("const", "not"):
+                operands = [gate[1]]
+            else:
+                operands = gate[1:3]
+
+            for operand in operands:
+                if operand >= 0:
+                    last_use[operand] = max(last_use.get(operand, 0), cycle)
 
         live_at = [0] * (total_cycles + 1)
 
@@ -113,35 +121,32 @@ class Schedule:
     ) -> list[str]:
         errors = []
 
-        for g_idx, (op, left, right) in enumerate(gates):
+        for g_idx, gate in enumerate(gates):
+            op = gate[0]
             if g_idx not in self.gate_cycle:
                 errors.append(f"Gate {g_idx} not scheduled")
                 continue
 
             my_cycle = self.gate_cycle[g_idx]
 
-            if left >= input_bits:
-                left_gate = left - input_bits
-                if left_gate in self.gate_cycle:
-                    left_cycle = self.gate_cycle[left_gate]
-                    left_op = gates[left_gate][0]
-                    ready = left_cycle + latencies.get(left_op, 1)
-                    if my_cycle < ready:
-                        errors.append(
-                            f"Gate {g_idx} at cycle {my_cycle} uses gate {left_gate} "
-                            f"ready at cycle {ready}"
-                        )
+            if op == "ternary":
+                operands = gate[1:4]
+            elif op in ("const", "not"):
+                operands = [gate[1]]
+            else:
+                operands = gate[1:3]
 
-            if op not in ("const", "not") and right >= input_bits:
-                right_gate = right - input_bits
-                if right_gate in self.gate_cycle:
-                    right_cycle = self.gate_cycle[right_gate]
-                    right_op = gates[right_gate][0]
-                    ready = right_cycle + latencies.get(right_op, 1)
-                    if my_cycle < ready:
-                        errors.append(
-                            f"Gate {g_idx} at cycle {my_cycle} uses gate {right_gate} "
-                            f"ready at cycle {ready}"
-                        )
+            for operand in operands:
+                if operand >= input_bits:
+                    pred_gate = operand - input_bits
+                    if pred_gate in self.gate_cycle:
+                        pred_cycle = self.gate_cycle[pred_gate]
+                        pred_op = gates[pred_gate][0]
+                        ready = pred_cycle + latencies.get(pred_op, 1)
+                        if my_cycle < ready:
+                            errors.append(
+                                f"Gate {g_idx} at cycle {my_cycle} uses gate {pred_gate} "
+                                f"ready at cycle {ready}"
+                            )
 
         return errors

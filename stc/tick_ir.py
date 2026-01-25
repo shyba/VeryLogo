@@ -929,13 +929,18 @@ class SimdShuffle:
     indices: list[int]
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "indices", tuple(self.indices))
         if not self.indices:
             raise ValueError("indices must be non-empty")
         if any(i < 0 for i in self.indices):
             raise ValueError("indices must be >= 0")
 
     def to_dict(self) -> dict[str, Any]:
-        return {"kind": "simd_shuffle", "x": self.x.to_dict(), "indices": self.indices}
+        return {
+            "kind": "simd_shuffle",
+            "x": self.x.to_dict(),
+            "indices": list(self.indices),
+        }
 
 
 @dataclass(frozen=True)
@@ -1002,6 +1007,9 @@ class Mux:
 class Concat:
     parts: list[Expr]
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "parts", tuple(self.parts))
+
     def to_dict(self) -> dict[str, Any]:
         return {"kind": "concat", "parts": [p.to_dict() for p in self.parts]}
 
@@ -1033,6 +1041,7 @@ class Lut8:
     table: list[int]
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "table", tuple(self.table))
         if len(self.table) != 256:
             raise ValueError("lut8 table must have 256 entries")
         for v in self.table:

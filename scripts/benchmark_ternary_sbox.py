@@ -91,6 +91,14 @@ def compute_truth_table(state: CircuitState, root_idx: int, leaves: list) -> int
 
         for idx, (op, left, right) in enumerate(gates):
             full_idx = input_bits + idx
+            # Treat "leaves" (which may include cut internal nodes) as independent
+            # inputs. If a leaf is an internal node, do not overwrite its assigned
+            # value by recomputing it from its fan-in.
+            if full_idx in assignments:
+                node_vals[full_idx] = assignments[full_idx]
+                if idx == root_idx:
+                    return node_vals[full_idx]
+                continue
             l_val = node_vals.get(left, assignments.get(left, 0))
             r_val = node_vals.get(right, assignments.get(right, 0)) if right >= 0 else 0
 
@@ -113,10 +121,11 @@ def compute_truth_table(state: CircuitState, root_idx: int, leaves: list) -> int
 
     imm8 = 0
     for i in range(8):
+        # Match the repo's ternary convention: bit index i uses i=(a<<2)|(b<<1)|c.
         assignments = {
-            leaves[0]: (i >> 0) & 1,
-            leaves[1]: (i >> 1) & 1,
-            leaves[2]: (i >> 2) & 1,
+            leaves[0]: (i >> 2) & 1,  # a
+            leaves[1]: (i >> 1) & 1,  # b
+            leaves[2]: (i >> 0) & 1,  # c
         }
         if eval_at(assignments):
             imm8 |= 1 << i
@@ -139,20 +148,9 @@ def generate_avx512_ternary_code(state: CircuitState, cones: list) -> str:
             "imm8": imm8,
         }
 
-    lines.append("void sbox_avx512_ternary(const uint8_t* input, uint8_t* output) {")
-    lines.append("    __m512i planes[8];")
+    # Circuit-only bit-plane entrypoint: full 512 parallel evaluations per call.
+    lines.append("static inline void sbox_avx512_ternary_planes(__m512i* planes, __m512i* out_planes) {")
     lines.append("    __m512i ones = _mm512_set1_epi32(-1);")
-    lines.append("")
-
-    # Transpose
-    lines.append("    // Transpose to bit planes")
-    lines.append("    for (int bit = 0; bit < 8; bit++) {")
-    lines.append("        uint64_t plane = 0;")
-    lines.append("        for (int i = 0; i < 64; i++) {")
-    lines.append("            if (input[i] & (1 << bit)) plane |= (1ULL << i);")
-    lines.append("        }")
-    lines.append("        planes[bit] = _mm512_set1_epi64(plane);")
-    lines.append("    }")
     lines.append("")
 
     # Evaluate - generate all gates, replace ternary roots
@@ -207,7 +205,6 @@ def generate_avx512_ternary_code(state: CircuitState, cones: list) -> str:
 
     # Store outputs
     lines.append("    // Store outputs")
-    lines.append("    __m512i out_planes[8];")
     for i, (out_idx, inv) in enumerate(state.outputs):
         if inv:
             lines.append(
@@ -216,6 +213,28 @@ def generate_avx512_ternary_code(state: CircuitState, cones: list) -> str:
         else:
             lines.append(f"    out_planes[{i}] = {get_reg(out_idx)};")
 
+    lines.append("}")
+    lines.append("")
+
+    # Byte wrapper (64 bytes parallel via transpose into a 64-bit mask replicated in each lane).
+    # This is convenient for end-to-end verification, but not the full 512-wide circuit-only throughput.
+    lines.append("void sbox_avx512_ternary(const uint8_t* input, uint8_t* output) {")
+    lines.append("    __m512i planes[8];")
+    lines.append("    __m512i out_planes[8];")
+    lines.append("")
+
+    # Transpose
+    lines.append("    // Transpose to bit planes (64 bytes -> 64-bit masks replicated across lanes)")
+    lines.append("    for (int bit = 0; bit < 8; bit++) {")
+    lines.append("        uint64_t plane = 0;")
+    lines.append("        for (int i = 0; i < 64; i++) {")
+    lines.append("            if (input[i] & (1 << bit)) plane |= (1ULL << i);")
+    lines.append("        }")
+    lines.append("        planes[bit] = _mm512_set1_epi64(plane);")
+    lines.append("    }")
+    lines.append("")
+
+    lines.append("    sbox_avx512_ternary_planes(planes, out_planes);")
     lines.append("")
 
     # Transpose output
@@ -285,6 +304,7 @@ def main():
     avx512_code = generate_avx512_ternary_code(state, cones)
 
     # Full benchmark code
+    expected_256 = ", ".join(f"0x{v:02x}" for v in AES_SBOX_TABLE)
     bench_code = f"""
 #include <stdio.h>
 #include <stdint.h>
@@ -343,6 +363,74 @@ int main(int argc, char** argv) {{
     printf("AVX-512 ternary ({active_gates} ops, {len(cones)} vpternlogd):\\n");
     printf("  %.3f ns/eval, %.0f evals/sec\\n\\n",
            (elapsed_avx512 / evals_avx512) * 1e9, evals_avx512 / elapsed_avx512);
+
+    // Benchmark AVX-512 ternary (circuit-only on full 512-bit bit-planes)
+    __m512i planes512[8], out512[8];
+    for (int i = 0; i < 8; i++) planes512[i] = _mm512_set1_epi32(0x12345678u ^ (0x11111111u * i));
+
+    clock_gettime(CLOCK_MONOTONIC, &ts_start);
+    for (int iter = 0; iter < iterations; iter++) {{
+        sbox_avx512_ternary_planes(planes512, out512);
+        planes512[0] = out512[0];
+    }}
+    clock_gettime(CLOCK_MONOTONIC, &ts_end);
+
+    double elapsed_avx512_planes = (ts_end.tv_sec - ts_start.tv_sec) +
+                                   (ts_end.tv_nsec - ts_start.tv_nsec) / 1e9;
+    double evals_avx512_planes = (double)iterations * 512;  // 512 parallel evals
+    printf("AVX-512 ternary (circuit-only 512w):\\n");
+    printf("  %.3f ns/eval, %.0f evals/sec\\n\\n",
+           (elapsed_avx512_planes / evals_avx512_planes) * 1e9,
+           evals_avx512_planes / elapsed_avx512_planes);
+
+    // Full 256-value truth-table check using the 512-bit bit-plane entrypoint.
+    // Pack inputs 0..255 into bits 0..255 (first 4x64-bit lanes); remaining bits are 0.
+    static const uint8_t EXPECTED[256] = {{
+        {expected_256}
+    }};
+    __m512i tt_in[8], tt_out[8];
+    uint64_t in_chunks[8], out_chunks[8];
+    uint8_t tt_out_bytes[256];
+    for (int i = 0; i < 256; i++) tt_out_bytes[i] = 0;
+    for (int bit = 0; bit < 8; bit++) {{
+        for (int lane = 0; lane < 8; lane++) in_chunks[lane] = 0;
+        for (int x = 0; x < 256; x++) {{
+            if (x & (1 << bit)) {{
+                int lane = x / 64;
+                int off = x % 64;
+                in_chunks[lane] |= (1ULL << off);
+            }}
+        }}
+        tt_in[bit] = _mm512_set_epi64(
+            (long long)in_chunks[7], (long long)in_chunks[6], (long long)in_chunks[5], (long long)in_chunks[4],
+            (long long)in_chunks[3], (long long)in_chunks[2], (long long)in_chunks[1], (long long)in_chunks[0]
+        );
+    }}
+    sbox_avx512_ternary_planes(tt_in, tt_out);
+    int tt_errors = 0;
+    for (int bit = 0; bit < 8; bit++) {{
+        _mm512_storeu_si512((__m512i*)out_chunks, tt_out[bit]);
+        for (int x = 0; x < 256; x++) {{
+            int lane = x / 64;
+            int off = x % 64;
+            int v = (out_chunks[lane] >> off) & 1;
+            if (v) tt_out_bytes[x] |= (1 << bit);
+        }}
+    }}
+    for (int x = 0; x < 256; x++) {{
+        if (tt_out_bytes[x] != EXPECTED[x]) {{
+            if (tt_errors < 8) {{
+                printf("TT FAIL: S-box[%d]=0x%02x expected 0x%02x\\n", x, tt_out_bytes[x], EXPECTED[x]);
+            }}
+            tt_errors++;
+        }}
+    }}
+    if (tt_errors == 0) {{
+        printf("Truth table check (512w): PASS\\n\\n");
+    }} else {{
+        printf("Truth table check (512w): FAIL (%d errors)\\n\\n", tt_errors);
+        return 1;
+    }}
 
     // Speedup
     double ns_avx2 = (elapsed_avx2 / evals_avx2) * 1e9;

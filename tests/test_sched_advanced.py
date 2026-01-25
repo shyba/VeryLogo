@@ -408,5 +408,81 @@ class TestRegisterAllocationWithSchedule(unittest.TestCase):
         )
 
 
+class TestTernaryGateLivenessAndAllocation(unittest.TestCase):
+    """Tests for ternary gate (5-tuple) liveness and register allocation."""
+
+    def test_ternary_live_ranges(self):
+        gates = [
+            ("xor", 0, 1),
+            ("xor", 2, 3),
+            ("xor", 4, 5),
+            ("ternary", 8, 9, 10, 0xCA),
+        ]
+        input_bits = 8
+        outputs = [(11, False)]
+
+        sched = list_schedule(gates, input_bits, outputs, AVX2)
+        ranges = compute_live_ranges(sched, gates, input_bits, outputs)
+
+        self.assertIn(8, ranges)
+        self.assertIn(9, ranges)
+        self.assertIn(10, ranges)
+        self.assertIn(11, ranges)
+
+    def test_ternary_all_operands_tracked_for_liveness(self):
+        gates = [
+            ("xor", 0, 1),
+            ("xor", 2, 3),
+            ("xor", 4, 5),
+            ("ternary", 8, 9, 10, 0xCA),
+        ]
+        input_bits = 8
+        outputs = [(11, False)]
+
+        sched = list_schedule(gates, input_bits, outputs, AVX2)
+        ranges = compute_live_ranges(sched, gates, input_bits, outputs)
+
+        ternary_cycle = sched.gate_cycle[3]
+        self.assertGreaterEqual(ranges[8].end, ternary_cycle)
+        self.assertGreaterEqual(ranges[9].end, ternary_cycle)
+        self.assertGreaterEqual(ranges[10].end, ternary_cycle)
+
+    def test_ternary_register_allocation(self):
+        gates = [
+            ("xor", 0, 1),
+            ("xor", 2, 3),
+            ("xor", 4, 5),
+            ("ternary", 8, 9, 10, 0xCA),
+        ]
+        input_bits = 8
+        outputs = [(11, False)]
+
+        sched = list_schedule(gates, input_bits, outputs, AVX512)
+        ranges = compute_live_ranges(sched, gates, input_bits, outputs)
+        alloc = allocate_registers(ranges, sched, AVX512.registers)
+
+        self.assertEqual(
+            alloc.num_spills,
+            0,
+            f"Simple ternary circuit on AVX512 should have 0 spills, got {alloc.num_spills}",
+        )
+
+    def test_ternary_chain_scheduling(self):
+        gates = [
+            ("ternary", 0, 1, 2, 0xCA),
+            ("ternary", 8, 3, 4, 0xE8),
+            ("ternary", 9, 5, 6, 0x96),
+        ]
+        input_bits = 8
+        outputs = [(10, False)]
+
+        sched = list_schedule(gates, input_bits, outputs, AVX2)
+        errors = sched.validate(gates, input_bits, AVX2.latencies)
+        self.assertEqual(errors, [], f"Validation errors: {errors}")
+
+        self.assertLess(sched.gate_cycle[0], sched.gate_cycle[1])
+        self.assertLess(sched.gate_cycle[1], sched.gate_cycle[2])
+
+
 if __name__ == "__main__":
     unittest.main()

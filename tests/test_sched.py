@@ -393,5 +393,78 @@ class TestPipelinedScheduler(unittest.TestCase):
         self.assertEqual(s.total_cycles, theoretical_min)
 
 
+class TestTernaryGateScheduling(unittest.TestCase):
+    """Tests for ternary gate (5-tuple) scheduling."""
+
+    def test_ternary_dependencies(self):
+        gates = [
+            ("xor", 0, 1),
+            ("xor", 2, 3),
+            ("xor", 4, 5),
+            ("ternary", 8, 9, 10, 0xCA),
+        ]
+        deps = compute_dependencies(gates, 8, [])
+        self.assertEqual(deps.predecessors[3], {0, 1, 2})
+        self.assertEqual(deps.successors[0], {3})
+        self.assertEqual(deps.successors[1], {3})
+        self.assertEqual(deps.successors[2], {3})
+
+    def test_ternary_asap(self):
+        gates = [
+            ("xor", 0, 1),
+            ("xor", 2, 3),
+            ("xor", 4, 5),
+            ("ternary", 8, 9, 10, 0xCA),
+        ]
+        asap = compute_asap(gates, 8, {"xor": 1, "ternary": 1})
+        self.assertEqual(asap[0], 0)
+        self.assertEqual(asap[1], 0)
+        self.assertEqual(asap[2], 0)
+        self.assertEqual(asap[3], 1)
+
+    def test_ternary_depth(self):
+        gates = [
+            ("xor", 0, 1),
+            ("ternary", 8, 2, 3, 0xCA),
+            ("ternary", 9, 4, 5, 0xE8),
+        ]
+        self.assertEqual(compute_depth(gates, 8), 3)
+
+    def test_ternary_schedule_validates(self):
+        gates = [
+            ("xor", 0, 1),
+            ("xor", 2, 3),
+            ("ternary", 8, 9, 4, 0xCA),
+        ]
+        s = list_schedule(gates, 8, [(10, False)], AVX2)
+        errors = s.validate(gates, 8, AVX2.latencies)
+        self.assertEqual(errors, [], f"Validation errors: {errors}")
+
+    def test_ternary_schedule_respects_all_operands(self):
+        gates = [
+            ("xor", 0, 1),
+            ("xor", 2, 3),
+            ("xor", 4, 5),
+            ("ternary", 8, 9, 10, 0xCA),
+        ]
+        s = list_schedule(gates, 8, [(11, False)], AVX2)
+        self.assertLess(s.gate_cycle[0], s.gate_cycle[3])
+        self.assertLess(s.gate_cycle[1], s.gate_cycle[3])
+        self.assertLess(s.gate_cycle[2], s.gate_cycle[3])
+        errors = s.validate(gates, 8, AVX2.latencies)
+        self.assertEqual(errors, [], f"Validation errors: {errors}")
+
+    def test_ternary_chain(self):
+        gates = [
+            ("ternary", 0, 1, 2, 0xCA),
+            ("ternary", 8, 3, 4, 0xE8),
+            ("ternary", 9, 5, 6, 0x96),
+        ]
+        asap = compute_asap(gates, 8, {"ternary": 1})
+        self.assertEqual(asap[0], 0)
+        self.assertEqual(asap[1], 1)
+        self.assertEqual(asap[2], 2)
+
+
 if __name__ == "__main__":
     unittest.main()

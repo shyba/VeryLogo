@@ -616,27 +616,29 @@ def optimize_tick_ir(
     superopt_max_nodes: int = 6,
     superopt_timeout_ms: int = 200,
     backend: str = "generic",
+    ternary_mapping: bool | None = None,
 ) -> TickIR:
     from stc.delay_lower import lower_delays
+    from stc.tech import get_technology
+    from stc.mapping.ternary import TernaryMappingPass
+    from stc.passmgr import PassContext
 
     ir = lower_delays(ir)
     ir = reduce_tick_ir(ir)
 
-    if backend != "generic":
-        from stc.tech import get_technology
-        from stc.mapping.ternary import TernaryMappingPass
-        from stc.passmgr import PassContext
+    tech = get_technology(backend)
+    ctx = PassContext(
+        technology=tech,
+        cost_model=tech.cost_model(),
+        depth_model=tech.depth_model(),
+    )
 
-        tech = get_technology(backend)
-        ctx = PassContext(
-            technology=tech,
-            cost_model=tech.cost_model(),
-            depth_model=tech.depth_model(),
-        )
-
-        ternary_pass = TernaryMappingPass()
-        if ternary_pass.should_run(ctx):
-            ir, _ = ternary_pass.run(ir, ctx)
+    ternary_pass = TernaryMappingPass()
+    should_run_ternary = (
+        ternary_mapping if ternary_mapping is not None else ternary_pass.should_run(ctx)
+    )
+    if should_run_ternary:
+        ir, _ = ternary_pass.run(ir, ctx)
     if autovec:
         from stc.autovec_pass import autovectorize_tick_ir
 
@@ -775,18 +777,38 @@ class DeadCodePass(Pass):
 
 
 def build_default_schedule(
-    include_superopt: bool = False, use_ternary_mapping: bool = True
+    include_superopt: bool = False,
+    use_ternary_mapping: bool = True,
+    use_depth_aware_ternary: bool = False,
+    depth_budget: int | None = None,
 ) -> PassSchedule:
-    """Build the default optimization schedule."""
+    """Build the default optimization schedule.
+
+    Args:
+        include_superopt: Include superoptimization passes
+        use_ternary_mapping: Include standard ternary mapping
+        use_depth_aware_ternary: Include depth-aware ternary mapping (reduces depth)
+        depth_budget: Maximum allowed circuit depth (enforced via DepthBudgetPass)
+    """
     schedule = PassSchedule(max_iterations=50)
     schedule.add(CanonicalizePass())
     schedule.add(ConstFoldPass())
     schedule.add(DeadCodePass())
 
-    if use_ternary_mapping:
+    if use_depth_aware_ternary:
+        from stc.passes.depth_ternary import DepthAwareTernaryPass
+
+        schedule.add(DepthAwareTernaryPass())
+
+    if use_ternary_mapping and not use_depth_aware_ternary:
         from stc.mapping.ternary import TernaryMappingPass
 
         schedule.add(TernaryMappingPass())
+
+    if depth_budget is not None:
+        from stc.passes.depth_ternary import DepthBudgetPass
+
+        schedule.add(DepthBudgetPass())
 
     if include_superopt:
         from stc.superopt import SuperoptPass
@@ -801,9 +823,19 @@ def optimize_tick_ir_passmanager(
     technology: str = "generic",
     include_superopt: bool = False,
     depth_budget: int | None = None,
+    use_depth_aware_ternary: bool = False,
     verbosity: int = 0,
 ) -> TickIR:
-    """Optimization entry point using pass manager architecture."""
+    """Optimization entry point using pass manager architecture.
+
+    Args:
+        ir: Input TickIR to optimize
+        technology: Target technology name
+        include_superopt: Include superoptimization passes
+        depth_budget: Maximum allowed circuit depth
+        use_depth_aware_ternary: Use depth-aware ternary mapping to reduce depth
+        verbosity: Logging verbosity level
+    """
     tech = get_technology(technology)
     ctx = PassContext(
         technology=tech,
@@ -813,7 +845,13 @@ def optimize_tick_ir_passmanager(
         verbosity=verbosity,
     )
 
-    schedule = build_default_schedule(include_superopt=include_superopt)
+    use_ternary = depth_budget is None
+    schedule = build_default_schedule(
+        include_superopt=include_superopt,
+        use_ternary_mapping=use_ternary,
+        use_depth_aware_ternary=use_depth_aware_ternary or depth_budget is not None,
+        depth_budget=depth_budget,
+    )
     mgr = PassManager(schedule)
 
     result_ir, metrics = mgr.run(ir, ctx)

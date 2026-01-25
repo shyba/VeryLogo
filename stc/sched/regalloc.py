@@ -155,31 +155,27 @@ class LinearScanAllocator:
         """
         Handle the case where no register is available.
 
-        Either spill the longest-remaining active interval (if it ends after
-        current), or spill current itself.
+        Spill the longest-remaining active interval to free a register for
+        current. This allocator models codegen where each produced value must
+        reside in a register at definition time (we cannot "materialize directly
+        to memory"), so we never spill current at definition.
 
         Returns (spilled_range, assigned_reg).
-        If spilled_range is None, current was spilled and has no register.
         """
         if not active:
             return (None, -1)
 
         longest = max(active, key=lambda r: r.end)
+        reg = reg_assignment[longest.node]
 
-        if longest.end > current.end:
-            reg = reg_assignment[longest.node]
+        stores.append((longest.node, reg, current.start))
 
-            stores.append((longest.node, reg, current.start))
+        active.remove(longest)
+        spills.append(longest.node)
 
-            active.remove(longest)
-            del reg_assignment[longest.node]
-            spills.append(longest.node)
+        loads.append((longest.node, reg, longest.end))
 
-            loads.append((longest.node, reg, longest.end))
-
-            return (longest, reg)
-
-        return (None, -1)
+        return (longest, reg)
 
 
 def allocate_registers(

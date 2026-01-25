@@ -11,6 +11,7 @@ from stc.sched import (
 from stc.sched.liveness import compute_live_ranges, max_live
 from stc.sched.regalloc import allocate_registers
 from stc.sched.emit import AVX2Emitter
+from stc.sched.emit import AVX512Emitter
 from stc.sched.emit.ptx import PTXEmitter
 
 
@@ -27,7 +28,7 @@ TARGETS = {
 
 EMITTERS = {
     "avx2": AVX2Emitter,
-    "avx512": AVX2Emitter,
+    "avx512": AVX512Emitter,
     "ptx": PTXEmitter,
 }
 

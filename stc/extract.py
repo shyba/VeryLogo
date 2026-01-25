@@ -331,6 +331,32 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
             a = bus("A")
             b = bus("B")
             expr = Mux(cond=sel, a=b, b=a)
+        elif t == "$pmux":
+            # Priority mux:
+            # - A: default value (width W)
+            # - B: concatenation of K alternatives, each width W (LSB chunk is index 0)
+            # - S: K 1-bit selects
+            #
+            # Semantics: cascade muxes so higher-index selects override lower ones.
+            a = bus("A")
+            b_bits = cell.connections.get("B")
+            s_bits = cell.connections.get("S")
+            if b_bits is None or s_bits is None:
+                raise ExtractionError("pmux requires B and S ports")
+            if len(s_bits) < 1:
+                raise ExtractionError("pmux requires at least 1 select bit")
+            w = width_of_expr(a)
+            if len(b_bits) != w * len(s_bits):
+                raise ExtractionError("pmux B width must be A_WIDTH * S_WIDTH")
+
+            out = a
+            # B is laid out as consecutive W-bit chunks, one per select bit.
+            for i in range(len(s_bits)):
+                sel = expr_for_bit(s_bits[i])
+                chunk_bits = b_bits[i * w : (i + 1) * w]
+                alt = _bus_from_bits(chunk_bits, expr_for_bit, width_of_expr)
+                out = Mux(cond=sel, a=alt, b=out)
+            expr = out
         elif t == "$reduce_or":
             a = bus("A")
             w = width_of_expr(a)

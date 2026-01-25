@@ -2,11 +2,13 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
-from typing import Sequence
+from typing import Sequence, Union
 
 import z3
 
-from stc.tick_ir import And, Expr, Not, Slice, Var, Xor, BitVecConst
+from stc.tick_ir import And, Expr, Not, Or, Slice, TernaryLut, Var, Xor, BitVecConst
+
+Gate = Union[tuple[str, int, int], tuple[str, int, int, int, int]]
 
 
 @dataclass
@@ -1000,17 +1002,45 @@ class CircuitState:
 
     input_bits: int
     output_bits: int
-    gates: list[tuple[str, int, int]]
+    gates: list[Gate]
     outputs: list[tuple[int, bool]]
     gate_count: int
 
     @property
     def and_count(self) -> int:
-        return sum(1 for op, _, _ in self.gates if op == "and")
+        count = 0
+        for gate in self.gates:
+            if len(gate) == 3:
+                op, _, _ = gate
+                if op == "and":
+                    count += 1
+            elif len(gate) == 5:
+                count += 1
+        return count
 
     @property
     def xor_count(self) -> int:
-        return sum(1 for op, _, _ in self.gates if op == "xor")
+        count = 0
+        for gate in self.gates:
+            if len(gate) == 3:
+                op, _, _ = gate
+                if op == "xor":
+                    count += 1
+            elif len(gate) == 5:
+                count += 1
+        return count
+
+    @property
+    def not_count(self) -> int:
+        count = 0
+        for gate in self.gates:
+            if len(gate) == 3:
+                op, _, _ = gate
+                if op == "not":
+                    count += 1
+            elif len(gate) == 5:
+                count += 1
+        return count
 
     def weighted_cost(self, and_weight: float = 1.0, xor_weight: float = 1.0) -> float:
         """
@@ -1031,22 +1061,128 @@ class CircuitState:
         """
         return and_weight * self.and_count + xor_weight * self.xor_count
 
+    def backend_cost(self, technology: "Technology | None" = None) -> float:
+        """Compute cost using backend-specific gate weights.
+
+        On PTX/AVX-512, ternary gates cost 1 (native lop3/vpternlog).
+        On other backends, ternary gates cost 3 (decomposition to binary gates).
+
+        Args:
+            technology: Target technology for cost model. If None, uses worst-case
+                        (ternary = 3).
+
+        Returns:
+            Total cost with backend-specific weights.
+        """
+        from stc.tech import Technology
+
+        if technology is None:
+            ternary_cost = 3.0
+        else:
+            prims = {p.name for p in technology.primitives()}
+            ternary_cost = 1.0 if ("lop3" in prims or "vpternlog" in prims) else 3.0
+
+        cost = 0.0
+        for gate in self.gates:
+            if len(gate) == 5:
+                cost += ternary_cost
+            else:
+                op = gate[0]
+                if op == "not":
+                    cost += 0.0
+                elif op == "const":
+                    cost += 0.0
+                else:
+                    cost += 1.0
+        return cost
+
+    def backend_depth(self, technology: "Technology | None" = None) -> int:
+        """Compute depth using backend-specific latencies.
+
+        Uses technology.depth_model() if available to get per-op latencies.
+        On backends without native ternary support, ternary gates add 2 depth
+        (decomposition to 2 binary gates in series).
+
+        Args:
+            technology: Target technology for depth model. If None, uses default
+                        unit depth model.
+
+        Returns:
+            Critical path depth with backend-specific latencies.
+        """
+        from stc.tech import Technology
+
+        if technology is not None:
+            depth_model = technology.depth_model()
+            prims = {p.name for p in technology.primitives()}
+            has_ternary = "lop3" in prims or "vpternlog" in prims
+        else:
+            depth_model = None
+            has_ternary = False
+
+        node_depth: dict[int, int] = {}
+        for i in range(self.input_bits):
+            node_depth[i] = 0
+
+        for g_idx, gate in enumerate(self.gates):
+            full_idx = self.input_bits + g_idx
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                a_depth = node_depth.get(a, 0)
+                b_depth = node_depth.get(b, 0)
+                c_depth = node_depth.get(c, 0)
+                base_depth = max(a_depth, b_depth, c_depth)
+                if has_ternary:
+                    node_depth[full_idx] = base_depth + 1
+                else:
+                    node_depth[full_idx] = base_depth + 2
+            else:
+                op, left, right = gate
+                if op == "const":
+                    node_depth[full_idx] = 0
+                elif op == "not":
+                    base_depth = node_depth.get(left, 0)
+                    if depth_model is not None and depth_model.is_free("not"):
+                        node_depth[full_idx] = base_depth
+                    else:
+                        node_depth[full_idx] = base_depth + 1
+                else:
+                    left_depth = node_depth.get(left, 0)
+                    right_depth = node_depth.get(right, 0)
+                    base_depth = max(left_depth, right_depth)
+                    if depth_model is not None:
+                        node_depth[full_idx] = base_depth + depth_model.op_depth(op)
+                    else:
+                        node_depth[full_idx] = base_depth + 1
+
+        if not self.outputs:
+            return 0
+        return max(node_depth.get(idx, 0) for idx, _ in self.outputs)
+
     @property
     def depth(self) -> int:
         node_depth: dict[int, int] = {}
         for i in range(self.input_bits):
             node_depth[i] = 0
 
-        for g_idx, (op, left, right) in enumerate(self.gates):
+        for g_idx, gate in enumerate(self.gates):
             full_idx = self.input_bits + g_idx
-            if op == "const":
-                node_depth[full_idx] = 0
-            elif op == "not":
-                node_depth[full_idx] = node_depth.get(left, 0) + 1
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                a_depth = node_depth.get(a, 0)
+                b_depth = node_depth.get(b, 0)
+                c_depth = node_depth.get(c, 0)
+                node_depth[full_idx] = max(a_depth, b_depth, c_depth) + 1
             else:
-                left_depth = node_depth.get(left, 0)
-                right_depth = node_depth.get(right, 0)
-                node_depth[full_idx] = max(left_depth, right_depth) + 1
+                op, left, right = gate
+                if op == "const":
+                    node_depth[full_idx] = 0
+                elif op == "not":
+                    node_depth[full_idx] = node_depth.get(left, 0) + 1
+                else:
+                    left_depth = node_depth.get(left, 0)
+                    right_depth = node_depth.get(right, 0)
+                    node_depth[full_idx] = max(left_depth, right_depth) + 1
 
         if not self.outputs:
             return 0
@@ -1058,24 +1194,172 @@ class CircuitState:
         for i in range(self.input_bits):
             node_depth[i] = 0
 
-        for g_idx, (op, left, right) in enumerate(self.gates):
+        for g_idx, gate in enumerate(self.gates):
             full_idx = self.input_bits + g_idx
-            if op == "const":
-                node_depth[full_idx] = 0
-            elif op == "not":
-                node_depth[full_idx] = node_depth.get(left, 0)
-            elif op == "and":
-                left_depth = node_depth.get(left, 0)
-                right_depth = node_depth.get(right, 0)
-                node_depth[full_idx] = max(left_depth, right_depth) + 1
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                a_depth = node_depth.get(a, 0)
+                b_depth = node_depth.get(b, 0)
+                c_depth = node_depth.get(c, 0)
+                node_depth[full_idx] = max(a_depth, b_depth, c_depth) + 1
             else:
-                left_depth = node_depth.get(left, 0)
-                right_depth = node_depth.get(right, 0)
-                node_depth[full_idx] = max(left_depth, right_depth)
+                op, left, right = gate
+                if op == "const":
+                    node_depth[full_idx] = 0
+                elif op == "not":
+                    node_depth[full_idx] = node_depth.get(left, 0)
+                elif op == "and":
+                    left_depth = node_depth.get(left, 0)
+                    right_depth = node_depth.get(right, 0)
+                    node_depth[full_idx] = max(left_depth, right_depth) + 1
+                else:
+                    left_depth = node_depth.get(left, 0)
+                    right_depth = node_depth.get(right, 0)
+                    node_depth[full_idx] = max(left_depth, right_depth)
 
         if not self.outputs:
             return 0
         return max(node_depth.get(idx, 0) for idx, _ in self.outputs)
+
+    def critical_path_nodes(self) -> set[int]:
+        """Find all nodes that lie on a critical (maximum depth) path.
+
+        Returns:
+            Set of node indices (including inputs) on critical paths.
+        """
+        node_depth: dict[int, int] = {}
+        for i in range(self.input_bits):
+            node_depth[i] = 0
+
+        for g_idx, gate in enumerate(self.gates):
+            full_idx = self.input_bits + g_idx
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                a_depth = node_depth.get(a, 0)
+                b_depth = node_depth.get(b, 0)
+                c_depth = node_depth.get(c, 0)
+                node_depth[full_idx] = max(a_depth, b_depth, c_depth) + 1
+            else:
+                op, left, right = gate
+                if op == "const":
+                    node_depth[full_idx] = 0
+                elif op == "not":
+                    node_depth[full_idx] = node_depth.get(left, 0) + 1
+                else:
+                    left_depth = node_depth.get(left, 0)
+                    right_depth = node_depth.get(right, 0)
+                    node_depth[full_idx] = max(left_depth, right_depth) + 1
+
+        if not self.outputs:
+            return set()
+
+        max_depth = max(node_depth.get(idx, 0) for idx, _ in self.outputs)
+        critical_nodes: set[int] = set()
+
+        def trace_critical(idx: int, target_depth: int) -> None:
+            if idx in critical_nodes:
+                return
+            if node_depth.get(idx, 0) != target_depth:
+                return
+            critical_nodes.add(idx)
+
+            if idx < self.input_bits:
+                return
+
+            g_idx = idx - self.input_bits
+            if g_idx < 0 or g_idx >= len(self.gates):
+                return
+
+            gate = self.gates[g_idx]
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                for child in [a, b, c]:
+                    if node_depth.get(child, 0) == target_depth - 1:
+                        trace_critical(child, target_depth - 1)
+            else:
+                op, left, right = gate
+                if op == "const":
+                    pass
+                elif op == "not":
+                    if node_depth.get(left, 0) == target_depth - 1:
+                        trace_critical(left, target_depth - 1)
+                else:
+                    if node_depth.get(left, 0) == target_depth - 1:
+                        trace_critical(left, target_depth - 1)
+                    if node_depth.get(right, 0) == target_depth - 1:
+                        trace_critical(right, target_depth - 1)
+
+        for out_idx, _ in self.outputs:
+            if node_depth.get(out_idx, 0) == max_depth:
+                trace_critical(out_idx, max_depth)
+
+        return critical_nodes
+
+    def node_depths(self) -> dict[int, int]:
+        """Compute depth of each node in the circuit.
+
+        Returns:
+            Dict mapping node index to its depth.
+        """
+        node_depth: dict[int, int] = {}
+        for i in range(self.input_bits):
+            node_depth[i] = 0
+
+        for g_idx, gate in enumerate(self.gates):
+            full_idx = self.input_bits + g_idx
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                a_depth = node_depth.get(a, 0)
+                b_depth = node_depth.get(b, 0)
+                c_depth = node_depth.get(c, 0)
+                node_depth[full_idx] = max(a_depth, b_depth, c_depth) + 1
+            else:
+                op, left, right = gate
+                if op == "const":
+                    node_depth[full_idx] = 0
+                elif op == "not":
+                    node_depth[full_idx] = node_depth.get(left, 0) + 1
+                else:
+                    left_depth = node_depth.get(left, 0)
+                    right_depth = node_depth.get(right, 0)
+                    node_depth[full_idx] = max(left_depth, right_depth) + 1
+
+        return node_depth
+
+    def optimize_for_depth(self, max_depth_increase: int = 0) -> "CircuitState":
+        """Optimize circuit with depth constraints.
+
+        Applies optimizations that may reduce gate count while respecting
+        a maximum allowed depth increase.
+
+        Args:
+            max_depth_increase: Maximum allowed increase in circuit depth (0 = no increase)
+
+        Returns:
+            Optimized CircuitState that respects depth constraint.
+        """
+        original_depth = self.depth
+        max_allowed_depth = original_depth + max_depth_increase
+
+        current = self
+
+        candidate = current.eliminate_dead_code()
+        if candidate.depth <= max_allowed_depth:
+            current = candidate
+
+        candidate = current.eliminate_common_subexpressions()
+        if candidate.depth <= max_allowed_depth:
+            current = candidate
+
+        candidate = current.apply_algebraic_rewrites()
+        if candidate.depth <= max_allowed_depth:
+            current = candidate
+
+        candidate = current.flatten_xor_trees()
+        if candidate.depth <= max_allowed_depth:
+            current = candidate
+
+        return current
 
     def to_dict(self) -> dict:
         return {
@@ -1096,30 +1380,78 @@ class CircuitState:
             gate_count=d["gate_count"],
         )
 
+    @staticmethod
+    def remap_gates(gates: list[Gate], mapping: dict[int, int]) -> list[Gate]:
+        """Remap node indices in a list of gates using the provided mapping.
+
+        Args:
+            gates: List of gates to remap
+            mapping: Dict mapping old indices to new indices
+
+        Returns:
+            New list of gates with remapped indices
+        """
+        result: list[Gate] = []
+        for g in gates:
+            if len(g) == 5:
+                op, a, b, c, imm8 = g
+                result.append(
+                    (op, mapping.get(a, a), mapping.get(b, b), mapping.get(c, c), imm8)
+                )
+            else:
+                op, left, right = g
+                new_left = mapping.get(left, left)
+                new_right = (
+                    mapping.get(right, right) if op not in ("const", "not") else right
+                )
+                result.append((op, new_left, new_right))
+        return result
+
     def evaluate(self, x: int) -> int:
         """Evaluate circuit on input x, return output value."""
         node_vals = [(x >> i) & 1 for i in range(self.input_bits)]
 
-        for op, left, right in self.gates:
-            if left >= len(node_vals):
-                raise IndexError(
-                    f"Invalid left index {left}, only {len(node_vals)} nodes"
-                )
-            if op not in ("const", "not") and right >= len(node_vals):
-                raise IndexError(
-                    f"Invalid right index {right}, only {len(node_vals)} nodes"
-                )
+        for gate in self.gates:
+            if len(gate) == 5:
+                _, a, b, c, imm8 = gate
+                if a >= len(node_vals):
+                    raise IndexError(
+                        f"Invalid a index {a}, only {len(node_vals)} nodes"
+                    )
+                if b >= len(node_vals):
+                    raise IndexError(
+                        f"Invalid b index {b}, only {len(node_vals)} nodes"
+                    )
+                if c >= len(node_vals):
+                    raise IndexError(
+                        f"Invalid c index {c}, only {len(node_vals)} nodes"
+                    )
+                va = node_vals[a]
+                vb = node_vals[b]
+                vc = node_vals[c]
+                idx = (va << 2) | (vb << 1) | vc
+                node_vals.append((imm8 >> idx) & 1)
+            else:
+                op, left, right = gate
+                if left >= len(node_vals):
+                    raise IndexError(
+                        f"Invalid left index {left}, only {len(node_vals)} nodes"
+                    )
+                if op not in ("const", "not") and right >= len(node_vals):
+                    raise IndexError(
+                        f"Invalid right index {right}, only {len(node_vals)} nodes"
+                    )
 
-            if op == "xor":
-                node_vals.append(node_vals[left] ^ node_vals[right])
-            elif op == "and":
-                node_vals.append(node_vals[left] & node_vals[right])
-            elif op == "or":
-                node_vals.append(node_vals[left] | node_vals[right])
-            elif op == "not":
-                node_vals.append(node_vals[left] ^ 1)
-            elif op == "const":
-                node_vals.append(left & 1)
+                if op == "xor":
+                    node_vals.append(node_vals[left] ^ node_vals[right])
+                elif op == "and":
+                    node_vals.append(node_vals[left] & node_vals[right])
+                elif op == "or":
+                    node_vals.append(node_vals[left] | node_vals[right])
+                elif op == "not":
+                    node_vals.append(node_vals[left] ^ 1)
+                elif op == "const":
+                    node_vals.append(left & 1)
 
         result = 0
         for bit, (idx, invert) in enumerate(self.outputs):
@@ -1136,18 +1468,26 @@ class CircuitState:
             Slice(x=Var("x"), offset=i, width=1) for i in range(self.input_bits)
         ]
 
-        for op, left, right in self.gates:
-            if op == "xor":
-                expr = Xor(a=node_exprs[left], b=node_exprs[right])
-            elif op == "and":
-                expr = And(a=node_exprs[left], b=node_exprs[right])
-            elif op == "not":
-                expr = Not(x=node_exprs[left])
-            elif op == "const":
-                expr = BitVecConst(width=right, value=left)
+        for gate in self.gates:
+            if len(gate) == 5:
+                raise NotImplementedError(
+                    "Conversion of ternary gates to expressions not yet supported"
+                )
             else:
-                expr = Not(x=And(a=Not(x=node_exprs[left]), b=Not(x=node_exprs[right])))
-            node_exprs.append(expr)
+                op, left, right = gate
+                if op == "xor":
+                    expr = Xor(a=node_exprs[left], b=node_exprs[right])
+                elif op == "and":
+                    expr = And(a=node_exprs[left], b=node_exprs[right])
+                elif op == "not":
+                    expr = Not(x=node_exprs[left])
+                elif op == "const":
+                    expr = BitVecConst(width=right, value=left)
+                else:
+                    expr = Not(
+                        x=And(a=Not(x=node_exprs[left]), b=Not(x=node_exprs[right]))
+                    )
+                node_exprs.append(expr)
 
         output_exprs = []
         for idx, invert in self.outputs:
@@ -1171,10 +1511,17 @@ class CircuitState:
             if gate_idx in used:
                 return
             used.add(gate_idx)
-            op, left, right = self.gates[gate_idx]
-            mark_used(left)
-            if op not in ("const", "not"):
-                mark_used(right)
+            gate = self.gates[gate_idx]
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                mark_used(a)
+                mark_used(b)
+                mark_used(c)
+            else:
+                op, left, right = gate
+                mark_used(left)
+                if op not in ("const", "not"):
+                    mark_used(right)
 
         for idx, _ in self.outputs:
             mark_used(idx)
@@ -1192,16 +1539,26 @@ class CircuitState:
         for i in range(self.input_bits):
             old_to_new[i] = i
 
-        new_gates: list[tuple[str, int, int]] = []
+        new_gates: list[Gate] = []
         for old_idx in sorted(used):
-            op, left, right = self.gates[old_idx]
+            gate = self.gates[old_idx]
             new_idx = self.input_bits + len(new_gates)
             old_to_new[self.input_bits + old_idx] = new_idx
-            new_left = old_to_new.get(left, left)
-            new_right = (
-                old_to_new.get(right, right) if op not in ("const", "not") else right
-            )
-            new_gates.append((op, new_left, new_right))
+            if len(gate) == 5:
+                _, a, b, c, imm8 = gate
+                new_a = old_to_new.get(a, a)
+                new_b = old_to_new.get(b, b)
+                new_c = old_to_new.get(c, c)
+                new_gates.append(("ternary", new_a, new_b, new_c, imm8))
+            else:
+                op, left, right = gate
+                new_left = old_to_new.get(left, left)
+                new_right = (
+                    old_to_new.get(right, right)
+                    if op not in ("const", "not")
+                    else right
+                )
+                new_gates.append((op, new_left, new_right))
 
         new_outputs = [(old_to_new[idx], inv) for idx, inv in self.outputs]
 
@@ -1214,22 +1571,30 @@ class CircuitState:
         )
 
     def eliminate_common_subexpressions(self) -> "CircuitState":
-        seen: dict[tuple[str, int, int], int] = {}
+        seen: dict[tuple, int] = {}
         remap: dict[int, int] = {}
 
         for i in range(self.input_bits):
             remap[i] = i
 
-        for g_idx, (op, left, right) in enumerate(self.gates):
+        for g_idx, gate in enumerate(self.gates):
             full_idx = self.input_bits + g_idx
 
-            new_left = remap.get(left, left)
-            new_right = remap.get(right, right)
+            if len(gate) == 5:
+                _, a, b, c, imm8 = gate
+                new_a = remap.get(a, a)
+                new_b = remap.get(b, b)
+                new_c = remap.get(c, c)
+                key = ("ternary", new_a, new_b, new_c, imm8)
+            else:
+                op, left, right = gate
+                new_left = remap.get(left, left)
+                new_right = remap.get(right, right)
 
-            if op in ("xor", "and", "or") and new_left > new_right:
-                new_left, new_right = new_right, new_left
+                if op in ("xor", "and", "or") and new_left > new_right:
+                    new_left, new_right = new_right, new_left
 
-            key = (op, new_left, new_right)
+                key = (op, new_left, new_right)
 
             if key in seen:
                 remap[full_idx] = seen[key]
@@ -1248,16 +1613,23 @@ class CircuitState:
             if gate_idx in used:
                 return
             used.add(gate_idx)
-            op, left, right = self.gates[gate_idx]
-            mark_used(remap.get(left, left))
-            if op not in ("const", "not"):
-                mark_used(remap.get(right, right))
+            gate = self.gates[gate_idx]
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                mark_used(remap.get(a, a))
+                mark_used(remap.get(b, b))
+                mark_used(remap.get(c, c))
+            else:
+                op, left, right = gate
+                mark_used(remap.get(left, left))
+                if op not in ("const", "not"):
+                    mark_used(remap.get(right, right))
 
         for out_idx, _ in self.outputs:
             mark_used(remap.get(out_idx, out_idx))
 
         old_to_new: dict[int, int] = {i: i for i in range(self.input_bits)}
-        new_gates: list[tuple[str, int, int]] = []
+        new_gates: list[Gate] = []
 
         for old_gate_idx in sorted(used):
             full_old_idx = self.input_bits + old_gate_idx
@@ -1265,13 +1637,23 @@ class CircuitState:
             if remap.get(full_old_idx, full_old_idx) != full_old_idx:
                 continue
 
-            op, left, right = self.gates[old_gate_idx]
-            new_left = old_to_new.get(remap.get(left, left), remap.get(left, left))
-            new_right = old_to_new.get(remap.get(right, right), remap.get(right, right))
-
+            gate = self.gates[old_gate_idx]
             new_idx = self.input_bits + len(new_gates)
             old_to_new[full_old_idx] = new_idx
-            new_gates.append((op, new_left, new_right))
+
+            if len(gate) == 5:
+                _, a, b, c, imm8 = gate
+                new_a = old_to_new.get(remap.get(a, a), remap.get(a, a))
+                new_b = old_to_new.get(remap.get(b, b), remap.get(b, b))
+                new_c = old_to_new.get(remap.get(c, c), remap.get(c, c))
+                new_gates.append(("ternary", new_a, new_b, new_c, imm8))
+            else:
+                op, left, right = gate
+                new_left = old_to_new.get(remap.get(left, left), remap.get(left, left))
+                new_right = old_to_new.get(
+                    remap.get(right, right), remap.get(right, right)
+                )
+                new_gates.append((op, new_left, new_right))
 
         for old_gate_idx in sorted(used):
             full_old_idx = self.input_bits + old_gate_idx
@@ -1314,9 +1696,11 @@ class CircuitState:
         outputs = list(self.outputs)
 
         def find_const_gate(value: int) -> int | None:
-            for g_idx, (op, left, right) in enumerate(gates):
-                if op == "const" and (left & 1) == value:
-                    return self.input_bits + g_idx
+            for g_idx, gate in enumerate(gates):
+                if len(gate) == 3:
+                    op, left, right = gate
+                    if op == "const" and (left & 1) == value:
+                        return self.input_bits + g_idx
             return None
 
         def ensure_const_gate(value: int) -> int:
@@ -1333,7 +1717,10 @@ class CircuitState:
             gate_idx = idx - self.input_bits
             if gate_idx < 0 or gate_idx >= len(gates):
                 return None
-            return gates[gate_idx]
+            gate = gates[gate_idx]
+            if len(gate) == 5:
+                return None
+            return gate
 
         remap: dict[int, int] = {}
 
@@ -1347,12 +1734,21 @@ class CircuitState:
             changed = False
 
             for g_idx in range(len(gates)):
-                op, left, right = gates[g_idx]
+                gate = gates[g_idx]
                 full_idx = self.input_bits + g_idx
 
                 if full_idx in remap:
                     continue
 
+                if len(gate) == 5:
+                    _, a, b, c, imm8 = gate
+                    a = resolve(a)
+                    b = resolve(b)
+                    c = resolve(c)
+                    gates[g_idx] = ("ternary", a, b, c, imm8)
+                    continue
+
+                op, left, right = gate
                 left = resolve(left)
                 right = resolve(right)
                 gates[g_idx] = (op, left, right)
@@ -1495,10 +1891,17 @@ class CircuitState:
         Does not flatten through AND gates.
         """
         gate_refs: dict[int, int] = {}
-        for op, left, right in self.gates:
-            gate_refs[left] = gate_refs.get(left, 0) + 1
-            if op not in ("const", "not"):
-                gate_refs[right] = gate_refs.get(right, 0) + 1
+        for gate in self.gates:
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                gate_refs[a] = gate_refs.get(a, 0) + 1
+                gate_refs[b] = gate_refs.get(b, 0) + 1
+                gate_refs[c] = gate_refs.get(c, 0) + 1
+            else:
+                op, left, right = gate
+                gate_refs[left] = gate_refs.get(left, 0) + 1
+                if op not in ("const", "not"):
+                    gate_refs[right] = gate_refs.get(right, 0) + 1
         for out_idx, _ in self.outputs:
             gate_refs[out_idx] = gate_refs.get(out_idx, 0) + 1
 
@@ -1508,7 +1911,10 @@ class CircuitState:
             gate_idx = idx - self.input_bits
             if gate_idx < 0 or gate_idx >= len(self.gates):
                 return None
-            return self.gates[gate_idx]
+            gate = self.gates[gate_idx]
+            if len(gate) == 5:
+                return None
+            return gate
 
         def is_xor_only_used_by(idx: int, parent_idx: int) -> bool:
             g = get_gate_def(idx)
@@ -1535,7 +1941,7 @@ class CircuitState:
                 counts[leaf] = counts.get(leaf, 0) + 1
             return [leaf for leaf, count in sorted(counts.items()) if count % 2 == 1]
 
-        new_gates: list[tuple[str, int, int]] = []
+        new_gates: list[Gate] = []
         old_to_new: dict[int, int] = {i: i for i in range(self.input_bits)}
         const_zero_idx: int | None = None
 
@@ -1655,18 +2061,32 @@ class CircuitState:
             else:
                 return f"t{idx - self.input_bits}"
 
-        for g_idx, (op, left, right) in enumerate(self.gates):
+        for g_idx, gate in enumerate(self.gates):
             gate_name = f"t{g_idx}"
-            if op == "xor":
-                lines.append(f"{gate_name} = {node_name(left)} ^ {node_name(right)}")
-            elif op == "and":
-                lines.append(f"{gate_name} = {node_name(left)} & {node_name(right)}")
-            elif op == "or":
-                lines.append(f"{gate_name} = {node_name(left)} | {node_name(right)}")
-            elif op == "not":
-                lines.append(f"{gate_name} = ~{node_name(left)}")
-            elif op == "const":
-                lines.append(f"{gate_name} = {left & 1}")
+            if len(gate) == 5:
+                _, a, b, c, imm8 = gate
+                lines.append(
+                    f"{gate_name} = ternary({node_name(a)}, {node_name(b)}, "
+                    f"{node_name(c)}, 0x{imm8:02x})"
+                )
+            else:
+                op, left, right = gate
+                if op == "xor":
+                    lines.append(
+                        f"{gate_name} = {node_name(left)} ^ {node_name(right)}"
+                    )
+                elif op == "and":
+                    lines.append(
+                        f"{gate_name} = {node_name(left)} & {node_name(right)}"
+                    )
+                elif op == "or":
+                    lines.append(
+                        f"{gate_name} = {node_name(left)} | {node_name(right)}"
+                    )
+                elif op == "not":
+                    lines.append(f"{gate_name} = ~{node_name(left)}")
+                elif op == "const":
+                    lines.append(f"{gate_name} = {left & 1}")
 
         for out_idx, (idx, invert) in enumerate(self.outputs):
             output_name = f"y{out_idx}"
@@ -1691,15 +2111,17 @@ class CircuitState:
         from stc.linear_opt import LinearCone
 
         and_gate_indices: list[int] = []
-        for g_idx, (op, _, _) in enumerate(self.gates):
-            if op == "and":
+        for g_idx, gate in enumerate(self.gates):
+            if len(gate) == 5:
+                and_gate_indices.append(self.input_bits + g_idx)
+            elif gate[0] == "and":
                 and_gate_indices.append(self.input_bits + g_idx)
 
         if not and_gate_indices:
             all_xors = [
                 self.input_bits + g_idx
-                for g_idx, (op, _, _) in enumerate(self.gates)
-                if op == "xor"
+                for g_idx, gate in enumerate(self.gates)
+                if len(gate) == 3 and gate[0] == "xor"
             ]
             if not all_xors:
                 return CircuitState(
@@ -1714,6 +2136,7 @@ class CircuitState:
                 idx
                 for idx, _ in self.outputs
                 if idx >= self.input_bits
+                and len(self.gates[idx - self.input_bits]) == 3
                 and self.gates[idx - self.input_bits][0] == "xor"
             ]
             if not output_xors:
@@ -1781,14 +2204,27 @@ class CircuitState:
         and_inputs: list[int] = []
         for and_idx in and_gate_indices:
             gate_idx = and_idx - self.input_bits
-            _, left, right = self.gates[gate_idx]
-            if left not in stop_at and left >= self.input_bits:
-                and_inputs.append(left)
-            if right not in stop_at and right >= self.input_bits:
-                and_inputs.append(right)
+            gate = self.gates[gate_idx]
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                if a not in stop_at and a >= self.input_bits:
+                    and_inputs.append(a)
+                if b not in stop_at and b >= self.input_bits:
+                    and_inputs.append(b)
+                if c not in stop_at and c >= self.input_bits:
+                    and_inputs.append(c)
+            else:
+                _, left, right = gate
+                if left not in stop_at and left >= self.input_bits:
+                    and_inputs.append(left)
+                if right not in stop_at and right >= self.input_bits:
+                    and_inputs.append(right)
 
         and_input_xors = [
-            idx for idx in and_inputs if self.gates[idx - self.input_bits][0] == "xor"
+            idx
+            for idx in and_inputs
+            if len(self.gates[idx - self.input_bits]) == 3
+            and self.gates[idx - self.input_bits][0] == "xor"
         ]
 
         output_indices = [idx for idx, _ in self.outputs]
@@ -1797,30 +2233,41 @@ class CircuitState:
             for idx in output_indices
             if idx >= self.input_bits
             and idx not in stop_at
+            and len(self.gates[idx - self.input_bits]) == 3
             and self.gates[idx - self.input_bits][0] == "xor"
         ]
 
-        new_gates: list[tuple[str, int, int]] = []
+        new_gates: list[Gate] = []
         old_to_new: dict[int, int] = {i: i for i in range(self.input_bits)}
 
-        for g_idx, (op, left, right) in enumerate(self.gates):
+        for g_idx, gate in enumerate(self.gates):
             full_idx = self.input_bits + g_idx
-            if op in ("const", "not", "or"):
-                if op == "not":
-                    new_left = old_to_new.get(left, left)
-                    new_idx = self.input_bits + len(new_gates)
-                    new_gates.append(("not", new_left, 0))
-                    old_to_new[full_idx] = new_idx
-                elif op == "const":
-                    new_idx = self.input_bits + len(new_gates)
-                    new_gates.append(("const", left, right))
-                    old_to_new[full_idx] = new_idx
-                elif op == "or":
-                    new_left = old_to_new.get(left, left)
-                    new_right = old_to_new.get(right, right)
-                    new_idx = self.input_bits + len(new_gates)
-                    new_gates.append(("or", new_left, new_right))
-                    old_to_new[full_idx] = new_idx
+            if len(gate) == 5:
+                _, a, b, c, imm8 = gate
+                new_a = old_to_new.get(a, a)
+                new_b = old_to_new.get(b, b)
+                new_c = old_to_new.get(c, c)
+                new_idx = self.input_bits + len(new_gates)
+                new_gates.append(("ternary", new_a, new_b, new_c, imm8))
+                old_to_new[full_idx] = new_idx
+            else:
+                op, left, right = gate
+                if op in ("const", "not", "or"):
+                    if op == "not":
+                        new_left = old_to_new.get(left, left)
+                        new_idx = self.input_bits + len(new_gates)
+                        new_gates.append(("not", new_left, 0))
+                        old_to_new[full_idx] = new_idx
+                    elif op == "const":
+                        new_idx = self.input_bits + len(new_gates)
+                        new_gates.append(("const", left, right))
+                        old_to_new[full_idx] = new_idx
+                    elif op == "or":
+                        new_left = old_to_new.get(left, left)
+                        new_right = old_to_new.get(right, right)
+                        new_idx = self.input_bits + len(new_gates)
+                        new_gates.append(("or", new_left, new_right))
+                        old_to_new[full_idx] = new_idx
 
         if and_input_xors:
             pre_cone = LinearCone.from_circuit(self, and_input_xors, stop_at)
@@ -2026,18 +2473,28 @@ class CircuitState:
         window_full = set(self.input_bits + g for g in window_gates)
         root_full = self.input_bits + root_gate_idx
 
-        for gate_idx, (op, left, right) in enumerate(self.gates):
+        for gate_idx, gate in enumerate(self.gates):
             if gate_idx in window_gate_set:
                 continue
 
-            if left in window_full and left != root_full:
-                return False
-            if (
-                op not in ("const", "not")
-                and right in window_full
-                and right != root_full
-            ):
-                return False
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                if a in window_full and a != root_full:
+                    return False
+                if b in window_full and b != root_full:
+                    return False
+                if c in window_full and c != root_full:
+                    return False
+            else:
+                op, left, right = gate
+                if left in window_full and left != root_full:
+                    return False
+                if (
+                    op not in ("const", "not")
+                    and right in window_full
+                    and right != root_full
+                ):
+                    return False
 
         for out_idx, _ in self.outputs:
             if out_idx in window_full and out_idx != root_full:
@@ -2067,15 +2524,24 @@ class CircuitState:
             visited.add(gate_idx)
             window.append(gate_idx)
 
-            op, left, right = self.gates[gate_idx]
-            if left >= self.input_bits:
-                child_idx = left - self.input_bits
-                if child_idx not in visited and child_idx < len(self.gates):
-                    to_visit.append(child_idx)
-            if op not in ("const", "not") and right >= self.input_bits:
-                child_idx = right - self.input_bits
-                if child_idx not in visited and child_idx < len(self.gates):
-                    to_visit.append(child_idx)
+            gate = self.gates[gate_idx]
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                for idx in [a, b, c]:
+                    if idx >= self.input_bits:
+                        child_idx = idx - self.input_bits
+                        if child_idx not in visited and child_idx < len(self.gates):
+                            to_visit.append(child_idx)
+            else:
+                op, left, right = gate
+                if left >= self.input_bits:
+                    child_idx = left - self.input_bits
+                    if child_idx not in visited and child_idx < len(self.gates):
+                        to_visit.append(child_idx)
+                if op not in ("const", "not") and right >= self.input_bits:
+                    child_idx = right - self.input_bits
+                    if child_idx not in visited and child_idx < len(self.gates):
+                        to_visit.append(child_idx)
 
         return window
 
@@ -2089,11 +2555,21 @@ class CircuitState:
         inputs = set()
 
         for gate_idx in window_gates:
-            op, left, right = self.gates[gate_idx]
-            if left not in window_full:
-                inputs.add(left)
-            if op not in ("const", "not") and right not in window_full:
-                inputs.add(right)
+            gate = self.gates[gate_idx]
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                if a not in window_full:
+                    inputs.add(a)
+                if b not in window_full:
+                    inputs.add(b)
+                if c not in window_full:
+                    inputs.add(c)
+            else:
+                op, left, right = gate
+                if left not in window_full:
+                    inputs.add(left)
+                if op not in ("const", "not") and right not in window_full:
+                    inputs.add(right)
 
         return sorted(inputs)
 
@@ -2115,24 +2591,34 @@ class CircuitState:
 
             gate_vals = {}
             for gate_idx in sorted(window_gates):
-                op, left, right = self.gates[gate_idx]
+                gate = self.gates[gate_idx]
                 full_idx = self.input_bits + gate_idx
 
-                left_val = input_vals.get(left) or gate_vals.get(left, 0)
-                right_val = input_vals.get(right) or gate_vals.get(right, 0)
-
-                if op == "xor":
-                    gate_vals[full_idx] = left_val ^ right_val
-                elif op == "and":
-                    gate_vals[full_idx] = left_val & right_val
-                elif op == "or":
-                    gate_vals[full_idx] = left_val | right_val
-                elif op == "not":
-                    gate_vals[full_idx] = left_val ^ 1
-                elif op == "const":
-                    gate_vals[full_idx] = left & 1
+                if len(gate) == 5:
+                    _, a, b, c, imm8 = gate
+                    a_val = input_vals.get(a) or gate_vals.get(a, 0)
+                    b_val = input_vals.get(b) or gate_vals.get(b, 0)
+                    c_val = input_vals.get(c) or gate_vals.get(c, 0)
+                    idx = (a_val << 2) | (b_val << 1) | c_val
+                    gate_vals[full_idx] = (imm8 >> idx) & 1
                 else:
-                    gate_vals[full_idx] = 0
+                    op, left, right = gate
+
+                    left_val = input_vals.get(left) or gate_vals.get(left, 0)
+                    right_val = input_vals.get(right) or gate_vals.get(right, 0)
+
+                    if op == "xor":
+                        gate_vals[full_idx] = left_val ^ right_val
+                    elif op == "and":
+                        gate_vals[full_idx] = left_val & right_val
+                    elif op == "or":
+                        gate_vals[full_idx] = left_val | right_val
+                    elif op == "not":
+                        gate_vals[full_idx] = left_val ^ 1
+                    elif op == "const":
+                        gate_vals[full_idx] = left & 1
+                    else:
+                        gate_vals[full_idx] = 0
 
             table.append(gate_vals.get(root_idx, 0))
 
@@ -2239,12 +2725,12 @@ class CircuitState:
         local_to_full = {i: idx for i, idx in enumerate(window_inputs)}
 
         old_to_new: dict[int, int] = {i: i for i in range(self.input_bits)}
-        new_gates: list[tuple[str, int, int]] = []
+        new_gates: list[Gate] = []
 
         replacement_inserted = False
         result_idx = None
 
-        for old_gate_idx, (op, left, right) in enumerate(self.gates):
+        for old_gate_idx, gate in enumerate(self.gates):
             if old_gate_idx == earliest_position and not replacement_inserted:
                 for rep_op, rep_left, rep_right in replacement:
                     new_left = local_to_full.get(rep_left, rep_left)
@@ -2284,14 +2770,24 @@ class CircuitState:
                     old_to_new[old_full] = result_idx
                 continue
 
-            new_left = old_to_new.get(left, left)
-            new_right = (
-                old_to_new.get(right, right) if op not in ("const", "not") else right
-            )
-
             new_idx = self.input_bits + len(new_gates)
             old_to_new[self.input_bits + old_gate_idx] = new_idx
-            new_gates.append((op, new_left, new_right))
+
+            if len(gate) == 5:
+                _, a, b, c, imm8 = gate
+                new_a = old_to_new.get(a, a)
+                new_b = old_to_new.get(b, b)
+                new_c = old_to_new.get(c, c)
+                new_gates.append(("ternary", new_a, new_b, new_c, imm8))
+            else:
+                op, left, right = gate
+                new_left = old_to_new.get(left, left)
+                new_right = (
+                    old_to_new.get(right, right)
+                    if op not in ("const", "not")
+                    else right
+                )
+                new_gates.append((op, new_left, new_right))
 
         if not replacement_inserted:
             for rep_op, rep_left, rep_right in replacement:
@@ -2486,6 +2982,23 @@ def circuit_to_state(
             node_to_idx[eid] = new_idx
             return new_idx
 
+        if isinstance(e, Or):
+            left_idx = process_expr(e.a)
+            right_idx = process_expr(e.b)
+            new_idx = input_bits + len(gates)
+            gates.append(("or", left_idx, right_idx))
+            node_to_idx[eid] = new_idx
+            return new_idx
+
+        if isinstance(e, TernaryLut):
+            a_idx = process_expr(e.a)
+            b_idx = process_expr(e.b)
+            c_idx = process_expr(e.c)
+            new_idx = input_bits + len(gates)
+            gates.append(("ternary", a_idx, b_idx, c_idx, e.imm8))
+            node_to_idx[eid] = new_idx
+            return new_idx
+
         raise ValueError(f"Unknown expression type: {type(e)}")
 
     outputs = []
@@ -2591,7 +3104,9 @@ class IncrementalOptimizer:
         if len(gates) < 10:
             return False
 
-        xor_indices = [i for i, (op, _, _) in enumerate(gates) if op == "xor"]
+        xor_indices = [
+            i for i, gate in enumerate(gates) if len(gate) == 3 and gate[0] == "xor"
+        ]
         if len(xor_indices) < 2:
             return False
 
@@ -2603,10 +3118,17 @@ class IncrementalOptimizer:
         full2 = self.input_bits + idx2
 
         use_count = {}
-        for i, (op, left, right) in enumerate(gates):
-            use_count[left] = use_count.get(left, 0) + 1
-            if op != "const":
-                use_count[right] = use_count.get(right, 0) + 1
+        for i, gate in enumerate(gates):
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                use_count[a] = use_count.get(a, 0) + 1
+                use_count[b] = use_count.get(b, 0) + 1
+                use_count[c] = use_count.get(c, 0) + 1
+            else:
+                op, left, right = gate
+                use_count[left] = use_count.get(left, 0) + 1
+                if op != "const":
+                    use_count[right] = use_count.get(right, 0) + 1
         for out_idx, _ in self.best_state.outputs:
             use_count[out_idx] = use_count.get(out_idx, 0) + 1
 
@@ -2894,24 +3416,39 @@ class IncrementalOptimizer:
             for inp in range(self.num_entries):
                 node_vals = [(inp >> i) & 1 for i in range(self.input_bits)]
 
-                for g_idx, (op, left, right) in enumerate(gates):
-                    if left >= len(node_vals):
-                        return None
-                    if op not in ("const", "not") and right >= len(node_vals):
-                        return None
-
-                    if op == "xor":
-                        val = node_vals[left] ^ node_vals[right]
-                    elif op == "and":
-                        val = node_vals[left] & node_vals[right]
-                    elif op == "or":
-                        val = node_vals[left] | node_vals[right]
-                    elif op == "not":
-                        val = node_vals[left] ^ 1
-                    elif op == "const":
-                        val = left & 1
+                for g_idx, gate in enumerate(gates):
+                    if len(gate) == 5:
+                        _, a, b, c, imm8 = gate
+                        if a >= len(node_vals):
+                            return None
+                        if b >= len(node_vals):
+                            return None
+                        if c >= len(node_vals):
+                            return None
+                        va = node_vals[a]
+                        vb = node_vals[b]
+                        vc = node_vals[c]
+                        idx = (va << 2) | (vb << 1) | vc
+                        val = (imm8 >> idx) & 1
                     else:
-                        val = 0
+                        op, left, right = gate
+                        if left >= len(node_vals):
+                            return None
+                        if op not in ("const", "not") and right >= len(node_vals):
+                            return None
+
+                        if op == "xor":
+                            val = node_vals[left] ^ node_vals[right]
+                        elif op == "and":
+                            val = node_vals[left] & node_vals[right]
+                        elif op == "or":
+                            val = node_vals[left] | node_vals[right]
+                        elif op == "not":
+                            val = node_vals[left] ^ 1
+                        elif op == "const":
+                            val = left & 1
+                        else:
+                            val = 0
                     node_vals.append(val)
 
                     full_idx = self.input_bits + g_idx
@@ -2945,11 +3482,20 @@ class IncrementalOptimizer:
         new_gates = list(gates)
         new_outputs = []
 
-        for i, (op, left, right) in enumerate(new_gates):
-            new_left = keep_idx if left == remove_idx else left
-            new_right = keep_idx if right == remove_idx else right
-            if new_left != left or new_right != right:
-                new_gates[i] = (op, new_left, new_right)
+        for i, gate in enumerate(new_gates):
+            if len(gate) == 5:
+                op, a, b, c, imm8 = gate
+                new_a = keep_idx if a == remove_idx else a
+                new_b = keep_idx if b == remove_idx else b
+                new_c = keep_idx if c == remove_idx else c
+                if new_a != a or new_b != b or new_c != c:
+                    new_gates[i] = (op, new_a, new_b, new_c, imm8)
+            else:
+                op, left, right = gate
+                new_left = keep_idx if left == remove_idx else left
+                new_right = keep_idx if right == remove_idx else right
+                if new_left != left or new_right != right:
+                    new_gates[i] = (op, new_left, new_right)
 
         for out_idx, inv in outputs:
             new_idx = keep_idx if out_idx == remove_idx else out_idx
@@ -3101,22 +3647,31 @@ class IncrementalOptimizer:
 
     def _try_merge_duplicate_gates(self) -> bool:
         """Merge gates that compute the same value."""
-        gate_to_first: dict[tuple[str, int, int], int] = {}
+        gate_to_first: dict[tuple, int] = {}
         remap: dict[int, int] = {}
 
         for i in range(self.input_bits):
             remap[i] = i
 
         changed = False
-        for i, (op, left, right) in enumerate(self.best_state.gates):
-            left = remap.get(left, left)
-            right = remap.get(right, right)
-
-            if op in ("xor", "and", "or") and left > right:
-                left, right = right, left
-
-            key = (op, left, right)
+        for i, gate in enumerate(self.best_state.gates):
             old_idx = self.input_bits + i
+
+            if len(gate) == 5:
+                op, a, b, c, imm8 = gate
+                new_a = remap.get(a, a)
+                new_b = remap.get(b, b)
+                new_c = remap.get(c, c)
+                key = (op, new_a, new_b, new_c, imm8)
+            else:
+                op, left, right = gate
+                left = remap.get(left, left)
+                right = remap.get(right, right)
+
+                if op in ("xor", "and", "or") and left > right:
+                    left, right = right, left
+
+                key = (op, left, right)
 
             if key in gate_to_first:
                 remap[old_idx] = gate_to_first[key]
@@ -3138,13 +3693,26 @@ class IncrementalOptimizer:
             if gate_idx in used:
                 return
             used.add(gate_idx)
-            _, left, right = self.best_state.gates[gate_idx]
-            left = remap.get(left, left)
-            right = remap.get(right, right)
-            if left >= self.input_bits:
-                mark_deps(left - self.input_bits)
-            if right >= self.input_bits:
-                mark_deps(right - self.input_bits)
+            gate = self.best_state.gates[gate_idx]
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                a = remap.get(a, a)
+                b = remap.get(b, b)
+                c = remap.get(c, c)
+                if a >= self.input_bits:
+                    mark_deps(a - self.input_bits)
+                if b >= self.input_bits:
+                    mark_deps(b - self.input_bits)
+                if c >= self.input_bits:
+                    mark_deps(c - self.input_bits)
+            else:
+                _, left, right = gate
+                left = remap.get(left, left)
+                right = remap.get(right, right)
+                if left >= self.input_bits:
+                    mark_deps(left - self.input_bits)
+                if right >= self.input_bits:
+                    mark_deps(right - self.input_bits)
 
         for idx, _ in self.best_state.outputs:
             idx = remap.get(idx, idx)
@@ -3155,15 +3723,26 @@ class IncrementalOptimizer:
         new_gates = []
 
         for old_idx in sorted(used):
-            op, left, right = self.best_state.gates[old_idx]
-            left = remap.get(left, left)
-            right = remap.get(right, right)
-            left = old_to_new.get(left, left)
-            right = old_to_new.get(right, right)
-
+            gate = self.best_state.gates[old_idx]
             new_idx = self.input_bits + len(new_gates)
             old_to_new[self.input_bits + old_idx] = new_idx
-            new_gates.append((op, left, right))
+
+            if len(gate) == 5:
+                op, a, b, c, imm8 = gate
+                a = remap.get(a, a)
+                b = remap.get(b, b)
+                c = remap.get(c, c)
+                a = old_to_new.get(a, a)
+                b = old_to_new.get(b, b)
+                c = old_to_new.get(c, c)
+                new_gates.append((op, a, b, c, imm8))
+            else:
+                op, left, right = gate
+                left = remap.get(left, left)
+                right = remap.get(right, right)
+                left = old_to_new.get(left, left)
+                right = old_to_new.get(right, right)
+                new_gates.append((op, left, right))
 
         new_outputs = []
         for idx, inv in self.best_state.outputs:
@@ -3186,7 +3765,10 @@ class IncrementalOptimizer:
         new_gates = list(self.best_state.gates)
 
         for gate_idx in range(len(new_gates)):
-            op, left, right = new_gates[gate_idx]
+            gate = new_gates[gate_idx]
+            if len(gate) == 5:
+                continue
+            op, left, right = gate
 
             if op == "xor" and left == right:
                 new_gates[gate_idx] = ("const", 0, 1)
@@ -3219,24 +3801,39 @@ class IncrementalOptimizer:
         for inp in range(self.num_entries):
             node_vals = [(inp >> i) & 1 for i in range(self.input_bits)]
 
-            for g_idx, (op, left, right) in enumerate(self.best_state.gates):
-                if left >= len(node_vals) or (
-                    right >= len(node_vals) and op not in ("const", "not")
-                ):
-                    return False
-
-                if op == "xor":
-                    val = node_vals[left] ^ node_vals[right]
-                elif op == "and":
-                    val = node_vals[left] & node_vals[right]
-                elif op == "or":
-                    val = node_vals[left] | node_vals[right]
-                elif op == "not":
-                    val = node_vals[left] ^ 1
-                elif op == "const":
-                    val = left & 1
+            for g_idx, gate in enumerate(self.best_state.gates):
+                if len(gate) == 5:
+                    _, a, b, c, imm8 = gate
+                    if (
+                        a >= len(node_vals)
+                        or b >= len(node_vals)
+                        or c >= len(node_vals)
+                    ):
+                        return False
+                    va = node_vals[a]
+                    vb = node_vals[b]
+                    vc = node_vals[c]
+                    idx = (va << 2) | (vb << 1) | vc
+                    val = (imm8 >> idx) & 1
                 else:
-                    val = 0
+                    op, left, right = gate
+                    if left >= len(node_vals) or (
+                        right >= len(node_vals) and op not in ("const", "not")
+                    ):
+                        return False
+
+                    if op == "xor":
+                        val = node_vals[left] ^ node_vals[right]
+                    elif op == "and":
+                        val = node_vals[left] & node_vals[right]
+                    elif op == "or":
+                        val = node_vals[left] | node_vals[right]
+                    elif op == "not":
+                        val = node_vals[left] ^ 1
+                    elif op == "const":
+                        val = left & 1
+                    else:
+                        val = 0
                 node_vals.append(val)
 
                 full_idx = self.input_bits + g_idx
@@ -3281,9 +3878,16 @@ class IncrementalOptimizer:
             if gate_idx in used:
                 return
             used.add(gate_idx)
-            _, left, right = self.best_state.gates[gate_idx]
-            mark_used(left)
-            mark_used(right)
+            gate = self.best_state.gates[gate_idx]
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                mark_used(a)
+                mark_used(b)
+                mark_used(c)
+            else:
+                _, left, right = gate
+                mark_used(left)
+                mark_used(right)
 
         for idx, _ in self.best_state.outputs:
             mark_used(idx)
@@ -3292,15 +3896,26 @@ class IncrementalOptimizer:
         new_gates = []
 
         for old_idx in sorted(used):
-            op, left, right = self.best_state.gates[old_idx]
-            left = remap.get(left, left)
-            right = remap.get(right, right)
-            left = old_to_new.get(left, left)
-            right = old_to_new.get(right, right)
-
+            gate = self.best_state.gates[old_idx]
             new_idx = self.input_bits + len(new_gates)
             old_to_new[self.input_bits + old_idx] = new_idx
-            new_gates.append((op, left, right))
+
+            if len(gate) == 5:
+                op, a, b, c, imm8 = gate
+                a = remap.get(a, a)
+                b = remap.get(b, b)
+                c = remap.get(c, c)
+                a = old_to_new.get(a, a)
+                b = old_to_new.get(b, b)
+                c = old_to_new.get(c, c)
+                new_gates.append((op, a, b, c, imm8))
+            else:
+                op, left, right = gate
+                left = remap.get(left, left)
+                right = remap.get(right, right)
+                left = old_to_new.get(left, left)
+                right = old_to_new.get(right, right)
+                new_gates.append((op, left, right))
 
         new_outputs = []
         for idx, inv in self.best_state.outputs:
@@ -3322,19 +3937,30 @@ class IncrementalOptimizer:
         gates = list(self.best_state.gates)
 
         and_gates = {}
-        for idx, (op, left, right) in enumerate(gates):
-            if op == "and":
+        for idx, gate in enumerate(gates):
+            if len(gate) == 3 and gate[0] == "and":
+                _, left, right = gate
                 and_gates[self.input_bits + idx] = (left, right)
 
         use_count = {}
-        for idx, (op, left, right) in enumerate(gates):
-            use_count[left] = use_count.get(left, 0) + 1
-            if op != "const":
-                use_count[right] = use_count.get(right, 0) + 1
+        for idx, gate in enumerate(gates):
+            if len(gate) == 5:
+                _, a, b, c, _ = gate
+                use_count[a] = use_count.get(a, 0) + 1
+                use_count[b] = use_count.get(b, 0) + 1
+                use_count[c] = use_count.get(c, 0) + 1
+            else:
+                op, left, right = gate
+                use_count[left] = use_count.get(left, 0) + 1
+                if op != "const":
+                    use_count[right] = use_count.get(right, 0) + 1
         for out_idx, _ in self.best_state.outputs:
             use_count[out_idx] = use_count.get(out_idx, 0) + 1
 
-        for idx, (op, left, right) in enumerate(gates):
+        for idx, gate in enumerate(gates):
+            if len(gate) != 3:
+                continue
+            op, left, right = gate
             if op != "xor":
                 continue
             if left not in and_gates or right not in and_gates:

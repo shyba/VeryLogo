@@ -1991,3 +1991,563 @@ class TestSatWindowResynthesis(unittest.TestCase):
             state.gate_count,
             f"Gate count should not increase: {optimized.gate_count} > {state.gate_count}",
         )
+
+
+class TestTernaryGateSupport(unittest.TestCase):
+    def test_circuit_state_ternary_gates(self) -> None:
+        """Create CircuitState with 5-tuple ternary gate."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [("ternary", 0, 1, 2, 0x96)]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(3, False)],
+            gate_count=1,
+        )
+        self.assertEqual(cs.gate_count, 1)
+        self.assertEqual(cs.input_bits, 3)
+        self.assertEqual(cs.output_bits, 1)
+        self.assertEqual(len(cs.gates), 1)
+        self.assertEqual(cs.gates[0], ("ternary", 0, 1, 2, 0x96))
+
+    def test_evaluate_ternary_xor(self) -> None:
+        """Test CircuitState.evaluate() with ternary XOR (imm8=0x96)."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [("ternary", 0, 1, 2, 0x96)]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(3, False)],
+            gate_count=1,
+        )
+        for a in (0, 1):
+            for b in (0, 1):
+                for c in (0, 1):
+                    x = a | (b << 1) | (c << 2)
+                    result = cs.evaluate(x)
+                    expected = a ^ b ^ c
+                    self.assertEqual(
+                        result,
+                        expected,
+                        f"evaluate({x}) = {result}, expected {expected} (a={a}, b={b}, c={c})",
+                    )
+
+    def test_evaluate_ternary_majority(self) -> None:
+        """Test ternary gate with majority function (imm8=0xE8)."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [("ternary", 0, 1, 2, 0xE8)]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(3, False)],
+            gate_count=1,
+        )
+        for a in (0, 1):
+            for b in (0, 1):
+                for c in (0, 1):
+                    x = a | (b << 1) | (c << 2)
+                    result = cs.evaluate(x)
+                    expected = 1 if (a + b + c) >= 2 else 0
+                    self.assertEqual(
+                        result,
+                        expected,
+                        f"evaluate({x}) = {result}, expected {expected} (a={a}, b={b}, c={c})",
+                    )
+
+    def test_evaluate_ternary_and3(self) -> None:
+        """Test ternary gate with 3-input AND (imm8=0x80)."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [("ternary", 0, 1, 2, 0x80)]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(3, False)],
+            gate_count=1,
+        )
+        for a in (0, 1):
+            for b in (0, 1):
+                for c in (0, 1):
+                    x = a | (b << 1) | (c << 2)
+                    result = cs.evaluate(x)
+                    expected = a & b & c
+                    self.assertEqual(
+                        result,
+                        expected,
+                        f"evaluate({x}) = {result}, expected {expected} (a={a}, b={b}, c={c})",
+                    )
+
+    def test_evaluate_ternary_or3(self) -> None:
+        """Test ternary gate with 3-input OR (imm8=0xFE)."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [("ternary", 0, 1, 2, 0xFE)]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(3, False)],
+            gate_count=1,
+        )
+        for a in (0, 1):
+            for b in (0, 1):
+                for c in (0, 1):
+                    x = a | (b << 1) | (c << 2)
+                    result = cs.evaluate(x)
+                    expected = a | b | c
+                    self.assertEqual(
+                        result,
+                        expected,
+                        f"evaluate({x}) = {result}, expected {expected} (a={a}, b={b}, c={c})",
+                    )
+
+    def test_to_dict_from_dict_ternary_roundtrip(self) -> None:
+        """Test from_dict/to_dict round-trip with ternary gates."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [
+            ("xor", 0, 1),
+            ("ternary", 0, 1, 2, 0x96),
+            ("and", 3, 4),
+        ]
+        original = CircuitState(
+            input_bits=3,
+            output_bits=2,
+            gates=gates,
+            outputs=[(4, False), (5, True)],
+            gate_count=3,
+        )
+        d = original.to_dict()
+        restored = CircuitState.from_dict(d)
+
+        self.assertEqual(restored.input_bits, original.input_bits)
+        self.assertEqual(restored.output_bits, original.output_bits)
+        self.assertEqual(restored.gate_count, original.gate_count)
+        self.assertEqual(len(restored.gates), len(original.gates))
+        self.assertEqual(restored.outputs, original.outputs)
+
+        self.assertEqual(restored.gates[0], ("xor", 0, 1))
+        self.assertEqual(restored.gates[1], ("ternary", 0, 1, 2, 0x96))
+        self.assertEqual(restored.gates[2], ("and", 3, 4))
+
+        for x in range(8):
+            self.assertEqual(
+                restored.evaluate(x),
+                original.evaluate(x),
+                f"Mismatch at input {x}",
+            )
+
+    def test_depth_with_ternary_gate(self) -> None:
+        """Test depth calculation includes ternary gates."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [("ternary", 0, 1, 2, 0x96)]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(3, False)],
+            gate_count=1,
+        )
+        self.assertEqual(cs.depth, 1)
+
+    def test_depth_chain_with_ternary(self) -> None:
+        """Test depth with ternary gate in chain."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [
+            ("ternary", 0, 1, 2, 0x96),
+            ("xor", 3, 0),
+        ]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(4, False)],
+            gate_count=2,
+        )
+        self.assertEqual(cs.depth, 2)
+
+    def test_multiplicative_depth_ternary(self) -> None:
+        """Test multiplicative depth with ternary gate."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [("ternary", 0, 1, 2, 0x96)]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(3, False)],
+            gate_count=1,
+        )
+        self.assertEqual(cs.multiplicative_depth, 1)
+
+    def test_and_count_with_ternary(self) -> None:
+        """Test that ternary gates are counted in and_count."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [
+            ("and", 0, 1),
+            ("ternary", 0, 1, 2, 0x96),
+        ]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=2,
+            gates=gates,
+            outputs=[(3, False), (4, False)],
+            gate_count=2,
+        )
+        self.assertEqual(cs.and_count, 2)
+
+    def test_mixed_binary_ternary_evaluate(self) -> None:
+        """Test evaluate with mixed binary and ternary gates."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [
+            ("xor", 0, 1),
+            ("ternary", 2, 3, 0, 0x96),
+            ("and", 4, 5),
+        ]
+        cs = CircuitState(
+            input_bits=4,
+            output_bits=1,
+            gates=gates,
+            outputs=[(6, False)],
+            gate_count=3,
+        )
+
+        for x in range(16):
+            x0 = (x >> 0) & 1
+            x1 = (x >> 1) & 1
+            x2 = (x >> 2) & 1
+            x3 = (x >> 3) & 1
+            g0 = x0 ^ x1
+            g1 = x2 ^ x3 ^ x0
+            expected = g0 & g1
+            result = cs.evaluate(x)
+            self.assertEqual(
+                result,
+                expected,
+                f"evaluate({x}) = {result}, expected {expected}",
+            )
+
+    def test_ternary_output_inversion(self) -> None:
+        """Test ternary gate with output inversion."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [("ternary", 0, 1, 2, 0x96)]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(3, True)],
+            gate_count=1,
+        )
+        for a in (0, 1):
+            for b in (0, 1):
+                for c in (0, 1):
+                    x = a | (b << 1) | (c << 2)
+                    result = cs.evaluate(x)
+                    expected = (a ^ b ^ c) ^ 1
+                    self.assertEqual(
+                        result,
+                        expected,
+                        f"evaluate({x}) = {result}, expected {expected}",
+                    )
+
+    def test_ternary_multiple_outputs(self) -> None:
+        """Test multiple outputs from ternary gates."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [
+            ("ternary", 0, 1, 2, 0x96),
+            ("ternary", 0, 1, 2, 0xE8),
+        ]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=2,
+            gates=gates,
+            outputs=[(3, False), (4, False)],
+            gate_count=2,
+        )
+        for a in (0, 1):
+            for b in (0, 1):
+                for c in (0, 1):
+                    x = a | (b << 1) | (c << 2)
+                    result = cs.evaluate(x)
+                    xor3 = a ^ b ^ c
+                    maj3 = 1 if (a + b + c) >= 2 else 0
+                    expected = xor3 | (maj3 << 1)
+                    self.assertEqual(
+                        result,
+                        expected,
+                        f"evaluate({x}) = {result}, expected {expected}",
+                    )
+
+
+class TestBackendCostAndDepth(unittest.TestCase):
+    def test_backend_cost_default_ternary_weight(self) -> None:
+        """Test backend_cost without technology uses ternary_cost=3."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [
+            ("ternary", 0, 1, 2, 0x96),
+            ("xor", 0, 1),
+            ("and", 2, 3),
+        ]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(5, False)],
+            gate_count=3,
+        )
+        cost = cs.backend_cost()
+        self.assertEqual(cost, 5.0)
+
+    def test_backend_cost_ptx_ternary_native(self) -> None:
+        """Test backend_cost on PTX uses ternary_cost=1 (lop3)."""
+        from stc.circuit_synth import CircuitState
+        from stc.tech import PTXTechnology
+
+        gates = [
+            ("ternary", 0, 1, 2, 0x96),
+            ("xor", 0, 1),
+            ("and", 2, 3),
+        ]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(5, False)],
+            gate_count=3,
+        )
+        ptx = PTXTechnology()
+        cost = cs.backend_cost(ptx)
+        self.assertEqual(cost, 3.0)
+
+    def test_backend_cost_avx512_ternary_native(self) -> None:
+        """Test backend_cost on AVX-512 uses ternary_cost=1 (vpternlog)."""
+        from stc.circuit_synth import CircuitState
+        from stc.tech import AVX512Technology
+
+        gates = [
+            ("ternary", 0, 1, 2, 0x96),
+            ("ternary", 0, 1, 2, 0xE8),
+        ]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=2,
+            gates=gates,
+            outputs=[(3, False), (4, False)],
+            gate_count=2,
+        )
+        avx512 = AVX512Technology()
+        cost = cs.backend_cost(avx512)
+        self.assertEqual(cost, 2.0)
+
+    def test_backend_cost_avr_ternary_decomposition(self) -> None:
+        """Test backend_cost on AVR uses ternary_cost=3 (decomposition)."""
+        from stc.circuit_synth import CircuitState
+        from stc.tech import AVRTechnology
+
+        gates = [
+            ("ternary", 0, 1, 2, 0x96),
+        ]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(3, False)],
+            gate_count=1,
+        )
+        avr = AVRTechnology()
+        cost = cs.backend_cost(avr)
+        self.assertEqual(cost, 3.0)
+
+    def test_backend_cost_avx2_ternary_decomposition(self) -> None:
+        """Test backend_cost on AVX2 uses ternary_cost=3 (no vpternlog)."""
+        from stc.circuit_synth import CircuitState
+        from stc.tech import AVX2Technology
+
+        gates = [
+            ("ternary", 0, 1, 2, 0x96),
+            ("xor", 0, 1),
+        ]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(4, False)],
+            gate_count=2,
+        )
+        avx2 = AVX2Technology()
+        cost = cs.backend_cost(avx2)
+        self.assertEqual(cost, 4.0)
+
+    def test_backend_cost_not_and_const_free(self) -> None:
+        """Test that NOT and const gates are free in backend_cost."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [
+            ("not", 0, 0),
+            ("const", 1, 1),
+            ("xor", 0, 2),
+        ]
+        cs = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=gates,
+            outputs=[(4, False)],
+            gate_count=3,
+        )
+        cost = cs.backend_cost()
+        self.assertEqual(cost, 1.0)
+
+    def test_backend_depth_default(self) -> None:
+        """Test backend_depth without technology uses unit depth."""
+        from stc.circuit_synth import CircuitState
+
+        gates = [
+            ("xor", 0, 1),
+            ("and", 3, 2),
+        ]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(4, False)],
+            gate_count=2,
+        )
+        depth = cs.backend_depth()
+        self.assertEqual(depth, 2)
+
+    def test_backend_depth_ternary_native(self) -> None:
+        """Test backend_depth with ternary on PTX (native lop3)."""
+        from stc.circuit_synth import CircuitState
+        from stc.tech import PTXTechnology
+
+        gates = [
+            ("ternary", 0, 1, 2, 0x96),
+            ("xor", 3, 0),
+        ]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(4, False)],
+            gate_count=2,
+        )
+        ptx = PTXTechnology()
+        depth = cs.backend_depth(ptx)
+        self.assertEqual(depth, 2)
+
+    def test_backend_depth_ternary_decomposition(self) -> None:
+        """Test backend_depth with ternary on AVR (decomposition adds depth)."""
+        from stc.circuit_synth import CircuitState
+        from stc.tech import AVRTechnology
+
+        gates = [
+            ("ternary", 0, 1, 2, 0x96),
+            ("xor", 3, 0),
+        ]
+        cs = CircuitState(
+            input_bits=3,
+            output_bits=1,
+            gates=gates,
+            outputs=[(4, False)],
+            gate_count=2,
+        )
+        avr = AVRTechnology()
+        depth = cs.backend_depth(avr)
+        self.assertEqual(depth, 3)
+
+    def test_backend_depth_not_free(self) -> None:
+        """Test backend_depth uses depth model for NOT gates."""
+        from stc.circuit_synth import CircuitState
+        from stc.tech import GenericTechnology
+
+        gates = [
+            ("not", 0, 0),
+            ("not", 2, 0),
+        ]
+        cs = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=gates,
+            outputs=[(3, False)],
+            gate_count=2,
+        )
+        generic = GenericTechnology()
+        depth = cs.backend_depth(generic)
+        self.assertEqual(depth, 0)
+
+    def test_backend_depth_empty_circuit(self) -> None:
+        """Test backend_depth on empty circuit."""
+        from stc.circuit_synth import CircuitState
+
+        cs = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[],
+            outputs=[(0, False)],
+            gate_count=0,
+        )
+        depth = cs.backend_depth()
+        self.assertEqual(depth, 0)
+
+    def test_backend_depth_parallel_gates(self) -> None:
+        """Test backend_depth with parallel gates."""
+        from stc.circuit_synth import CircuitState
+        from stc.tech import PTXTechnology
+
+        gates = [
+            ("xor", 0, 1),
+            ("xor", 2, 3),
+            ("and", 4, 5),
+        ]
+        cs = CircuitState(
+            input_bits=4,
+            output_bits=1,
+            gates=gates,
+            outputs=[(6, False)],
+            gate_count=3,
+        )
+        ptx = PTXTechnology()
+        depth = cs.backend_depth(ptx)
+        self.assertEqual(depth, 2)
+
+    def test_backend_cost_mixed_circuit(self) -> None:
+        """Test backend_cost with mixed binary and ternary gates."""
+        from stc.circuit_synth import CircuitState
+        from stc.tech import PTXTechnology, AVRTechnology
+
+        gates = [
+            ("xor", 0, 1),
+            ("ternary", 2, 3, 4, 0x96),
+            ("and", 5, 6),
+            ("ternary", 0, 1, 2, 0xE8),
+        ]
+        cs = CircuitState(
+            input_bits=5,
+            output_bits=1,
+            gates=gates,
+            outputs=[(8, False)],
+            gate_count=4,
+        )
+
+        ptx = PTXTechnology()
+        avr = AVRTechnology()
+
+        ptx_cost = cs.backend_cost(ptx)
+        avr_cost = cs.backend_cost(avr)
+
+        self.assertEqual(ptx_cost, 4.0)
+        self.assertEqual(avr_cost, 8.0)
