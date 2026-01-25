@@ -58,6 +58,10 @@ class LinearScanAllocator:
         self,
         live_ranges: dict[int, LiveRange],
         schedule: Schedule,
+        *,
+        gates: list,
+        input_bits: int,
+        outputs: list,
     ) -> RegAllocation:
         """
         Perform linear scan register allocation.
@@ -78,6 +82,30 @@ class LinearScanAllocator:
         spills: list[int] = []
         loads: list[tuple[int, int, int]] = []
         stores: list[tuple[int, int, int]] = []
+
+        # Record all use cycles for each node so spill reloads can occur at the
+        # next use after a spill point (not at the end of the interval).
+        uses: dict[int, list[int]] = {}
+
+        for g_idx, gate in enumerate(gates):
+            cycle = schedule.gate_cycle.get(g_idx, 0)
+            op = gate[0]
+            if op == "ternary":
+                operands = gate[1:4]
+            elif op in ("const", "not"):
+                operands = [gate[1]]
+            else:
+                operands = gate[1:3]
+            for operand in operands:
+                if operand >= 0:
+                    uses.setdefault(operand, []).append(cycle)
+
+        final_cycle = max(schedule.total_cycles - 1, 0)
+        for out_node, _inv in outputs:
+            uses.setdefault(out_node, []).append(final_cycle)
+
+        for k in list(uses.keys()):
+            uses[k].sort()
 
         active: list[LiveRange] = []
         free_regs: set[int] = set(range(self._num_registers))
@@ -106,6 +134,7 @@ class LinearScanAllocator:
                     loads,
                     stores,
                     node_to_slot,
+                    uses,
                 )
 
                 if spill_target is not None:
@@ -151,6 +180,7 @@ class LinearScanAllocator:
         loads: list[tuple[int, int, int]],
         stores: list[tuple[int, int, int]],
         node_to_slot: dict[int, int],
+        uses: dict[int, list[int]],
     ) -> tuple[LiveRange | None, int]:
         """
         Handle the case where no register is available.
@@ -173,7 +203,14 @@ class LinearScanAllocator:
         active.remove(longest)
         spills.append(longest.node)
 
-        loads.append((longest.node, reg, longest.end))
+        # Reload at the next use after the spill point, if any.
+        next_use = None
+        for u in uses.get(longest.node, []):
+            if u > current.start:
+                next_use = u
+                break
+        if next_use is not None:
+            loads.append((longest.node, reg, next_use))
 
         return (longest, reg)
 
@@ -182,6 +219,10 @@ def allocate_registers(
     live_ranges: dict[int, LiveRange],
     schedule: Schedule,
     num_registers: int,
+    *,
+    gates: list,
+    input_bits: int,
+    outputs: list,
 ) -> RegAllocation:
     """
     Convenience function for linear scan register allocation.
@@ -194,5 +235,15 @@ def allocate_registers(
     Returns:
         RegAllocation with register assignments and spill operations.
     """
+    # Inputs are treated as always-available temporaries by the emitters (r0..r{input_bits-1}),
+    # so we exclude them from physical register allocation/spilling.
+    filtered = {n: lr for n, lr in live_ranges.items() if not lr.is_input}
+
     allocator = LinearScanAllocator(num_registers)
-    return allocator.allocate(live_ranges, schedule)
+    return allocator.allocate(
+        filtered,
+        schedule,
+        gates=gates,
+        input_bits=input_bits,
+        outputs=outputs,
+    )

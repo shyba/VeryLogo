@@ -279,7 +279,9 @@ class TestLinearScanAllocator(unittest.TestCase):
         ranges = compute_live_ranges(schedule, gates, input_bits, outputs)
 
         allocator = LinearScanAllocator(num_registers=16)
-        allocation = allocator.allocate(ranges, schedule)
+        allocation = allocator.allocate(
+            ranges, schedule, gates=gates, input_bits=input_bits, outputs=outputs
+        )
 
         self.assertIsNotNone(allocation.reg_assignment.get(0))
         self.assertIsNotNone(allocation.reg_assignment.get(1))
@@ -293,7 +295,9 @@ class TestLinearScanAllocator(unittest.TestCase):
         ranges = compute_live_ranges(schedule, gates, input_bits, outputs)
 
         allocator = LinearScanAllocator(num_registers=16)
-        allocation = allocator.allocate(ranges, schedule)
+        allocation = allocator.allocate(
+            ranges, schedule, gates=gates, input_bits=input_bits, outputs=outputs
+        )
 
         regs_used = set(allocation.reg_assignment.values())
         self.assertLessEqual(len(regs_used), 16)
@@ -340,7 +344,14 @@ class TestAllocateRegisters(unittest.TestCase):
 
         ml = max_live(ranges, schedule.total_cycles)
 
-        allocation = allocate_registers(ranges, schedule, num_registers=ml + 5)
+        allocation = allocate_registers(
+            ranges,
+            schedule,
+            ml + 5,
+            gates=gates,
+            input_bits=input_bits,
+            outputs=outputs,
+        )
 
         self.assertEqual(len(allocation.spills), 0)
 
@@ -352,7 +363,9 @@ class TestAllocateRegisters(unittest.TestCase):
         ml = max_live(ranges, schedule.total_cycles)
 
         if ml > 4:
-            allocation = allocate_registers(ranges, schedule, num_registers=4)
+            allocation = allocate_registers(
+                ranges, schedule, 4, gates=gates, input_bits=input_bits, outputs=outputs
+            )
             self.assertGreater(len(allocation.spills), 0)
 
     def test_spill_store_before_overwrite(self):
@@ -363,7 +376,9 @@ class TestAllocateRegisters(unittest.TestCase):
         ml = max_live(ranges, schedule.total_cycles)
 
         if ml > 4:
-            allocation = allocate_registers(ranges, schedule, num_registers=4)
+            allocation = allocate_registers(
+                ranges, schedule, 4, gates=gates, input_bits=input_bits, outputs=outputs
+            )
 
             for node, reg, store_cycle in allocation.stores:
                 node_range = ranges.get(node)
@@ -378,7 +393,9 @@ class TestAllocateRegisters(unittest.TestCase):
         ml = max_live(ranges, schedule.total_cycles)
 
         if ml > 4:
-            allocation = allocate_registers(ranges, schedule, num_registers=4)
+            allocation = allocate_registers(
+                ranges, schedule, 4, gates=gates, input_bits=input_bits, outputs=outputs
+            )
 
             for node, reg, load_cycle in allocation.loads:
                 node_range = ranges.get(node)
@@ -392,7 +409,14 @@ class TestBPCircuitAllocation(unittest.TestCase):
         schedule = list_schedule(gates, input_bits, outputs, AVX2)
         ranges = compute_live_ranges(schedule, gates, input_bits, outputs)
 
-        allocation = allocate_registers(ranges, schedule, num_registers=AVX2.registers)
+        allocation = allocate_registers(
+            ranges,
+            schedule,
+            AVX2.registers,
+            gates=gates,
+            input_bits=input_bits,
+            outputs=outputs,
+        )
 
         for node, reg in allocation.reg_assignment.items():
             self.assertGreaterEqual(reg, 0)
@@ -403,7 +427,14 @@ class TestBPCircuitAllocation(unittest.TestCase):
         schedule = list_schedule(gates, input_bits, outputs, SSE2)
         ranges = compute_live_ranges(schedule, gates, input_bits, outputs)
 
-        allocation = allocate_registers(ranges, schedule, num_registers=SSE2.registers)
+        allocation = allocate_registers(
+            ranges,
+            schedule,
+            SSE2.registers,
+            gates=gates,
+            input_bits=input_bits,
+            outputs=outputs,
+        )
 
         for node, reg in allocation.reg_assignment.items():
             self.assertGreaterEqual(reg, 0)
@@ -414,7 +445,14 @@ class TestBPCircuitAllocation(unittest.TestCase):
         schedule = list_schedule(gates, input_bits, outputs, AVX2)
         ranges = compute_live_ranges(schedule, gates, input_bits, outputs)
 
-        allocation = allocate_registers(ranges, schedule, num_registers=AVX2.registers)
+        allocation = allocate_registers(
+            ranges,
+            schedule,
+            AVX2.registers,
+            gates=gates,
+            input_bits=input_bits,
+            outputs=outputs,
+        )
 
         ig = interference_graph(ranges)
         for node_a, neighbors in ig.items():
@@ -439,9 +477,15 @@ class TestAllocationIntegration(unittest.TestCase):
         schedule = list_schedule(gates, input_bits, outputs, AVX2)
         ranges = compute_live_ranges(schedule, gates, input_bits, outputs)
 
-        allocation = allocate_registers(ranges, schedule, num_registers=16)
+        allocation = allocate_registers(
+            ranges, schedule, 16, gates=gates, input_bits=input_bits, outputs=outputs
+        )
 
         for node in ranges:
+            if node < input_bits:
+                # Inputs are treated as fixed temporaries by emitters and are
+                # excluded from register allocation.
+                continue
             in_assignment = node in allocation.reg_assignment
             in_spills = node in allocation.spills
             self.assertTrue(
@@ -460,7 +504,9 @@ class TestAllocationIntegration(unittest.TestCase):
         schedule = list_schedule(gates, input_bits, outputs, AVX2)
         ranges = compute_live_ranges(schedule, gates, input_bits, outputs)
 
-        allocation = allocate_registers(ranges, schedule, num_registers=16)
+        allocation = allocate_registers(
+            ranges, schedule, 16, gates=gates, input_bits=input_bits, outputs=outputs
+        )
 
         ig = interference_graph(ranges)
         for node_a, neighbors in ig.items():

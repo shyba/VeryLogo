@@ -31,7 +31,9 @@ def make_ternary_circuit():
 def schedule_and_allocate(gates, input_bits, outputs, target, num_regs=16):
     schedule = list_schedule(gates, input_bits, outputs, target)
     live_ranges = compute_live_ranges(schedule, gates, input_bits, outputs)
-    allocation = allocate_registers(live_ranges, schedule, num_regs)
+    allocation = allocate_registers(
+        live_ranges, schedule, num_regs, gates=gates, input_bits=input_bits, outputs=outputs
+    )
     return schedule, allocation
 
 

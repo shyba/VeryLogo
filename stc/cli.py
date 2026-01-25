@@ -80,6 +80,9 @@ def run_pipeline(
         superopt_timeout_ms=superopt_timeout_ms,
         backend=backend,
         ternary_mapping=ternary_mapping,
+        # Bounded state pruning/const-prop is useful for small bounded analyses,
+        # but is not semantics-preserving for long-horizon sequential designs.
+        bounded_state_opt=backend not in {"x86-avx2", "x86-avx512"},
     )
     validate_tick_ir(reduced)
 

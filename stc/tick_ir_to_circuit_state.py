@@ -188,11 +188,12 @@ def lower_tick_ir_to_circuit_state(ir: TickIR) -> tuple[CircuitState, PackedLayo
             return bits
 
         if isinstance(e, Concat):
-            parts: list[int] = []
-            for p in e.parts:
-                parts.extend(lower_bits(p))
-            # TickIR Concat is MSB-first; our bits are LSB-first.
-            bits = list(reversed(parts))
+            # TickIR Concat is MSB-first. Our lowering represents values as
+            # LSB-first bit lists, so we append parts from LSB to MSB while
+            # keeping each part's internal LSB-first ordering intact.
+            bits: list[int] = []
+            for p in reversed(e.parts):
+                bits.extend(lower_bits(p))
             if len(bits) != w:
                 raise LoweringError("concat width mismatch")
             memo_bits[key] = bits
@@ -243,7 +244,14 @@ def lower_tick_ir_to_circuit_state(ir: TickIR) -> tuple[CircuitState, PackedLayo
             fb = lower_bits(e.b)
             if len(tb) != len(fb):
                 raise LoweringError("mux width mismatch")
-            bits = [new_gate("ternary", c, tbit, fbit, _IMM_MUX_A_THEN_B_ELSE_C) for tbit, fbit in zip(tb, fb)]
+            # Implement mux as (c & t) | (~c & f). This avoids relying on ternary
+            # imm8 conventions during lowering.
+            c_not = new_gate("not", c, 0)
+            bits = []
+            for tbit, fbit in zip(tb, fb):
+                ct = new_gate("and", c, tbit)
+                cnf = new_gate("and", c_not, fbit)
+                bits.append(new_gate("or", ct, cnf))
             memo_bits[key] = bits
             return bits
 
@@ -271,7 +279,15 @@ def lower_tick_ir_to_circuit_state(ir: TickIR) -> tuple[CircuitState, PackedLayo
     for name in output_order:
         packed_outputs.append(ir.output_exprs[name])
     for name in state_order:
-        packed_outputs.append(ir.next_state[name])
+        # Model synchronous reset if the design has a conventional `reset` input.
+        # Yosys may represent resets as $sdff cells where reset semantics are not
+        # encoded in `next_state`, but rather in `reset_state`.
+        if "reset" in ir.inputs and isinstance(ir.inputs["reset"], BoolType):
+            packed_outputs.append(
+                Mux(cond=Var("reset"), a=ir.reset_state[name], b=ir.next_state[name])
+            )
+        else:
+            packed_outputs.append(ir.next_state[name])
 
     out_bits: list[int] = []
     for expr in packed_outputs:

@@ -617,6 +617,7 @@ def optimize_tick_ir(
     superopt_timeout_ms: int = 200,
     backend: str = "generic",
     ternary_mapping: bool | None = None,
+    bounded_state_opt: bool = True,
 ) -> TickIR:
     from stc.delay_lower import lower_delays
     from stc.tech import get_technology
@@ -668,6 +669,9 @@ def optimize_tick_ir(
             next_state={k: go(v) for k, v in ir.next_state.items()},
             output_exprs={k: go(v) for k, v in ir.output_exprs.items()},
         )
+    if not bounded_state_opt:
+        return hashcons_tick_ir(ir)
+
     ir = remove_dead_state(ir, bound)
     try:
         consts = constant_state_within_bound(ir, bound)

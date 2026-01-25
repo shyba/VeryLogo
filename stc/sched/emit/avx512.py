@@ -19,6 +19,9 @@ class AVX512Emitter(BaseEmitter):
         outputs: list,
         function_name: str = "circuit",
     ) -> str:
+        if allocation.num_spills:
+            return self._emit_naive(gates, input_bits, outputs, function_name)
+
         lines: list[str] = []
         lines.append("#include <immintrin.h>")
         lines.append("")
@@ -35,6 +38,20 @@ class AVX512Emitter(BaseEmitter):
         if needs_ones:
             lines.append("    __m512i ones = _mm512_set1_epi32(-1);")
 
+        spill_slots_used: set[int] = set(range(len(allocation.spills)))
+        stores_by_cycle: dict[int, list[tuple[int, int, int]]] = {}
+        for node, reg, cycle in allocation.stores:
+            stores_by_cycle.setdefault(cycle, []).append((node, reg, cycle))
+
+        loads_by_cycle: dict[int, list[tuple[int, int, int]]] = {}
+        for node, reg, cycle in allocation.loads:
+            loads_by_cycle.setdefault(cycle, []).append((node, reg, cycle))
+            slot = self._get_spill_slot(node, allocation)
+            spill_slots_used.add(slot)
+
+        for slot in sorted(spill_slots_used):
+            lines.append(f"    __m512i stack{slot};")
+
         node_in_reg: dict[int, int] = {}
         reg_holds_node: dict[int, int] = {}
 
@@ -45,26 +62,15 @@ class AVX512Emitter(BaseEmitter):
             reg_holds_node[reg] = node
             node_in_reg[node] = reg
 
+        spilled_set = set(allocation.spills)
+        spill_slot: dict[int, int] = {node: i for i, node in enumerate(allocation.spills)}
+
         for i in range(input_bits):
             reg = i
             lines.append(f"    r{reg} = in[{i}];")
             _assign_reg(i, reg)
-
-        spill_slots_used: set[int] = set()
-        stores_by_cycle: dict[int, list[tuple[int, int, int]]] = {}
-        for node, reg, cycle in allocation.stores:
-            stores_by_cycle.setdefault(cycle, []).append((node, reg, cycle))
-            slot = self._get_spill_slot(node, allocation)
-            spill_slots_used.add(slot)
-
-        loads_by_cycle: dict[int, list[tuple[int, int, int]]] = {}
-        for node, reg, cycle in allocation.loads:
-            loads_by_cycle.setdefault(cycle, []).append((node, reg, cycle))
-            slot = self._get_spill_slot(node, allocation)
-            spill_slots_used.add(slot)
-
-        for slot in sorted(spill_slots_used):
-            lines.append(f"    __m512i stack{slot};")
+            if i in spilled_set:
+                lines.append(f"    stack{spill_slot[i]} = r{reg};")
 
         gates_by_cycle: dict[int, list[int]] = {}
         for g_idx, cycle in schedule.gate_cycle.items():
@@ -91,6 +97,8 @@ class AVX512Emitter(BaseEmitter):
                     line = self._emit_gate(gates[g_idx], dst_reg, allocation, node_in_reg)
                     lines.append(f"    {line}")
                     _assign_reg(node_idx, dst_reg)
+                    if node_idx in spilled_set:
+                        lines.append(f"    stack{spill_slot[node_idx]} = r{dst_reg};")
 
         for out_idx, (node_idx, inverted) in enumerate(outputs):
             expr = self._node_expr(node_idx, allocation, node_in_reg)
@@ -98,6 +106,71 @@ class AVX512Emitter(BaseEmitter):
                 lines.append(f"    out[{out_idx}] = _mm512_xor_si512({expr}, ones);")
             else:
                 lines.append(f"    out[{out_idx}] = {expr};")
+
+        lines.append("}")
+        lines.append("")
+        return "\n".join(lines)
+
+    def _emit_naive(
+        self,
+        gates: list,
+        input_bits: int,
+        outputs: list,
+        function_name: str,
+    ) -> str:
+        lines: list[str] = []
+        lines.append("#include <immintrin.h>")
+        lines.append("")
+        lines.append(f"void {function_name}(__m512i* in, __m512i* out) {{")
+        total_nodes = input_bits + len(gates)
+        for r in range(total_nodes):
+            lines.append(f"    __m512i r{r};")
+
+        needs_ones = self._needs_ones_constant(gates, outputs)
+        if needs_ones:
+            lines.append("    __m512i ones = _mm512_set1_epi32(-1);")
+
+        for i in range(input_bits):
+            lines.append(f"    r{i} = in[{i}];")
+
+        for g_idx, gate in enumerate(gates):
+            dst = input_bits + g_idx
+            if len(gate) == 5:
+                op, a, b, c, imm8 = gate
+            else:
+                op = gate[0]
+                a = gate[1] if len(gate) > 1 else -1
+                b = gate[2] if len(gate) > 2 else -1
+                c = -1
+                imm8 = 0
+
+            if op == "ternary":
+                lines.append(
+                    f"    r{dst} = _mm512_ternarylogic_epi32(r{a}, r{b}, r{c}, {imm8});"
+                )
+            elif op == "xor":
+                lines.append(f"    r{dst} = _mm512_xor_si512(r{a}, r{b});")
+            elif op == "and":
+                lines.append(f"    r{dst} = _mm512_and_si512(r{a}, r{b});")
+            elif op == "or":
+                lines.append(f"    r{dst} = _mm512_or_si512(r{a}, r{b});")
+            elif op == "not":
+                lines.append(f"    r{dst} = _mm512_xor_si512(r{a}, ones);")
+            elif op == "const":
+                if a == 0:
+                    lines.append(f"    r{dst} = _mm512_setzero_si512();")
+                else:
+                    lines.append(f"    r{dst} = _mm512_set1_epi32(-1);")
+            else:
+                lines.append(f"    r{dst} = _mm512_setzero_si512();")
+
+        for out_idx, (node_idx, inverted) in enumerate(outputs):
+            if inverted:
+                lines.append(
+                    f"    out[{out_idx}] = _mm512_xor_si512(r{node_idx}, ones);"
+                )
+            else:
+                lines.append(f"    out[{out_idx}] = r{node_idx};")
 
         lines.append("}")
         lines.append("")
@@ -177,4 +250,3 @@ class AVX512Emitter(BaseEmitter):
                 return f"r{dst_reg} = _mm512_setzero_si512();"
             return f"r{dst_reg} = _mm512_set1_epi32(-1);"
         return f"r{dst_reg} = _mm512_setzero_si512();"
-

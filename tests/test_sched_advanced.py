@@ -119,13 +119,27 @@ class TestRegPressureScheduler(unittest.TestCase):
 
         list_sched = list_schedule(gates, input_bits, outputs, SSE2)
         list_ranges = compute_live_ranges(list_sched, gates, input_bits, outputs)
-        list_alloc = allocate_registers(list_ranges, list_sched, SSE2.registers)
+        list_alloc = allocate_registers(
+            list_ranges,
+            list_sched,
+            SSE2.registers,
+            gates=gates,
+            input_bits=input_bits,
+            outputs=outputs,
+        )
 
         rp_sched = regpressure_schedule(
             gates, input_bits, outputs, SSE2, max_registers=SSE2.registers
         )
         rp_ranges = compute_live_ranges(rp_sched, gates, input_bits, outputs)
-        rp_alloc = allocate_registers(rp_ranges, rp_sched, SSE2.registers)
+        rp_alloc = allocate_registers(
+            rp_ranges,
+            rp_sched,
+            SSE2.registers,
+            gates=gates,
+            input_bits=input_bits,
+            outputs=outputs,
+        )
 
         self.assertLessEqual(
             rp_alloc.num_spills,
@@ -173,7 +187,9 @@ class TestRegPressureScheduler(unittest.TestCase):
             gates, input_bits, outputs, AVX512, max_registers=AVX512.registers
         )
         ranges = compute_live_ranges(sched, gates, input_bits, outputs)
-        alloc = allocate_registers(ranges, sched, AVX512.registers)
+        alloc = allocate_registers(
+            ranges, sched, AVX512.registers, gates=gates, input_bits=input_bits, outputs=outputs
+        )
 
         self.assertEqual(
             alloc.num_spills,
@@ -385,7 +401,9 @@ class TestRegisterAllocationWithSchedule(unittest.TestCase):
 
         sched = list_schedule(gates, input_bits, outputs, SSE2)
         ranges = compute_live_ranges(sched, gates, input_bits, outputs)
-        alloc = allocate_registers(ranges, sched, SSE2.registers)
+        alloc = allocate_registers(
+            ranges, sched, SSE2.registers, gates=gates, input_bits=input_bits, outputs=outputs
+        )
 
         self.assertGreater(
             alloc.num_spills,
@@ -399,7 +417,9 @@ class TestRegisterAllocationWithSchedule(unittest.TestCase):
 
         sched = list_schedule(gates, input_bits, outputs, AVX512)
         ranges = compute_live_ranges(sched, gates, input_bits, outputs)
-        alloc = allocate_registers(ranges, sched, AVX512.registers)
+        alloc = allocate_registers(
+            ranges, sched, AVX512.registers, gates=gates, input_bits=input_bits, outputs=outputs
+        )
 
         self.assertEqual(
             alloc.num_spills,
@@ -459,7 +479,9 @@ class TestTernaryGateLivenessAndAllocation(unittest.TestCase):
 
         sched = list_schedule(gates, input_bits, outputs, AVX512)
         ranges = compute_live_ranges(sched, gates, input_bits, outputs)
-        alloc = allocate_registers(ranges, sched, AVX512.registers)
+        alloc = allocate_registers(
+            ranges, sched, AVX512.registers, gates=gates, input_bits=input_bits, outputs=outputs
+        )
 
         self.assertEqual(
             alloc.num_spills,

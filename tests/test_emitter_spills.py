@@ -41,7 +41,9 @@ class TestEmitterWithSpills(unittest.TestCase):
 
         schedule = list_schedule(gates, input_bits, outputs, AVX512, "slack")
         ranges = compute_live_ranges(schedule, gates, input_bits, outputs)
-        allocation = allocate_registers(ranges, schedule, num_registers=4)
+        allocation = allocate_registers(
+            ranges, schedule, 4, gates=gates, input_bits=input_bits, outputs=outputs
+        )
         self.assertGreater(allocation.num_spills, 0)
 
         code = AVX2Emitter().emit(schedule, allocation, gates, input_bits, outputs, "c")
@@ -64,4 +66,3 @@ class TestEmitterWithSpills(unittest.TestCase):
                 text=True,
             )
             self.assertEqual(res.returncode, 0, res.stderr[:500])
-
