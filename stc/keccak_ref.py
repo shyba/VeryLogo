@@ -66,7 +66,9 @@ def keccak_f1600(state: list[int]) -> None:
         # theta
         c = [0] * 5
         for x in range(5):
-            c[x] = state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20]
+            c[x] = (
+                state[x] ^ state[x + 5] ^ state[x + 10] ^ state[x + 15] ^ state[x + 20]
+            )
         d = [0] * 5
         for x in range(5):
             d[x] = c[(x - 1) % 5] ^ _rol64(c[(x + 1) % 5], 1)
@@ -83,7 +85,9 @@ def keccak_f1600(state: list[int]) -> None:
         # chi
         for x in range(5):
             for y in range(5):
-                state[x + 5 * y] = b[x + 5 * y] ^ ((~b[((x + 1) % 5) + 5 * y]) & b[((x + 2) % 5) + 5 * y])
+                state[x + 5 * y] = b[x + 5 * y] ^ (
+                    (~b[((x + 1) % 5) + 5 * y]) & b[((x + 2) % 5) + 5 * y]
+                )
                 state[x + 5 * y] &= 0xFFFFFFFFFFFFFFFF
 
         # iota
@@ -127,4 +131,3 @@ def keccak_512(message: bytes, *, pad_byte: int = 0x01) -> bytes:
         keccak_f1600(state)
 
     return bytes(out[:out_bytes])
-

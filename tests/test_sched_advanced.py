@@ -188,7 +188,12 @@ class TestRegPressureScheduler(unittest.TestCase):
         )
         ranges = compute_live_ranges(sched, gates, input_bits, outputs)
         alloc = allocate_registers(
-            ranges, sched, AVX512.registers, gates=gates, input_bits=input_bits, outputs=outputs
+            ranges,
+            sched,
+            AVX512.registers,
+            gates=gates,
+            input_bits=input_bits,
+            outputs=outputs,
         )
 
         self.assertEqual(
@@ -402,7 +407,12 @@ class TestRegisterAllocationWithSchedule(unittest.TestCase):
         sched = list_schedule(gates, input_bits, outputs, SSE2)
         ranges = compute_live_ranges(sched, gates, input_bits, outputs)
         alloc = allocate_registers(
-            ranges, sched, SSE2.registers, gates=gates, input_bits=input_bits, outputs=outputs
+            ranges,
+            sched,
+            SSE2.registers,
+            gates=gates,
+            input_bits=input_bits,
+            outputs=outputs,
         )
 
         self.assertGreater(
@@ -418,7 +428,12 @@ class TestRegisterAllocationWithSchedule(unittest.TestCase):
         sched = list_schedule(gates, input_bits, outputs, AVX512)
         ranges = compute_live_ranges(sched, gates, input_bits, outputs)
         alloc = allocate_registers(
-            ranges, sched, AVX512.registers, gates=gates, input_bits=input_bits, outputs=outputs
+            ranges,
+            sched,
+            AVX512.registers,
+            gates=gates,
+            input_bits=input_bits,
+            outputs=outputs,
         )
 
         self.assertEqual(
@@ -480,7 +495,12 @@ class TestTernaryGateLivenessAndAllocation(unittest.TestCase):
         sched = list_schedule(gates, input_bits, outputs, AVX512)
         ranges = compute_live_ranges(sched, gates, input_bits, outputs)
         alloc = allocate_registers(
-            ranges, sched, AVX512.registers, gates=gates, input_bits=input_bits, outputs=outputs
+            ranges,
+            sched,
+            AVX512.registers,
+            gates=gates,
+            input_bits=input_bits,
+            outputs=outputs,
         )
 
         self.assertEqual(

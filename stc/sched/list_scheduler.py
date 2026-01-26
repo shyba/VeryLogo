@@ -122,7 +122,7 @@ class ListScheduler(BaseScheduler):
                             succ_op = succ_gate[0]
                             if succ_op == "ternary":
                                 succ_operands = succ_gate[1:4]
-                            elif succ_op in ("const", "not"):
+                            elif succ_op in ("const", "not", "shl", "lshr"):
                                 succ_operands = [succ_gate[1]]
                             else:
                                 succ_operands = succ_gate[1:3]

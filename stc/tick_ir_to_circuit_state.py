@@ -123,10 +123,20 @@ def lower_tick_ir_to_circuit_state(ir: TickIR) -> tuple[CircuitState, PackedLayo
     output_bits = out_off
 
     layout = PackedLayout(
-        inputs={k: {"lsb": in_offsets[k], "width": _width(ir.inputs[k])} for k in input_order},
-        state={k: {"lsb": st_offsets[k], "width": _width(ir.state[k])} for k in state_order},
-        outputs={k: {"lsb": out_offsets[k], "width": _width(ir.outputs[k])} for k in output_order},
-        next_state={k: {"lsb": nx_offsets[k], "width": _width(ir.state[k])} for k in state_order},
+        inputs={
+            k: {"lsb": in_offsets[k], "width": _width(ir.inputs[k])}
+            for k in input_order
+        },
+        state={
+            k: {"lsb": st_offsets[k], "width": _width(ir.state[k])} for k in state_order
+        },
+        outputs={
+            k: {"lsb": out_offsets[k], "width": _width(ir.outputs[k])}
+            for k in output_order
+        },
+        next_state={
+            k: {"lsb": nx_offsets[k], "width": _width(ir.state[k])} for k in state_order
+        },
         input_bits=input_bits,
         output_bits=output_bits,
     )
@@ -210,7 +220,9 @@ def lower_tick_ir_to_circuit_state(ir: TickIR) -> tuple[CircuitState, PackedLayo
             bb = lower_bits(e.b)
             if len(ab) != len(bb):
                 raise LoweringError("binary op width mismatch")
-            op = "xor" if isinstance(e, Xor) else ("and" if isinstance(e, And) else "or")
+            op = (
+                "xor" if isinstance(e, Xor) else ("and" if isinstance(e, And) else "or")
+            )
             bits = [new_gate(op, a, b) for a, b in zip(ab, bb)]
             memo_bits[key] = bits
             return bits
@@ -273,7 +285,9 @@ def lower_tick_ir_to_circuit_state(ir: TickIR) -> tuple[CircuitState, PackedLayo
             memo_bits[key] = bits
             return bits
 
-        raise LoweringError(f"unsupported expression for CircuitState lowering: {type(e)}")
+        raise LoweringError(
+            f"unsupported expression for CircuitState lowering: {type(e)}"
+        )
 
     packed_outputs: list[Expr] = []
     for name in output_order:

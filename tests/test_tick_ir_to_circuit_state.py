@@ -67,7 +67,9 @@ class TestTickIrToCircuitState(unittest.TestCase):
 
         # next_s = mux(cond=a[0], a=s, b=01)
         cond = Slice(x=a, offset=0, width=1)
-        nx_expr = Mux(cond=cond, a=s, b=Concat(parts=[BoolConst(False), BoolConst(True)]))
+        nx_expr = Mux(
+            cond=cond, a=s, b=Concat(parts=[BoolConst(False), BoolConst(True)])
+        )
 
         ir = TickIR(
             name="t",
@@ -98,7 +100,11 @@ class TestTickIrToCircuitState(unittest.TestCase):
                 o_val = sum((out_bits[i] & 1) << i for i in range(4))
                 nx_val = sum((out_bits[4 + i] & 1) << i for i in range(2))
 
-                exp_o = (((a_val << 1) & 0xF) ^ ((a_val >> 1) & 0xF) ^ (((s_val & 1) * 0b0101) | (((s_val >> 1) & 1) * 0b1010))) & 0xF
+                exp_o = (
+                    ((a_val << 1) & 0xF)
+                    ^ ((a_val >> 1) & 0xF)
+                    ^ (((s_val & 1) * 0b0101) | (((s_val >> 1) & 1) * 0b1010))
+                ) & 0xF
                 exp_nx = s_val if (a_val & 1) else 0b01
 
                 self.assertEqual(o_val, exp_o)

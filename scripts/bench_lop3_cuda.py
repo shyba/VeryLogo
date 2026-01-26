@@ -23,7 +23,11 @@ from scripts.bp_circuit_sbox import build_bp_sbox
 from stc.bitslice import AES_SBOX_TABLE
 from stc.circuit_synth import CircuitState
 from stc.cuda_driver import Cuda
-from stc.ptx_lop3 import assemble_ptx_to_cubin, emit_inline_lop3_kernel, emit_lop3_kernel
+from stc.ptx_lop3 import (
+    assemble_ptx_to_cubin,
+    emit_inline_lop3_kernel,
+    emit_lop3_kernel,
+)
 
 
 def build_bp128_sbox() -> CircuitState:
@@ -37,7 +41,9 @@ def build_bp115_sbox() -> CircuitState:
     return build_bp_sbox()
 
 
-def _compute_cone_imm8(circuit: CircuitState, root_gate_idx: int, leaves: list[int]) -> int:
+def _compute_cone_imm8(
+    circuit: CircuitState, root_gate_idx: int, leaves: list[int]
+) -> int:
     """Compute imm8 for a 3-input cone using the repo's ternary convention.
 
     imm8 bit i corresponds to i = (a<<2)|(b<<1)|c where (a,b,c) are the values of
@@ -48,7 +54,9 @@ def _compute_cone_imm8(circuit: CircuitState, root_gate_idx: int, leaves: list[i
     full_root = input_bits + root_gate_idx
 
     def eval_at(assignments: dict[int, int]) -> int:
-        node_vals: dict[int, int] = {i: assignments.get(i, 0) for i in range(input_bits)}
+        node_vals: dict[int, int] = {
+            i: assignments.get(i, 0) for i in range(input_bits)
+        }
 
         for g_idx, gate in enumerate(gates):
             full_idx = input_bits + g_idx
@@ -69,7 +77,9 @@ def _compute_cone_imm8(circuit: CircuitState, root_gate_idx: int, leaves: list[i
             else:
                 op, left, right = gate
                 l_val = node_vals.get(left, assignments.get(left, 0))
-                r_val = node_vals.get(right, assignments.get(right, 0)) if right >= 0 else 0
+                r_val = (
+                    node_vals.get(right, assignments.get(right, 0)) if right >= 0 else 0
+                )
                 if op == "xor":
                     node_vals[full_idx] = l_val ^ r_val
                 elif op == "and":
@@ -237,7 +247,9 @@ def run_cuda_bench(
 
             if do_check_truth_table:
                 if threads != 8:
-                    raise RuntimeError("truth-table check requires threads=8 (8*32=256 lanes)")
+                    raise RuntimeError(
+                        "truth-table check requires threads=8 (8*32=256 lanes)"
+                    )
                 packed = _pack_truth_table_inputs_to_bitplanes()
                 for i, w in enumerate(packed):
                     host_in[i] = ctypes.c_uint32(w)
@@ -377,7 +389,9 @@ def main() -> int:
         default="mem",
         help="mem=load/store bitplanes; inline=register-only loop + checksum store",
     )
-    ap.add_argument("--iters", type=int, default=1, help="Inner iterations per thread (inline mode)")
+    ap.add_argument(
+        "--iters", type=int, default=1, help="Inner iterations per thread (inline mode)"
+    )
     ap.add_argument(
         "--load",
         choices=["ptxas", "jit"],
@@ -398,7 +412,9 @@ def main() -> int:
         if args.mode != "mem":
             raise SystemExit("--check-truth-table requires --mode mem")
         if args.threads != 8:
-            raise SystemExit("--check-truth-table requires --threads 8 (8*32=256 lanes)")
+            raise SystemExit(
+                "--check-truth-table requires --threads 8 (8*32=256 lanes)"
+            )
         if args.reps != 1:
             raise SystemExit("--check-truth-table requires --reps 1")
 
@@ -431,7 +447,11 @@ def main() -> int:
         dev = cuda.device(0)
         ctx = cuda.ctx_create(dev)
         try:
-            mod = cuda.module_load_data(cubin) if cubin is not None else cuda.module_load_ptx(kernel.ptx)
+            mod = (
+                cuda.module_load_data(cubin)
+                if cubin is not None
+                else cuda.module_load_ptx(kernel.ptx)
+            )
             fn = cuda.module_get_function(mod, kernel.kernel_name)
 
             nbytes = args.threads * 4
@@ -465,7 +485,9 @@ def main() -> int:
                     cuda.event_destroy(end)
 
                 seconds = ms / 1000.0
-                total_evals = float(args.threads) * 32.0 * float(args.reps) * float(args.iters)
+                total_evals = (
+                    float(args.threads) * 32.0 * float(args.reps) * float(args.iters)
+                )
                 result = BenchResult(
                     ns_per_eval=(seconds / total_evals) * 1e9,
                     evals_per_sec=total_evals / seconds,
@@ -584,8 +606,12 @@ def main() -> int:
 
     total = args.threads * 32 * args.reps * (args.iters if args.mode == "inline" else 1)
     print(f"circuit={args.circuit} gates={mapped.gate_count} lop3={kernel.lop3_count}")
-    print(f"threads={args.threads} block={args.block} reps={args.reps} total_evals={total}")
-    print(f"lop3: {result.ns_per_eval:.3f} ns/eval, {result.evals_per_sec/1e9:.3f}B evals/sec")
+    print(
+        f"threads={args.threads} block={args.block} reps={args.reps} total_evals={total}"
+    )
+    print(
+        f"lop3: {result.ns_per_eval:.3f} ns/eval, {result.evals_per_sec/1e9:.3f}B evals/sec"
+    )
     return 0
 
 

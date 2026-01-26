@@ -1117,6 +1117,24 @@ class BitTranspose:
 
 
 @dataclass(frozen=True)
+class Rotl:
+    x: Expr
+    sh: Expr
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": "rotl", "x": self.x.to_dict(), "sh": self.sh.to_dict()}
+
+
+@dataclass(frozen=True)
+class Rotr:
+    x: Expr
+    sh: Expr
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": "rotr", "x": self.x.to_dict(), "sh": self.sh.to_dict()}
+
+
+@dataclass(frozen=True)
 class Delay:
     x: Expr
     ticks: int
@@ -1201,6 +1219,8 @@ Expr = (
     | Lut8
     | Bitcast
     | BitTranspose
+    | Rotl
+    | Rotr
     | Delay
     | FNeg
     | FAbs
@@ -1298,6 +1318,8 @@ EXPR_CLASSES = (
     Lut8,
     TernaryLut,
     Bitcast,
+    Rotl,
+    Rotr,
     Delay,
     FNeg,
     FAbs,
@@ -1571,6 +1593,10 @@ def expr_from_dict(data: dict[str, Any]) -> Expr:
         )
     if kind == "bitcast":
         return Bitcast(to=type_from_dict(data["to"]), x=expr_from_dict(data["x"]))
+    if kind == "rotl":
+        return Rotl(x=expr_from_dict(data["x"]), sh=expr_from_dict(data["sh"]))
+    if kind == "rotr":
+        return Rotr(x=expr_from_dict(data["x"]), sh=expr_from_dict(data["sh"]))
     if kind == "delay":
         return Delay(x=expr_from_dict(data["x"]), ticks=int(data["ticks"]))
     raise ValueError("unknown expr kind")

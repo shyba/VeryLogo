@@ -20,10 +20,19 @@ def _hexdump(b: bytes) -> str:
 def _try_endian_fixes(got: bytes) -> list[tuple[str, bytes]]:
     # Convenience transforms to help debug byte/word order mismatches.
     outs: list[tuple[str, bytes]] = [("raw", got)]
-    outs.append(("byteswap32", b"".join(got[i : i + 4][::-1] for i in range(0, len(got), 4))))
-    outs.append(("byteswap64", b"".join(got[i : i + 8][::-1] for i in range(0, len(got), 8))))
+    outs.append(
+        ("byteswap32", b"".join(got[i : i + 4][::-1] for i in range(0, len(got), 4)))
+    )
+    outs.append(
+        ("byteswap64", b"".join(got[i : i + 8][::-1] for i in range(0, len(got), 8)))
+    )
     outs.append(("reverse_bytes", got[::-1]))
-    outs.append(("reverse_words64", b"".join(reversed([got[i : i + 8] for i in range(0, len(got), 8)]))))
+    outs.append(
+        (
+            "reverse_words64",
+            b"".join(reversed([got[i : i + 8] for i in range(0, len(got), 8)])),
+        )
+    )
     return outs
 
 
@@ -38,7 +47,9 @@ def build_and_run(msg: bytes, *, max_cycles: int = 20000) -> tuple[bytes, int]:
 
     v_files = sorted(rtl.glob("*.v"))
     if not v_files:
-        raise FileNotFoundError("no .v files found under external-sha3-verilog/low_throughput_core/rtl")
+        raise FileNotFoundError(
+            "no .v files found under external-sha3-verilog/low_throughput_core/rtl"
+        )
 
     # Feed bytes into 32-bit big-endian words, matching the padder1 examples.
     words: list[tuple[int, int, int]] = []
@@ -49,7 +60,9 @@ def build_and_run(msg: bytes, *, max_cycles: int = 20000) -> tuple[bytes, int]:
         pos += 4
     rem = len(msg) - pos
     if rem:
-        w = int.from_bytes(msg[pos:] + b"\x00" * (4 - rem), byteorder="big", signed=False)
+        w = int.from_bytes(
+            msg[pos:] + b"\x00" * (4 - rem), byteorder="big", signed=False
+        )
         words.append((w, 1, rem))
     else:
         # Exact multiple of 4 bytes: still need to signal last so padding is injected.
@@ -105,7 +118,8 @@ def build_and_run(msg: bytes, *, max_cycles: int = 20000) -> tuple[bytes, int]:
 
 def _render_sim_cpp(*, words: list[tuple[int, int, int]], max_cycles: int) -> str:
     stim_inits = ",\n".join(
-        f"    {{0x{w:08x}u, {is_last}u, {byte_num}u}}" for (w, is_last, byte_num) in words
+        f"    {{0x{w:08x}u, {is_last}u, {byte_num}u}}"
+        for (w, is_last, byte_num) in words
     )
     return f"""
 #include <cstdint>

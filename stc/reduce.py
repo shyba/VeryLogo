@@ -138,6 +138,13 @@ def reduce_expr(
         x = reduce_expr(expr.x, types)
         return Bitcast(to=expr.to, x=x)
 
+    from stc.tick_ir import Rotl, Rotr
+
+    if isinstance(expr, (Rotl, Rotr)):
+        x = reduce_expr(expr.x, types)
+        sh = reduce_expr(expr.sh, types)
+        return expr.__class__(x=x, sh=sh)
+
     if isinstance(expr, Lut8):
         x = reduce_expr(expr.x, types)
         if isinstance(x, BitVecConst) and x.width == 8:
@@ -618,6 +625,12 @@ def optimize_tick_ir(
     backend: str = "generic",
     ternary_mapping: bool | None = None,
     bounded_state_opt: bool = True,
+    fuse_ticks: int = 1,
+    fuse_mode: str = "final",
+    fuse_input_policy: str = "shared",
+    fuse_budget_max_nodes: int = 1 << 60,
+    fuse_budget_max_depth: int = 1 << 60,
+    fuse_budget_max_step_ms: int | None = None,
 ) -> TickIR:
     from stc.delay_lower import lower_delays
     from stc.tech import get_technology
@@ -626,6 +639,22 @@ def optimize_tick_ir(
 
     ir = lower_delays(ir)
     ir = reduce_tick_ir(ir)
+    if fuse_ticks > 1:
+        from stc.fuse_ticks import FuseBudget, fuse_ticks as _fuse_ticks
+
+        ir = _fuse_ticks(
+            ir,
+            fuse_ticks,
+            mode=fuse_mode,
+            input_policy=fuse_input_policy,
+            budget=FuseBudget(
+                max_nodes=fuse_budget_max_nodes,
+                max_depth=fuse_budget_max_depth,
+                stop_on_budget_hit=True,
+                max_step_ms=fuse_budget_max_step_ms,
+            ),
+        )
+        ir = reduce_tick_ir(ir)
 
     tech = get_technology(backend)
     ctx = PassContext(

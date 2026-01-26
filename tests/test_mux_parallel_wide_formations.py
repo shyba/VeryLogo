@@ -23,7 +23,13 @@ from stc.tick_ir import (
 )
 from stc.tick_ir_to_circuit_state import lower_tick_ir_to_circuit_state
 from stc.testing import eval_circuitstate_bits, step_tickir
-from stc.testing import compile_shared, have_avx2, have_avx512, run_avx2_circuit, run_avx512_circuit
+from stc.testing import (
+    compile_shared,
+    have_avx2,
+    have_avx512,
+    run_avx2_circuit,
+    run_avx512_circuit,
+)
 
 
 def _bits_le(value: int, width: int) -> list[int]:
@@ -68,11 +74,18 @@ class TestMuxParallelWideFormations(unittest.TestCase):
         st_hi = Slice(x=st, offset=32, width=32)
         mix0 = Xor(a=st_lo, b=out32)
         mix1 = Xor(a=st_hi, b=out32)
-        nx = Concat(parts=[Mux(cond=sel, a=mix1, b=mix0), Mux(cond=sel, a=mix0, b=mix1)])
+        nx = Concat(
+            parts=[Mux(cond=sel, a=mix1, b=mix0), Mux(cond=sel, a=mix0, b=mix1)]
+        )
 
         ir = TickIR(
             name="muxy",
-            inputs={"a": BitVecType(32), "b": BitVecType(32), "sel": BoolType(), "reset": BoolType()},
+            inputs={
+                "a": BitVecType(32),
+                "b": BitVecType(32),
+                "sel": BoolType(),
+                "reset": BoolType(),
+            },
             outputs={"out": BitVecType(32)},
             state={"st": BitVecType(64)},
             reset_state={"st": BitVecConst(width=64, value=0)},
@@ -83,7 +96,9 @@ class TestMuxParallelWideFormations(unittest.TestCase):
         circuit, layout = lower_tick_ir_to_circuit_state(ir)
         cs = circuit.to_dict()
 
-        rng = random.Random(0 if os.environ.get("STC_SEED") is None else int(os.environ["STC_SEED"]))
+        rng = random.Random(
+            0 if os.environ.get("STC_SEED") is None else int(os.environ["STC_SEED"])
+        )
 
         cur_st = 0
         packed = [0] * layout.input_bits
@@ -102,8 +117,13 @@ class TestMuxParallelWideFormations(unittest.TestCase):
             _set_bits(packed, layout.state["st"]["lsb"], 64, cur_st)
 
             out_bits = eval_circuitstate_bits(cs, packed)
-            out_val = sum((out_bits[layout.outputs["out"]["lsb"] + i] & 1) << i for i in range(32))
-            nx_st = sum((out_bits[layout.next_state["st"]["lsb"] + i] & 1) << i for i in range(64))
+            out_val = sum(
+                (out_bits[layout.outputs["out"]["lsb"] + i] & 1) << i for i in range(32)
+            )
+            nx_st = sum(
+                (out_bits[layout.next_state["st"]["lsb"] + i] & 1) << i
+                for i in range(64)
+            )
 
             # TickIR step from the same current state.
             step = step_tickir(
@@ -112,8 +132,12 @@ class TestMuxParallelWideFormations(unittest.TestCase):
                 inputs={"a": aval, "b": bval, "sel": bool(selv), "reset": bool(rst)},
             )
 
-            self.assertEqual(out_val & 0xFFFFFFFF, int(step.outputs["out"]) & 0xFFFFFFFF)
-            self.assertEqual(nx_st & ((1 << 64) - 1), int(step.next_state["st"]) & ((1 << 64) - 1))
+            self.assertEqual(
+                out_val & 0xFFFFFFFF, int(step.outputs["out"]) & 0xFFFFFFFF
+            )
+            self.assertEqual(
+                nx_st & ((1 << 64) - 1), int(step.next_state["st"]) & ((1 << 64) - 1)
+            )
 
             cur_st = int(step.next_state["st"])
 
@@ -141,11 +165,18 @@ class TestMuxParallelWideFormations(unittest.TestCase):
         st_hi = Slice(x=st, offset=32, width=32)
         mix0 = Xor(a=st_lo, b=out32)
         mix1 = Xor(a=st_hi, b=out32)
-        nx = Concat(parts=[Mux(cond=sel, a=mix1, b=mix0), Mux(cond=sel, a=mix0, b=mix1)])
+        nx = Concat(
+            parts=[Mux(cond=sel, a=mix1, b=mix0), Mux(cond=sel, a=mix0, b=mix1)]
+        )
 
         ir = TickIR(
             name="muxy_native",
-            inputs={"a": BitVecType(32), "b": BitVecType(32), "sel": BoolType(), "reset": BoolType()},
+            inputs={
+                "a": BitVecType(32),
+                "b": BitVecType(32),
+                "sel": BoolType(),
+                "reset": BoolType(),
+            },
             outputs={"out": BitVecType(32)},
             state={"st": BitVecType(64)},
             reset_state={"st": BitVecConst(width=64, value=0)},
@@ -174,7 +205,10 @@ class TestMuxParallelWideFormations(unittest.TestCase):
         in_words = [_mask64(b) for b in packed]
 
         def decode(words):
-            return [1 if (w & 0xFFFFFFFFFFFFFFFF) == 0xFFFFFFFFFFFFFFFF else 0 for w in words]
+            return [
+                1 if (w & 0xFFFFFFFFFFFFFFFF) == 0xFFFFFFFFFFFFFFFF else 0
+                for w in words
+            ]
 
         if have_avx2():
             c_src = generate_scheduled_code(circuit, target="avx2", scheduler="list")
@@ -183,7 +217,10 @@ class TestMuxParallelWideFormations(unittest.TestCase):
                 c_path.write_text(c_src, encoding="utf-8")
                 build = compile_shared(c_path, cflags=["-mavx2"])
                 out_words = run_avx2_circuit(
-                    build.so_path, in_words, input_bits=layout.input_bits, output_bits=layout.output_bits
+                    build.so_path,
+                    in_words,
+                    input_bits=layout.input_bits,
+                    output_bits=layout.output_bits,
                 )
                 self.assertEqual(decode(out_words), [b & 1 for b in py_out_bits])
 
@@ -197,6 +234,9 @@ class TestMuxParallelWideFormations(unittest.TestCase):
                     cflags=["-mavx512f", "-mavx512vl", "-mavx512dq", "-mavx512bw"],
                 )
                 out_words = run_avx512_circuit(
-                    build.so_path, in_words, input_bits=layout.input_bits, output_bits=layout.output_bits
+                    build.so_path,
+                    in_words,
+                    input_bits=layout.input_bits,
+                    output_bits=layout.output_bits,
                 )
                 self.assertEqual(decode(out_words), [b & 1 for b in py_out_bits])

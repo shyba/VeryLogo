@@ -104,8 +104,12 @@ def _emit_cpu_ref_c(mapped: CircuitState) -> str:
         return f"t[{node - input_bits}]"
 
     lines: list[str] = []
-    lines.append("static inline uint32_t ternary_u32(uint32_t a, uint32_t b, uint32_t c, uint8_t imm8) {")
-    lines.append("  // imm8 bit i corresponds to i = (a<<2)|(b<<1)|c with a/b/c as 0/1 bits.")
+    lines.append(
+        "static inline uint32_t ternary_u32(uint32_t a, uint32_t b, uint32_t c, uint8_t imm8) {"
+    )
+    lines.append(
+        "  // imm8 bit i corresponds to i = (a<<2)|(b<<1)|c with a/b/c as 0/1 bits."
+    )
     lines.append("  uint32_t na = ~a, nb = ~b, nc = ~c;")
     lines.append("  uint32_t r = 0;")
     for i in range(8):
@@ -159,7 +163,9 @@ def main() -> int:
     ap.add_argument("--threads", type=int, default=1_048_576)
     ap.add_argument("--block", type=int, default=256)
     ap.add_argument("--reps", type=int, default=200)
-    ap.add_argument("--check", action="store_true", help="Run a small correctness check")
+    ap.add_argument(
+        "--check", action="store_true", help="Run a small correctness check"
+    )
     ap.add_argument("--out", default="out/bp128_lop3_bench.ptx")
     args = ap.parse_args()
 

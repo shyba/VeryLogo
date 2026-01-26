@@ -27,7 +27,9 @@ from stc.circuit_synth import CircuitState
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--out", default="out/bp128_lop3.ptx")
-    ap.add_argument("--assemble", action="store_true", help="Try to assemble with ptxas")
+    ap.add_argument(
+        "--assemble", action="store_true", help="Try to assemble with ptxas"
+    )
     ap.add_argument("--sm", default="sm_61", help="SM to pass to ptxas (if --assemble)")
     args = ap.parse_args()
 
@@ -59,7 +61,9 @@ def main() -> int:
     )
 
     lop3_count = len(re.findall(r"\blop3\.b32\b", ptx))
-    ternary_count = sum(1 for g in mapped_circuit.gates if len(g) == 5 and g[0] == "ternary")
+    ternary_count = sum(
+        1 for g in mapped_circuit.gates if len(g) == 5 and g[0] == "ternary"
+    )
 
     header = "\n".join(
         [
@@ -75,7 +79,9 @@ def main() -> int:
     Path(args.out).write_text(ptx_full)
 
     print(f"BP gates: {bp.gate_count}")
-    print(f"Cones mapped to ternary: {mapped} (ternary gates after DCE: {ternary_count})")
+    print(
+        f"Cones mapped to ternary: {mapped} (ternary gates after DCE: {ternary_count})"
+    )
     print(f"PTX written: {args.out}")
     print(f"lop3.b32 count: {lop3_count}")
 

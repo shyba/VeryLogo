@@ -39,7 +39,7 @@ def compute_dependencies(gates: list, input_bits: int, outputs: list) -> Depende
         op = gate[0]
         if op == "ternary":
             operands = gate[1:4]
-        elif op in ("const", "not"):
+        elif op in ("const", "not", "shl", "lshr"):
             operands = [gate[1]]
         else:
             operands = gate[1:3]
@@ -72,7 +72,7 @@ def compute_asap(
         op = gate[0]
         if op == "ternary":
             operands = gate[1:4]
-        elif op in ("const", "not"):
+        elif op in ("const", "not", "shl", "lshr"):
             operands = [gate[1]]
         else:
             operands = gate[1:3]

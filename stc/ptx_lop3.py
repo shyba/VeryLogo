@@ -70,7 +70,11 @@ DONE:
 """
 
     lop3_count = len(re.findall(r"\blop3\.b32\b", ptx_func))
-    return PtxKernel(ptx=header + ptx_func + "\n" + kernel, kernel_name=kernel_name, lop3_count=lop3_count)
+    return PtxKernel(
+        ptx=header + ptx_func + "\n" + kernel,
+        kernel_name=kernel_name,
+        lop3_count=lop3_count,
+    )
 
 
 def emit_lop3_kernel(circuit: CircuitState, *, sm: str, func_name: str) -> PtxKernel:
@@ -93,7 +97,9 @@ def emit_inline_lop3_kernel(
     32-bit checksum to out_ptr[tid].
     """
     if circuit.input_bits != 8 or circuit.output_bits != 8:
-        raise ValueError("inline lop3 kernel currently supports 8->8 S-box circuits only")
+        raise ValueError(
+            "inline lop3 kernel currently supports 8->8 S-box circuits only"
+        )
 
     header = "\n".join(
         [
@@ -161,7 +167,9 @@ def emit_inline_lop3_kernel(
     for i in range(8):
         lines.append(f"    mov.u32 %r{i}, {r_tid};")
         lines.append(f"    mad.lo.u32 %r{i}, %r{i}, 1664525, {12345 + i * 101};")
-        lines.append(f"    xor.b32 %r{i}, %r{i}, 0x{(0x9E3779B9 ^ (i * 0x11111111)) & 0xFFFFFFFF:08x};")
+        lines.append(
+            f"    xor.b32 %r{i}, %r{i}, 0x{(0x9E3779B9 ^ (i * 0x11111111)) & 0xFFFFFFFF:08x};"
+        )
 
     lines.append("")
     lines.append(f"    mov.u32 {r_i}, 0;")
@@ -221,7 +229,9 @@ def emit_inline_lop3_kernel(
     lines.append("}")
     lines.append("")
 
-    return PtxKernel(ptx="\n".join(lines), kernel_name=kernel_name, lop3_count=lop3_count)
+    return PtxKernel(
+        ptx="\n".join(lines), kernel_name=kernel_name, lop3_count=lop3_count
+    )
 
 
 def assemble_ptx_to_cubin(ptx: str, *, sm: str) -> bytes:

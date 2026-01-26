@@ -13,6 +13,7 @@ from stc.sched.regalloc import allocate_registers
 from stc.sched.emit import AVX2Emitter
 from stc.sched.emit import AVX512Emitter
 from stc.sched.emit.ptx import PTXEmitter
+from stc.sched.emit.avx512_u64 import AVX512U64Emitter
 
 
 SCHEDULERS = {
@@ -23,12 +24,14 @@ SCHEDULERS = {
 TARGETS = {
     "avx2": AVX2,
     "avx512": AVX512,
+    "avx512_u64": AVX512,
     "ptx": PTX,
 }
 
 EMITTERS = {
     "avx2": AVX2Emitter,
     "avx512": AVX512Emitter,
+    "avx512_u64": AVX512U64Emitter,
     "ptx": PTXEmitter,
 }
 
@@ -38,6 +41,7 @@ def generate_scheduled_code(
     target: str = "avx2",
     scheduler: str = "list",
     function_name: str = "circuit",
+    io_split: tuple[int, int] | None = None,
 ) -> str:
     gates = list(circuit.gates)
     input_bits = circuit.input_bits
@@ -84,7 +88,15 @@ def generate_scheduled_code(
             schedule = serial
 
     emitter = emitter_cls()
-    return emitter.emit(schedule, allocation, gates, input_bits, outputs, function_name)
+    return emitter.emit(
+        schedule,
+        allocation,
+        gates,
+        input_bits,
+        outputs,
+        function_name,
+        io_split,
+    )
 
 
 def get_schedule_stats(circuit, target: str, scheduler: str) -> dict:

@@ -146,8 +146,7 @@ def simulate_sha3_512_once(lib_path: Path, layout_path: Path, message: bytes) ->
         for i in range(out_bits):
             bits.append(
                 1
-                if (int(out_arr[i][0]) & 0xFFFFFFFFFFFFFFFF)
-                == 0xFFFFFFFFFFFFFFFF
+                if (int(out_arr[i][0]) & 0xFFFFFFFFFFFFFFFF) == 0xFFFFFFFFFFFFFFFF
                 else 0
             )
         return bits
@@ -215,9 +214,7 @@ def simulate_sha3_512_once(lib_path: Path, layout_path: Path, message: bytes) ->
             else 0
         )
         if verbose and (out_ready or buffer_full):
-            st0 = (
-                packed[int(state0_meta['lsb'])] if state0_meta is not None else 0
-            )
+            st0 = packed[int(state0_meta["lsb"])] if state0_meta is not None else 0
             print(f"tick: out_ready={out_ready} buffer_full={buffer_full} st0={st0}")
         return out_ready, buffer_full, out_bits_only
 

@@ -106,6 +106,7 @@ class Layout:
             next_state=d["next_state"],
         )
 
+
 def _load_circuit_so(so_path: Path):
     import ctypes
 
@@ -213,7 +214,9 @@ def main() -> int:
         )
 
         layout = Layout.load(out_dir / "io_layout.json")
-        ir = TickIR.from_dict(json.loads((out_dir / "reduced_tick_ir.json").read_text()))
+        ir = TickIR.from_dict(
+            json.loads((out_dir / "reduced_tick_ir.json").read_text())
+        )
         validate_tick_ir(ir)
         circuit_state = json.loads((out_dir / "circuit_state.json").read_text())
 
@@ -227,14 +230,26 @@ def main() -> int:
         # Treat each packed bit as a full __m512i, with lane0 in bit0.
         # Bitsliced convention: false = all-zeros, true = all-ones.
         V0 = Vec(0, 0, 0, 0, 0, 0, 0, 0)
-        V1 = Vec(0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF,
-                 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF, 0xFFFFFFFFFFFFFFFF)
+        V1 = Vec(
+            0xFFFFFFFFFFFFFFFF,
+            0xFFFFFFFFFFFFFFFF,
+            0xFFFFFFFFFFFFFFFF,
+            0xFFFFFFFFFFFFFFFF,
+            0xFFFFFFFFFFFFFFFF,
+            0xFFFFFFFFFFFFFFFF,
+            0xFFFFFFFFFFFFFFFF,
+            0xFFFFFFFFFFFFFFFF,
+        )
 
         def set_in_bit(i: int, b: int) -> None:
             in_ptr[i] = V1 if (b & 1) else V0
 
         def get_out_bit(i: int) -> int:
-            return 1 if (int(out_ptr[i][0]) & 0xFFFFFFFFFFFFFFFF) == 0xFFFFFFFFFFFFFFFF else 0
+            return (
+                1
+                if (int(out_ptr[i][0]) & 0xFFFFFFFFFFFFFFFF) == 0xFFFFFFFFFFFFFFFF
+                else 0
+            )
 
         packed_state_bits = [0] * layout.input_bits
 
@@ -261,11 +276,16 @@ def main() -> int:
                 set_in_bit(i, bit)
             if os.environ.get("STC_DEBUG_RESET", "") not in {"", "0"}:
                 ri = int(layout.inputs["reset"]["lsb"])
-                print("reset in_ptr[lsb][0] =", hex(int(in_ptr[ri][0]) & 0xFFFFFFFFFFFFFFFF))
+                print(
+                    "reset in_ptr[lsb][0] =",
+                    hex(int(in_ptr[ri][0]) & 0xFFFFFFFFFFFFFFFF),
+                )
             lib.circuit(in_ptr, out_ptr)
             if os.environ.get("STC_DEBUG_OUTIDX", "") not in {"", "0"}:
                 oi = int(os.environ["STC_DEBUG_OUTIDX"])
-                print("out_ptr[idx][0] =", hex(int(out_ptr[oi][0]) & 0xFFFFFFFFFFFFFFFF))
+                print(
+                    "out_ptr[idx][0] =", hex(int(out_ptr[oi][0]) & 0xFFFFFFFFFFFFFFFF)
+                )
             return [get_out_bit(i) for i in range(layout.output_bits)]
 
         def call_python_circuit(packed_in_bits: list[int]) -> list[int]:
@@ -280,7 +300,9 @@ def main() -> int:
                 for i in range(w):
                     packed_state_bits[st_lsb + i] = out_bits[nx_lsb + i]
 
-        def tick_inputs(in_word: int, in_ready: int, is_last: int, byte_num: int, reset: int) -> None:
+        def tick_inputs(
+            in_word: int, in_ready: int, is_last: int, byte_num: int, reset: int
+        ) -> None:
             _set_field_bits(
                 packed_state_bits,
                 lsb=int(layout.inputs["in"]["lsb"]),
@@ -312,19 +334,21 @@ def main() -> int:
                 value=reset,
             )
 
-        def step_interp(inp: dict[str, int | bool]) -> tuple[dict[str, int | bool], dict[str, int | bool]]:
+        def step_interp(
+            inp: dict[str, int | bool]
+        ) -> tuple[dict[str, int | bool], dict[str, int | bool]]:
             env = {**inp, **interp_state}
             outs = {k: eval_expr(ir.output_exprs[k], types, env) for k in ir.outputs}
             if bool(inp.get("reset", False)):
-                nxt = {
-                    k: eval_expr(ir.reset_state[k], types, env) for k in ir.state
-                }
+                nxt = {k: eval_expr(ir.reset_state[k], types, env) for k in ir.state}
             else:
                 nxt = {k: eval_expr(ir.next_state[k], types, env) for k in ir.state}
             interp_state.update(nxt)
             return outs, nxt
 
-        def unpack_circuit_outputs(out_bits: list[int]) -> tuple[dict[str, int | bool], dict[str, int | bool]]:
+        def unpack_circuit_outputs(
+            out_bits: list[int],
+        ) -> tuple[dict[str, int | bool], dict[str, int | bool]]:
             outs: dict[str, int | bool] = {}
             for name, meta in layout.outputs.items():
                 w = int(meta["width"])
@@ -353,8 +377,12 @@ def main() -> int:
         if out_bits != py_bits:
             for i, (a, b) in enumerate(zip(out_bits, py_bits)):
                 if a != b:
-                    raise RuntimeError(f"AVX512 != python circuit at cycle 0 (out[{i}] avx={a} py={b})")
-            raise RuntimeError("AVX512 circuit output differs from python CircuitState eval at cycle 0")
+                    raise RuntimeError(
+                        f"AVX512 != python circuit at cycle 0 (out[{i}] avx={a} py={b})"
+                    )
+            raise RuntimeError(
+                "AVX512 circuit output differs from python CircuitState eval at cycle 0"
+            )
         c_outs, c_nxt = unpack_circuit_outputs(out_bits)
         apply_circuit_next_state(out_bits)
 
@@ -362,7 +390,9 @@ def main() -> int:
             {"in": 0, "in_ready": False, "is_last": False, "byte_num": 0, "reset": True}
         )
 
-        def check_cycle(cycle: int, out_bits: list[int], c_outs, i_outs, c_nxt, i_nxt) -> None:
+        def check_cycle(
+            cycle: int, out_bits: list[int], c_outs, i_outs, c_nxt, i_nxt
+        ) -> None:
             for k in sorted(i_outs.keys()):
                 if i_outs[k] != c_outs.get(k):
                     raise RuntimeError(
@@ -493,7 +523,13 @@ def main() -> int:
             c_outs, c_nxt = unpack_circuit_outputs(out_bits)
             apply_circuit_next_state(out_bits)
             i_outs, i_nxt = step_interp(
-                {"in": 0, "in_ready": False, "is_last": False, "byte_num": 0, "reset": False}
+                {
+                    "in": 0,
+                    "in_ready": False,
+                    "is_last": False,
+                    "byte_num": 0,
+                    "reset": False,
+                }
             )
             try:
                 check_cycle(cycle, out_bits, c_outs, i_outs, c_nxt, i_nxt)

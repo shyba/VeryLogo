@@ -35,7 +35,7 @@ def compute_last_use(gates: list, input_bits: int, outputs: list) -> dict[int, i
         op = gate[0]
         if op == "ternary":
             operands = gate[1:4]
-        elif op in ("const", "not"):
+        elif op in ("const", "not", "shl", "lshr"):
             operands = [gate[1]]
         else:
             operands = gate[1:3]
@@ -62,7 +62,7 @@ def compute_use_counts(gates: list, input_bits: int, outputs: list) -> dict[int,
         op = gate[0]
         if op == "ternary":
             operands = gate[1:4]
-        elif op in ("const", "not"):
+        elif op in ("const", "not", "shl", "lshr"):
             operands = [gate[1]]
         else:
             operands = gate[1:3]
@@ -218,7 +218,7 @@ class RegPressureScheduler(BaseScheduler):
                         succ_op = succ_gate[0]
                         if succ_op == "ternary":
                             succ_operands = succ_gate[1:4]
-                        elif succ_op in ("const", "not"):
+                        elif succ_op in ("const", "not", "shl", "lshr"):
                             succ_operands = [succ_gate[1]]
                         else:
                             succ_operands = succ_gate[1:3]

@@ -215,6 +215,17 @@ def infer_type(expr: Expr, ctx: dict[str, Type]) -> Type:
             raise TickIRValidationError("bitcast width mismatch")
         return dst_t
 
+    from stc.tick_ir import Rotl, Rotr
+
+    if isinstance(expr, (Rotl, Rotr)):
+        x_t = infer_type(expr.x, ctx)
+        sh_t = infer_type(expr.sh, ctx)
+        if not isinstance(x_t, BitVecType):
+            raise TickIRValidationError("rotate requires bitvec operand")
+        if not isinstance(sh_t, BitVecType):
+            raise TickIRValidationError("rotate shift amount must be bitvec")
+        return x_t
+
     if isinstance(expr, BitTranspose):
         src_t = infer_type(expr.x, ctx)
         if not isinstance(src_t, SimdType):
@@ -633,6 +644,24 @@ def eval_expr(
             return _as_int(x) & _mask(dst_t.width)
         assert isinstance(dst_t, SimdType)
         return _as_int(x) & _mask(dst_t.total_width)
+
+    from stc.tick_ir import Rotl, Rotr
+
+    if isinstance(expr, (Rotl, Rotr)):
+        x_t = infer_type(expr.x, ctx_types)
+        assert isinstance(x_t, BitVecType)
+        x_val = _as_int(eval_expr(expr.x, ctx_types, env)) & _mask(x_t.width)
+        sh_val = _as_int(eval_expr(expr.sh, ctx_types, env))
+        sh_val = sh_val % x_t.width
+        if isinstance(expr, Rotl):
+            result = ((x_val << sh_val) | (x_val >> (x_t.width - sh_val))) & _mask(
+                x_t.width
+            )
+        else:
+            result = ((x_val >> sh_val) | (x_val << (x_t.width - sh_val))) & _mask(
+                x_t.width
+            )
+        return result
 
     if isinstance(expr, BitTranspose):
         x = _as_int(eval_expr(expr.x, ctx_types, env))

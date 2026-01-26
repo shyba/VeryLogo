@@ -13,7 +13,9 @@ class TickStep:
     next_state: dict[str, int | bool]
 
 
-def step_tickir(ir: TickIR, *, state: dict[str, int | bool], inputs: dict[str, int | bool]) -> TickStep:
+def step_tickir(
+    ir: TickIR, *, state: dict[str, int | bool], inputs: dict[str, int | bool]
+) -> TickStep:
     """One-cycle TickIR step with synchronous reset semantics.
 
     If there is an input named `reset` and it is true, next_state is taken from
@@ -32,4 +34,3 @@ def step_tickir(ir: TickIR, *, state: dict[str, int | bool], inputs: dict[str, i
         nxt = {k: eval_expr(ir.next_state[k], types, env) for k in ir.state}
 
     return TickStep(outputs=outs, next_state=nxt)
-

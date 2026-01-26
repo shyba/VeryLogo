@@ -74,7 +74,7 @@ def compute_live_ranges(
 
         if op == "ternary":
             operands = gate[1:4]
-        elif op in ("const", "not"):
+        elif op in ("const", "not", "shl", "lshr"):
             operands = [gate[1]]
         else:
             operands = gate[1:3]

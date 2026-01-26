@@ -64,13 +64,21 @@ def generate_ternary_avx512_code(circuit: CircuitState, func_name: str) -> str:
         else:
             op, left, right = gate
             if op == "xor":
-                lines.append(f"    t[{g_idx}] = _mm512_xor_si512({get_reg(left)}, {get_reg(right)});")
+                lines.append(
+                    f"    t[{g_idx}] = _mm512_xor_si512({get_reg(left)}, {get_reg(right)});"
+                )
             elif op == "and":
-                lines.append(f"    t[{g_idx}] = _mm512_and_si512({get_reg(left)}, {get_reg(right)});")
+                lines.append(
+                    f"    t[{g_idx}] = _mm512_and_si512({get_reg(left)}, {get_reg(right)});"
+                )
             elif op == "or":
-                lines.append(f"    t[{g_idx}] = _mm512_or_si512({get_reg(left)}, {get_reg(right)});")
+                lines.append(
+                    f"    t[{g_idx}] = _mm512_or_si512({get_reg(left)}, {get_reg(right)});"
+                )
             elif op == "not":
-                lines.append(f"    t[{g_idx}] = _mm512_xor_si512({get_reg(left)}, ones);")
+                lines.append(
+                    f"    t[{g_idx}] = _mm512_xor_si512({get_reg(left)}, ones);"
+                )
             elif op == "const":
                 if left == 0:
                     lines.append(f"    t[{g_idx}] = _mm512_setzero_si512();")
@@ -100,7 +108,7 @@ def generate_benchmark_code(circuit: CircuitState) -> str:
         for i in range(0, 256, 16)
     )
 
-    code = f'''
+    code = f"""
 #include <stdio.h>
 #include <stdint.h>
 #include <time.h>
@@ -310,7 +318,7 @@ int main(int argc, char** argv) {{
 
     return errors > 0 ? 1 : 0;
 }}
-'''
+"""
     return code
 
 
@@ -327,7 +335,9 @@ def main():
 
     # Check for AVX-512 support
     try:
-        result = subprocess.run(["grep", "-q", "avx512f", "/proc/cpuinfo"], capture_output=True)
+        result = subprocess.run(
+            ["grep", "-q", "avx512f", "/proc/cpuinfo"], capture_output=True
+        )
         has_avx512 = result.returncode == 0
     except Exception:
         has_avx512 = False

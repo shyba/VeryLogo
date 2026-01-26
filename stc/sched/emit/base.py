@@ -20,6 +20,7 @@ class Emitter(Protocol):
         input_bits: int,
         outputs: list,
         function_name: str = "circuit",
+        io_split: tuple[int, int] | None = None,
     ) -> str: ...
 
 
@@ -38,6 +39,7 @@ class BaseEmitter(ABC):
         input_bits: int,
         outputs: list,
         function_name: str = "circuit",
+        io_split: tuple[int, int] | None = None,
     ) -> str:
         pass
 
@@ -47,6 +49,7 @@ class BaseEmitter(ABC):
         schedule: Schedule,
         allocation: RegAllocation,
         function_name: str = "circuit",
+        io_split: tuple[int, int] | None = None,
     ) -> str:
         return self.emit(
             schedule,
@@ -55,6 +58,7 @@ class BaseEmitter(ABC):
             circuit.input_bits,
             list(circuit.outputs),
             function_name,
+            io_split,
         )
 
     def _gates_by_cycle(

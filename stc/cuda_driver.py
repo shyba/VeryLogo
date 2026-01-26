@@ -102,7 +102,10 @@ class Cuda:
         self.lib.cuCtxSynchronize.argtypes = []
         self.lib.cuCtxSynchronize.restype = ctypes.c_int
 
-        self.lib.cuEventCreate.argtypes = [ctypes.POINTER(ctypes.c_void_p), ctypes.c_uint]
+        self.lib.cuEventCreate.argtypes = [
+            ctypes.POINTER(ctypes.c_void_p),
+            ctypes.c_uint,
+        ]
         self.lib.cuEventCreate.restype = ctypes.c_int
 
         self.lib.cuEventDestroy_v2.argtypes = [ctypes.c_void_p]

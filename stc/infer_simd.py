@@ -34,7 +34,7 @@ def _collect_slices(expr: Expr, out: dict[str, list[tuple[int, int]]]) -> None:
             out.setdefault(expr.x.name, []).append((expr.offset, expr.width))
     for field_name in getattr(expr, "__dataclass_fields__", {}):
         v = getattr(expr, field_name)
-        if isinstance(v, list):
+        if isinstance(v, (list, tuple)):
             for item in v:
                 if isinstance(item, EXPR_CLASSES):
                     _collect_slices(item, out)

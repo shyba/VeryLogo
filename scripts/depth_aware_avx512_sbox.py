@@ -137,7 +137,9 @@ def compute_truth_table(state: CircuitState, root_idx: int, leaves: list) -> int
                 left = gate[1] if len(gate) > 1 else 0
                 right = gate[2] if len(gate) > 2 else 0
                 l_val = node_vals.get(left, assignments.get(left, 0))
-                r_val = node_vals.get(right, assignments.get(right, 0)) if right >= 0 else 0
+                r_val = (
+                    node_vals.get(right, assignments.get(right, 0)) if right >= 0 else 0
+                )
 
                 if op == "xor":
                     node_vals[full_idx] = l_val ^ r_val
@@ -176,7 +178,9 @@ def compute_truth_table(state: CircuitState, root_idx: int, leaves: list) -> int
     return imm8
 
 
-def verify_cone_truth_table(circuit: CircuitState, root_idx: int, leaves: list, imm8: int) -> bool:
+def verify_cone_truth_table(
+    circuit: CircuitState, root_idx: int, leaves: list, imm8: int
+) -> bool:
     """Verify that the truth table correctly captures the cone's function."""
     input_bits = circuit.input_bits
     leaves_set = set(leaves)
@@ -223,8 +227,16 @@ def verify_cone_truth_table(circuit: CircuitState, root_idx: int, leaves: list, 
                 op = gate[0]
                 left = gate[1] if len(gate) > 1 else 0
                 right = gate[2] if len(gate) > 2 else 0
-                lv = node_vals[left] if left < len(node_vals) else assignments.get(left, 0)
-                rv = node_vals[right] if right < len(node_vals) else assignments.get(right, 0)
+                lv = (
+                    node_vals[left]
+                    if left < len(node_vals)
+                    else assignments.get(left, 0)
+                )
+                rv = (
+                    node_vals[right]
+                    if right < len(node_vals)
+                    else assignments.get(right, 0)
+                )
 
                 if op == "xor":
                     node_vals.append(lv ^ rv)
@@ -301,7 +313,9 @@ def main():
     opt = IncrementalOptimizer(AES_SBOX_TABLE, input_bits=8, output_bits=8)
     circuit = opt.best_state
     initial_gates = circuit.gate_count
-    print(f"   Initial: {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)")
+    print(
+        f"   Initial: {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)"
+    )
     print(f"   Depth: {circuit.depth}")
 
     # Step 2: Apply basic optimizations first
@@ -311,7 +325,9 @@ def main():
     circuit = circuit.eliminate_dead_code()
     circuit = circuit.flatten_xor_trees()
     after_basic = circuit.gate_count
-    print(f"   After basic opts: {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)")
+    print(
+        f"   After basic opts: {circuit.gate_count} gates ({circuit.and_count} AND, {circuit.xor_count} XOR)"
+    )
     print(f"   Depth: {circuit.depth}")
 
     # Step 3: Apply ternary mapping iteratively
@@ -330,7 +346,9 @@ def main():
 
         ternary_count = count_ternary_gates(circuit)
         iteration += 1
-        print(f"   Iteration {iteration}: {circuit.gate_count} gates, {ternary_count} ternary, depth {circuit.depth}")
+        print(
+            f"   Iteration {iteration}: {circuit.gate_count} gates, {ternary_count} ternary, depth {circuit.depth}"
+        )
 
         # Verify after each iteration
         errors = sum(1 for i in range(256) if circuit.evaluate(i) != AES_SBOX_TABLE[i])
@@ -340,7 +358,9 @@ def main():
 
     ternary_count = count_ternary_gates(circuit)
     binary_count = circuit.gate_count - ternary_count
-    print(f"\n   Final: {circuit.gate_count} gates ({binary_count} binary, {ternary_count} vpternlogd)")
+    print(
+        f"\n   Final: {circuit.gate_count} gates ({binary_count} binary, {ternary_count} vpternlogd)"
+    )
     print(f"   Final depth: {circuit.depth}")
 
     # Step 4: Verify correctness
@@ -350,7 +370,9 @@ def main():
         result = circuit.evaluate(i)
         if result != AES_SBOX_TABLE[i]:
             if errors < 5:
-                print(f"   ERROR: S-box[{i}] = 0x{result:02x}, expected 0x{AES_SBOX_TABLE[i]:02x}")
+                print(
+                    f"   ERROR: S-box[{i}] = 0x{result:02x}, expected 0x{AES_SBOX_TABLE[i]:02x}"
+                )
             errors += 1
     if errors == 0:
         print("   All 256 values correct")
@@ -378,7 +400,9 @@ def main():
     # Note: this emits 256-bit vectors and uses `_mm256_ternarylogic_epi32`,
     # which requires AVX-512VL (in addition to AVX-512F) when compiling.
     emitter = AVX2Emitter()
-    code = emitter.emit(schedule, allocation, gates, input_bits, outputs, "sbox_anf_avx512")
+    code = emitter.emit(
+        schedule, allocation, gates, input_bits, outputs, "sbox_anf_avx512"
+    )
     print(f"   Generated {len(code)} bytes of C code")
 
     # Save the generated code
@@ -389,6 +413,7 @@ def main():
 
     # Also save the circuit state for further analysis
     import json
+
     circuit_file = Path("out/sbox_anf_optimized.json")
     with open(circuit_file, "w") as f:
         json.dump(circuit.to_dict(), f, indent=2)
@@ -399,16 +424,24 @@ def main():
     print("Summary:")
     print(f"  Original ANF:        {initial_gates} gates")
     print(f"  After basic opts:    {after_basic} gates")
-    print(f"  With ternary:        {circuit.gate_count} gates ({ternary_count} vpternlogd)")
-    print(f"  Gate reduction:      {initial_gates - circuit.gate_count} ({(initial_gates - circuit.gate_count) / initial_gates * 100:.1f}%)")
+    print(
+        f"  With ternary:        {circuit.gate_count} gates ({ternary_count} vpternlogd)"
+    )
+    print(
+        f"  Gate reduction:      {initial_gates - circuit.gate_count} ({(initial_gates - circuit.gate_count) / initial_gates * 100:.1f}%)"
+    )
     print(f"  Final depth:         {circuit.depth}")
     print(f"  Schedule cycles:     {schedule.total_cycles}")
     print(f"  Register spills:     {allocation.num_spills}")
 
     # Compare with target
     print("\n  Benchmark targets:")
-    print(f"    < 1000 gates:      {'ACHIEVED' if circuit.gate_count < 1000 else 'NOT MET'}")
-    print(f"    BP optimal (~115): {circuit.gate_count} vs 115 (room for more optimization)")
+    print(
+        f"    < 1000 gates:      {'ACHIEVED' if circuit.gate_count < 1000 else 'NOT MET'}"
+    )
+    print(
+        f"    BP optimal (~115): {circuit.gate_count} vs 115 (room for more optimization)"
+    )
     print("=" * 70)
 
     return 0

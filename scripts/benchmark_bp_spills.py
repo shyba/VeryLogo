@@ -98,7 +98,9 @@ def main() -> int:
         default="",
         help="Path to CircuitState JSON (used when --circuit=json).",
     )
-    ap.add_argument("--regs", type=int, default=None, help="Register budget to force spills")
+    ap.add_argument(
+        "--regs", type=int, default=None, help="Register budget to force spills"
+    )
     ap.add_argument(
         "--spill-mem",
         action="store_true",

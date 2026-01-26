@@ -18,6 +18,7 @@ class AVX2Emitter(BaseEmitter):
         input_bits: int,
         outputs: list,
         function_name: str = "circuit",
+        io_split: tuple[int, int] | None = None,
     ) -> str:
         if allocation.num_spills:
             return self._emit_naive(gates, input_bits, outputs, function_name)
@@ -66,7 +67,9 @@ class AVX2Emitter(BaseEmitter):
             node_in_reg[node] = reg
 
         spilled_set = set(allocation.spills)
-        spill_slot: dict[int, int] = {node: i for i, node in enumerate(allocation.spills)}
+        spill_slot: dict[int, int] = {
+            node: i for i, node in enumerate(allocation.spills)
+        }
 
         for i in range(input_bits):
             # Treat inputs as always-available named temporaries (r0..r{input_bits-1}).

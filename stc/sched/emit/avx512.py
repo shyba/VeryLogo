@@ -18,14 +18,25 @@ class AVX512Emitter(BaseEmitter):
         input_bits: int,
         outputs: list,
         function_name: str = "circuit",
+        io_split: tuple[int, int] | None = None,
     ) -> str:
         if allocation.num_spills:
-            return self._emit_naive(gates, input_bits, outputs, function_name)
+            return self._emit_naive(gates, input_bits, outputs, function_name, io_split)
+
+        input_io_bits = input_bits
+        output_io_bits = len(outputs)
+        if io_split is not None:
+            input_io_bits, output_io_bits = io_split
 
         lines: list[str] = []
         lines.append("#include <immintrin.h>")
         lines.append("")
-        lines.append(f"void {function_name}(__m512i* in, __m512i* out) {{")
+        if io_split is None:
+            lines.append(f"void {function_name}(__m512i* in, __m512i* out) {{")
+        else:
+            lines.append(
+                f"static inline void {function_name}__core(const __m512i* in_io, const __m512i* st_in, __m512i* out_io, __m512i* st_out) {{"
+            )
 
         used_regs = set(allocation.reg_assignment.values())
         used_regs.update(reg for _, reg, _ in allocation.loads if reg >= 0)
@@ -63,11 +74,20 @@ class AVX512Emitter(BaseEmitter):
             node_in_reg[node] = reg
 
         spilled_set = set(allocation.spills)
-        spill_slot: dict[int, int] = {node: i for i, node in enumerate(allocation.spills)}
+        spill_slot: dict[int, int] = {
+            node: i for i, node in enumerate(allocation.spills)
+        }
 
+        state_bits = input_bits - input_io_bits
         for i in range(input_bits):
             reg = i
-            lines.append(f"    r{reg} = in[{i}];")
+            if io_split is None:
+                lines.append(f"    r{reg} = in[{i}];")
+            else:
+                if i < input_io_bits:
+                    lines.append(f"    r{reg} = in_io[{i}];")
+                else:
+                    lines.append(f"    r{reg} = st_in[{i - input_io_bits}];")
             _assign_reg(i, reg)
             if i in spilled_set:
                 lines.append(f"    stack{spill_slot[i]} = r{reg};")
@@ -94,7 +114,9 @@ class AVX512Emitter(BaseEmitter):
                     dst_reg = allocation.reg_assignment.get(node_idx, -1)
                     if dst_reg < 0:
                         continue
-                    line = self._emit_gate(gates[g_idx], dst_reg, allocation, node_in_reg)
+                    line = self._emit_gate(
+                        gates[g_idx], dst_reg, allocation, node_in_reg
+                    )
                     lines.append(f"    {line}")
                     _assign_reg(node_idx, dst_reg)
                     if node_idx in spilled_set:
@@ -102,13 +124,57 @@ class AVX512Emitter(BaseEmitter):
 
         for out_idx, (node_idx, inverted) in enumerate(outputs):
             expr = self._node_expr(node_idx, allocation, node_in_reg)
-            if inverted:
-                lines.append(f"    out[{out_idx}] = _mm512_xor_si512({expr}, ones);")
+            if io_split is None:
+                if inverted:
+                    lines.append(
+                        f"    out[{out_idx}] = _mm512_xor_si512({expr}, ones);"
+                    )
+                else:
+                    lines.append(f"    out[{out_idx}] = {expr};")
             else:
-                lines.append(f"    out[{out_idx}] = {expr};")
+                if out_idx < output_io_bits:
+                    dst = f"out_io[{out_idx}]"
+                else:
+                    dst = f"st_out[{out_idx - output_io_bits}]"
+                if inverted:
+                    lines.append(f"    {dst} = _mm512_xor_si512({expr}, ones);")
+                else:
+                    lines.append(f"    {dst} = {expr};")
 
         lines.append("}")
         lines.append("")
+
+        if io_split is not None:
+            lines.append(f"void {function_name}(__m512i* in, __m512i* out) {{")
+            lines.append(
+                f"    {function_name}__core(in, in + {input_io_bits}, out, out + {output_io_bits});"
+            )
+            lines.append("}")
+            lines.append("")
+
+            # Stepper: advance sequential state for `steps` cycles with no per-cycle memcpy.
+            # The caller supplies two state buffers; we swap pointers internally.
+            lines.append(
+                f"void {function_name}_steps_shared(const __m512i* in_io, __m512i* out_io, const __m512i* state_in, __m512i* state_out, int steps) {{"
+            )
+            lines.append("    const __m512i* st_r = state_in;")
+            lines.append("    __m512i* st_w = state_out;")
+            lines.append("    for (int k = 0; k < steps; k++) {")
+            lines.append(f"        {function_name}__core(in_io, st_r, out_io, st_w);")
+            lines.append("        const __m512i* tmp = st_r;")
+            lines.append("        st_r = st_w;")
+            lines.append("        st_w = (__m512i*)tmp;")
+            lines.append("    }")
+            lines.append(
+                "    // If steps is even, final state lives in state_in; copy once."
+            )
+            lines.append("    if ((steps & 1) == 0) {")
+            lines.append(
+                f"        for (int i = 0; i < {state_bits}; i++) state_out[i] = state_in[i];"
+            )
+            lines.append("    }")
+            lines.append("}")
+            lines.append("")
         return "\n".join(lines)
 
     def _emit_naive(
@@ -117,11 +183,23 @@ class AVX512Emitter(BaseEmitter):
         input_bits: int,
         outputs: list,
         function_name: str,
+        io_split: tuple[int, int] | None,
     ) -> str:
+        input_io_bits = input_bits
+        output_io_bits = len(outputs)
+        if io_split is not None:
+            input_io_bits, output_io_bits = io_split
+        state_bits = input_bits - input_io_bits
+
         lines: list[str] = []
         lines.append("#include <immintrin.h>")
         lines.append("")
-        lines.append(f"void {function_name}(__m512i* in, __m512i* out) {{")
+        if io_split is None:
+            lines.append(f"void {function_name}(__m512i* in, __m512i* out) {{")
+        else:
+            lines.append(
+                f"static inline void {function_name}__core(const __m512i* in_io, const __m512i* st_in, __m512i* out_io, __m512i* st_out) {{"
+            )
         total_nodes = input_bits + len(gates)
         for r in range(total_nodes):
             lines.append(f"    __m512i r{r};")
@@ -131,7 +209,13 @@ class AVX512Emitter(BaseEmitter):
             lines.append("    __m512i ones = _mm512_set1_epi32(-1);")
 
         for i in range(input_bits):
-            lines.append(f"    r{i} = in[{i}];")
+            if io_split is None:
+                lines.append(f"    r{i} = in[{i}];")
+            else:
+                if i < input_io_bits:
+                    lines.append(f"    r{i} = in_io[{i}];")
+                else:
+                    lines.append(f"    r{i} = st_in[{i - input_io_bits}];")
 
         for g_idx, gate in enumerate(gates):
             dst = input_bits + g_idx
@@ -165,15 +249,52 @@ class AVX512Emitter(BaseEmitter):
                 lines.append(f"    r{dst} = _mm512_setzero_si512();")
 
         for out_idx, (node_idx, inverted) in enumerate(outputs):
-            if inverted:
-                lines.append(
-                    f"    out[{out_idx}] = _mm512_xor_si512(r{node_idx}, ones);"
-                )
+            if io_split is None:
+                if inverted:
+                    lines.append(
+                        f"    out[{out_idx}] = _mm512_xor_si512(r{node_idx}, ones);"
+                    )
+                else:
+                    lines.append(f"    out[{out_idx}] = r{node_idx};")
             else:
-                lines.append(f"    out[{out_idx}] = r{node_idx};")
+                if out_idx < output_io_bits:
+                    dst = f"out_io[{out_idx}]"
+                else:
+                    dst = f"st_out[{out_idx - output_io_bits}]"
+                if inverted:
+                    lines.append(f"    {dst} = _mm512_xor_si512(r{node_idx}, ones);")
+                else:
+                    lines.append(f"    {dst} = r{node_idx};")
 
         lines.append("}")
         lines.append("")
+
+        if io_split is not None:
+            lines.append(f"void {function_name}(__m512i* in, __m512i* out) {{")
+            lines.append(
+                f"    {function_name}__core(in, in + {input_io_bits}, out, out + {output_io_bits});"
+            )
+            lines.append("}")
+            lines.append("")
+
+            lines.append(
+                f"void {function_name}_steps_shared(const __m512i* in_io, __m512i* out_io, const __m512i* state_in, __m512i* state_out, int steps) {{"
+            )
+            lines.append("    const __m512i* st_r = state_in;")
+            lines.append("    __m512i* st_w = state_out;")
+            lines.append("    for (int k = 0; k < steps; k++) {")
+            lines.append(f"        {function_name}__core(in_io, st_r, out_io, st_w);")
+            lines.append("        const __m512i* tmp = st_r;")
+            lines.append("        st_r = st_w;")
+            lines.append("        st_w = (__m512i*)tmp;")
+            lines.append("    }")
+            lines.append("    if ((steps & 1) == 0) {")
+            lines.append(
+                f"        for (int i = 0; i < {state_bits}; i++) state_out[i] = state_in[i];"
+            )
+            lines.append("    }")
+            lines.append("}")
+            lines.append("")
         return "\n".join(lines)
 
     def _needs_ones_constant(self, gates: list, outputs: list) -> bool:
@@ -233,9 +354,7 @@ class AVX512Emitter(BaseEmitter):
             return self._node_expr(node, allocation, node_in_reg)
 
         if op == "ternary":
-            return (
-                f"r{dst_reg} = _mm512_ternarylogic_epi32({_src(a)}, {_src(b)}, {_src(c)}, {imm8});"
-            )
+            return f"r{dst_reg} = _mm512_ternarylogic_epi32({_src(a)}, {_src(b)}, {_src(c)}, {imm8});"
 
         if op == "xor":
             return f"r{dst_reg} = _mm512_xor_si512({_src(a)}, {_src(b)});"

@@ -17,4 +17,3 @@ __all__ = [
     "run_avx2_circuit",
     "run_avx512_circuit",
 ]
-

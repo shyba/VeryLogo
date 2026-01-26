@@ -44,4 +44,3 @@ class TestCudaLop3Optional(unittest.TestCase):
 
         # Script doesn't print PASS; it raises on mismatch.
         self.assertIn("circuit=bp115", res.stdout)
-

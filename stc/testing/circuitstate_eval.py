@@ -49,4 +49,3 @@ def eval_circuitstate_bits(circuit_state: dict, in_bits: Iterable[int]) -> list[
             v ^= 1
         out.append(v)
     return out
-

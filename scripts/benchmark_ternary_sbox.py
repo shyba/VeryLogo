@@ -149,7 +149,9 @@ def generate_avx512_ternary_code(state: CircuitState, cones: list) -> str:
         }
 
     # Circuit-only bit-plane entrypoint: full 512 parallel evaluations per call.
-    lines.append("static inline void sbox_avx512_ternary_planes(__m512i* planes, __m512i* out_planes) {")
+    lines.append(
+        "static inline void sbox_avx512_ternary_planes(__m512i* planes, __m512i* out_planes) {"
+    )
     lines.append("    __m512i ones = _mm512_set1_epi32(-1);")
     lines.append("")
 
@@ -224,7 +226,9 @@ def generate_avx512_ternary_code(state: CircuitState, cones: list) -> str:
     lines.append("")
 
     # Transpose
-    lines.append("    // Transpose to bit planes (64 bytes -> 64-bit masks replicated across lanes)")
+    lines.append(
+        "    // Transpose to bit planes (64 bytes -> 64-bit masks replicated across lanes)"
+    )
     lines.append("    for (int bit = 0; bit < 8; bit++) {")
     lines.append("        uint64_t plane = 0;")
     lines.append("        for (int i = 0; i < 64; i++) {")

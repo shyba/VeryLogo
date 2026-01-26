@@ -89,4 +89,3 @@ class TestNativeEmitOptional(unittest.TestCase):
                 self.assertEqual(got, py_out_bit)
         else:
             self.skipTest("CPU lacks AVX-512")
-
