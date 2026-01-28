@@ -237,13 +237,13 @@ def compute_imm8_swapped(op1: str, op2: str) -> int:
 def apply_ternary_synthesis(
     circuit: CircuitState,
 ) -> tuple[CircuitState, TernarySynthStats]:
-    """Apply ternary synthesis to a CircuitState.
+    """Apply ternary synthesis to a CircuitState using batch processing.
 
-    This is the main entry point. It:
-    1. Builds gate info with fanout counts
-    2. Finds all valid ternary patterns
-    3. Applies patterns greedily (highest fanout reduction first)
-    4. Rebuilds CircuitState with new gate list
+    This implementation uses a batch algorithm to achieve O(N²) complexity:
+    1. Build gate info once with fanout counts
+    2. Find all valid ternary patterns upfront
+    3. Select non-conflicting patterns greedily
+    4. Apply entire batch in single reconstruction pass
 
     Args:
         circuit: Input CircuitState with and/or/xor/not gates
@@ -260,104 +260,97 @@ def apply_ternary_synthesis(
     ternary_created = 0
     pattern_counts: dict[str, int] = {}
 
-    changed = True
-    while changed:
-        changed = False
+    gate_infos = build_gate_info(gates, input_bits)
+    all_patterns = find_ternary_patterns(gates, gate_infos, input_bits)
 
-        gate_infos = build_gate_info(gates, input_bits)
-        patterns = find_ternary_patterns(gates, gate_infos, input_bits)
+    if not all_patterns:
+        stats = TernarySynthStats(
+            gates_before=gates_before,
+            gates_after=gates_before,
+            ternary_gates_created=0,
+            patterns_found={},
+        )
+        return circuit, stats
 
-        if not patterns:
-            break
+    used_gates: set[int] = set()
+    selected_patterns: list[tuple[int, int, int, int, int, int]] = []
 
-        outer_idx, inner_idx, a, b, c, imm8 = patterns[0]
+    for pattern in all_patterns:
+        outer_idx, inner_idx, a, b, c, imm8 = pattern
+        if outer_idx in used_gates or inner_idx in used_gates:
+            continue
+        selected_patterns.append(pattern)
+        used_gates.add(outer_idx)
+        used_gates.add(inner_idx)
 
-        new_gates = []
-        idx_remap = {}
+        inner_op = gate_infos[inner_idx].op
+        outer_op = gate_infos[outer_idx].op
+        pattern_key = f"{outer_op}_{inner_op}"
+        pattern_counts[pattern_key] = pattern_counts.get(pattern_key, 0) + 1
 
-        for i, gate in enumerate(gates):
-            if i == inner_idx:
-                continue
-            elif i == outer_idx:
-                new_idx = input_bits + len(new_gates)
+    if not selected_patterns:
+        stats = TernarySynthStats(
+            gates_before=gates_before,
+            gates_after=gates_before,
+            ternary_gates_created=0,
+            patterns_found={},
+        )
+        return circuit, stats
 
-                a_new = idx_remap.get(a, a) if a >= input_bits else a
-                b_new = idx_remap.get(b, b) if b >= input_bits else b
-                c_new = idx_remap.get(c, c) if c >= input_bits else c
+    merged_gates: set[int] = set()
+    replacement_map: dict[int, tuple[str, int, int, int, int]] = {}
 
-                new_gates.append(("ternary", a_new, b_new, c_new, imm8))
-                idx_remap[input_bits + i] = new_idx
-                ternary_created += 1
+    for outer_idx, inner_idx, a, b, c, imm8 in selected_patterns:
+        merged_gates.add(inner_idx)
+        replacement_map[outer_idx] = ("ternary", a, b, c, imm8)
+        ternary_created += 1
 
-                inner_op = gate_infos[inner_idx].op
-                outer_op = gate_infos[outer_idx].op
-                pattern_key = f"{outer_op}_{inner_op}"
-                pattern_counts[pattern_key] = pattern_counts.get(pattern_key, 0) + 1
-            else:
-                new_idx = input_bits + len(new_gates)
-                op = gate[0]
+    new_gates = []
+    idx_remap: dict[int, int] = {}
 
-                if op == "const":
-                    new_gates.append(gate)
-                elif op == "not":
-                    old_inp = gate[1]
-                    new_inp = (
-                        idx_remap.get(old_inp, old_inp)
-                        if old_inp >= input_bits
-                        else old_inp
-                    )
-                    new_gates.append(("not", new_inp, 0))
-                elif op == "ternary":
-                    old_a, old_b, old_c = gate[1], gate[2], gate[3]
-                    new_a = (
-                        idx_remap.get(old_a, old_a) if old_a >= input_bits else old_a
-                    )
-                    new_b = (
-                        idx_remap.get(old_b, old_b) if old_b >= input_bits else old_b
-                    )
-                    new_c = (
-                        idx_remap.get(old_c, old_c) if old_c >= input_bits else old_c
-                    )
-                    new_gates.append(("ternary", new_a, new_b, new_c, gate[4]))
-                else:
-                    old_in0, old_in1 = gate[1], gate[2]
-                    new_in0 = (
-                        idx_remap.get(old_in0, old_in0)
-                        if old_in0 >= input_bits
-                        else old_in0
-                    )
-                    new_in1 = (
-                        idx_remap.get(old_in1, old_in1)
-                        if old_in1 >= input_bits
-                        else old_in1
-                    )
-                    new_gates.append((op, new_in0, new_in1))
+    for i, gate in enumerate(gates):
+        if i in merged_gates:
+            continue
 
-                idx_remap[input_bits + i] = new_idx
+        old_node = input_bits + i
+        new_idx = input_bits + len(new_gates)
+        idx_remap[old_node] = new_idx
 
-        new_outputs = []
-        for out_idx, invert in outputs:
-            if out_idx >= input_bits:
-                new_out_idx = idx_remap.get(out_idx, out_idx)
-            else:
-                new_out_idx = out_idx
-            new_outputs.append((new_out_idx, invert))
+        if i in replacement_map:
+            op, a, b, c, imm8 = replacement_map[i]
+            a_new = idx_remap.get(a, a)
+            b_new = idx_remap.get(b, b)
+            c_new = idx_remap.get(c, c)
+            new_gates.append(("ternary", a_new, b_new, c_new, imm8))
+        else:
+            remapped_gate = _remap_gate_inputs(gate, idx_remap, input_bits)
+            new_gates.append(remapped_gate)
 
-        gates = new_gates
-        outputs = new_outputs
-        changed = True
+    for outer_idx, inner_idx, _, _, _, _ in selected_patterns:
+        inner_node = input_bits + inner_idx
+        outer_node = input_bits + outer_idx
+        if outer_node in idx_remap:
+            idx_remap[inner_node] = idx_remap[outer_node]
+
+    new_outputs = []
+    for out_idx, invert in outputs:
+        if out_idx >= input_bits:
+            new_out_idx = idx_remap.get(out_idx, out_idx)
+        else:
+            new_out_idx = out_idx
+        new_outputs.append((new_out_idx, invert))
 
     new_circuit = CircuitState(
         input_bits=input_bits,
         output_bits=output_bits,
-        gates=gates,
-        outputs=outputs,
-        gate_count=len(gates),
+        gates=new_gates,
+        outputs=new_outputs,
+        gate_count=len(new_gates),
     )
 
     stats = TernarySynthStats(
         gates_before=gates_before,
-        gates_after=len(gates),
+        gates_after=len(new_gates),
         ternary_gates_created=ternary_created,
         patterns_found=pattern_counts,
     )
@@ -413,6 +406,7 @@ def apply_andnot_optimization(circuit: CircuitState) -> tuple[CircuitState, dict
     input_bits = circuit.input_bits
 
     andnot_count = 0
+    idx_remap = {}
 
     changed = True
     while changed:
@@ -426,23 +420,29 @@ def apply_andnot_optimization(circuit: CircuitState) -> tuple[CircuitState, dict
         and_idx, not_idx, x, y = patterns[0]
 
         new_gates = []
-        idx_remap = {}
+        pass_remap = {}
 
         for i, gate in enumerate(gates):
             if i == not_idx:
                 continue
             elif i == and_idx:
                 new_idx = input_bits + len(new_gates)
-                x_new = idx_remap.get(x, x) if x >= input_bits else x
-                y_new = idx_remap.get(y, y) if y >= input_bits else y
+                x_new = pass_remap.get(x, x) if x >= input_bits else x
+                y_new = pass_remap.get(y, y) if y >= input_bits else y
                 new_gates.append(("andn", x_new, y_new))
-                idx_remap[input_bits + i] = new_idx
+                pass_remap[input_bits + i] = new_idx
                 andnot_count += 1
             else:
                 new_idx = input_bits + len(new_gates)
-                new_gate = _remap_gate_inputs(gate, idx_remap, input_bits)
+                new_gate = _remap_gate_inputs(gate, pass_remap, input_bits)
                 new_gates.append(new_gate)
-                idx_remap[input_bits + i] = new_idx
+                pass_remap[input_bits + i] = new_idx
+
+        for old_idx in list(idx_remap.keys()):
+            idx_remap[old_idx] = pass_remap.get(idx_remap[old_idx], idx_remap[old_idx])
+        for old_idx, new_idx in pass_remap.items():
+            if old_idx not in idx_remap:
+                idx_remap[old_idx] = new_idx
 
         gates = new_gates
         changed = True
@@ -504,6 +504,7 @@ def eliminate_double_nots(circuit: CircuitState) -> tuple[CircuitState, dict]:
     outputs = list(circuit.outputs)
 
     eliminated = 0
+    idx_remap = {}
     changed = True
 
     while changed:
@@ -537,23 +538,29 @@ def eliminate_double_nots(circuit: CircuitState) -> tuple[CircuitState, dict]:
         outer_idx, inner_idx, x = found_pattern
 
         new_gates = []
-        idx_remap = {}
+        pass_remap = {}
 
         for i, gate in enumerate(gates):
             if i == inner_idx or i == outer_idx:
                 continue
             else:
                 new_idx = input_bits + len(new_gates)
-                new_gate = _remap_gate_inputs(gate, idx_remap, input_bits)
+                new_gate = _remap_gate_inputs(gate, pass_remap, input_bits)
                 new_gates.append(new_gate)
-                idx_remap[input_bits + i] = new_idx
+                pass_remap[input_bits + i] = new_idx
 
-        idx_remap[input_bits + outer_idx] = x
+        pass_remap[input_bits + outer_idx] = x
+
+        for old_idx in list(idx_remap.keys()):
+            idx_remap[old_idx] = pass_remap.get(idx_remap[old_idx], idx_remap[old_idx])
+        for old_idx, new_idx in pass_remap.items():
+            if old_idx not in idx_remap:
+                idx_remap[old_idx] = new_idx
 
         new_outputs = []
         for out_idx, invert in outputs:
             if out_idx >= input_bits:
-                new_out_idx = idx_remap.get(out_idx, out_idx)
+                new_out_idx = pass_remap.get(out_idx, out_idx)
             else:
                 new_out_idx = out_idx
             new_outputs.append((new_out_idx, invert))

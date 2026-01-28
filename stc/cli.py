@@ -386,9 +386,9 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     )
     p.add_argument(
         "--emit-target",
-        choices=["avx2", "avx512", "ptx"],
+        choices=["avx2", "avx512", "avx512_mir", "ptx", "ptx_mir"],
         default=None,
-        help="Target for scheduled code emission",
+        help="Target for scheduled code emission (MIR variants use Machine IR layer)",
     )
     p.add_argument(
         "--max-live-pressure",
@@ -540,7 +540,7 @@ def run_scheduled_backend(
 
     stats = get_schedule_stats(circuit, emit_target, scheduler)
 
-    ext = "ptx" if emit_target == "ptx" else "c"
+    ext = "ptx" if emit_target in ("ptx", "ptx_mir") else "c"
     (out_dir / f"{function_name}.{ext}").write_text(code, encoding="utf-8")
     _write_json(out_dir / "schedule_stats.json", stats)
 

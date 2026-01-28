@@ -102,6 +102,33 @@ class TestTernarySynthesis(unittest.TestCase):
 
         self.assertLess(stats.gates_after, 3)
 
+    def test_output_references_valid_after_multi_pass(self):
+        """Verify outputs reference valid gates after multiple optimization passes."""
+        circuit = CircuitState(
+            input_bits=6,
+            output_bits=3,
+            gates=[
+                ("and", 0, 1),
+                ("or", 6, 2),
+                ("xor", 7, 3),
+                ("and", 4, 5),
+                ("or", 9, 8),
+            ],
+            outputs=[(8, False), (10, False), (9, False)],
+            gate_count=5,
+        )
+
+        new_circuit, stats = apply_ternary_synthesis(circuit)
+
+        max_valid_idx = new_circuit.input_bits + len(new_circuit.gates) - 1
+        for out_idx, _ in new_circuit.outputs:
+            self.assertLessEqual(
+                out_idx,
+                max_valid_idx,
+                f"Output {out_idx} exceeds max valid index {max_valid_idx}",
+            )
+            self.assertGreaterEqual(out_idx, 0, f"Output {out_idx} is negative")
+
     def test_preserves_correctness(self):
         """Verify output is functionally equivalent."""
         circuit = CircuitState(

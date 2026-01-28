@@ -14,6 +14,8 @@ from stc.sched.emit import AVX2Emitter
 from stc.sched.emit import AVX512Emitter
 from stc.sched.emit.ptx import PTXEmitter
 from stc.sched.emit.avx512_u64 import AVX512U64Emitter
+from stc.sched.emit.mir_avx512 import MIRAVX512Emitter
+from stc.sched.emit.mir_ptx import MIRPTXEmitter
 
 
 SCHEDULERS = {
@@ -27,14 +29,18 @@ TARGETS = {
     "avx2": AVX2,
     "avx512": AVX512,
     "avx512_u64": AVX512,
+    "avx512_mir": AVX512,
     "ptx": PTX,
+    "ptx_mir": PTX,
 }
 
 EMITTERS = {
     "avx2": AVX2Emitter,
     "avx512": AVX512Emitter,
     "avx512_u64": AVX512U64Emitter,
+    "avx512_mir": MIRAVX512Emitter,
     "ptx": PTXEmitter,
+    "ptx_mir": MIRPTXEmitter,
 }
 
 

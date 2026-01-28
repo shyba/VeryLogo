@@ -3,6 +3,7 @@ from __future__ import annotations
 from stc.sched.emit.base import BaseEmitter
 from stc.sched.schedule import Schedule
 from stc.sched.regalloc import RegAllocation
+from stc.sched.validation import EmitContext
 
 
 class AVX2Emitter(BaseEmitter):
@@ -22,6 +23,13 @@ class AVX2Emitter(BaseEmitter):
     ) -> str:
         if allocation.num_spills:
             return self._emit_naive(gates, input_bits, outputs, function_name)
+
+        ctx = EmitContext(
+            input_bits=input_bits,
+            num_gates=len(gates),
+            num_physical_regs=max(allocation.reg_assignment.values(), default=0) + 1,
+            allocation=allocation,
+        )
 
         lines: list[str] = []
         lines.append("#include <immintrin.h>")
@@ -101,19 +109,21 @@ class AVX2Emitter(BaseEmitter):
             if cycle in gates_by_cycle:
                 for g_idx in gates_by_cycle[cycle]:
                     node_idx = input_bits + g_idx
+                    ctx.validate_node(node_idx)
                     dst_reg = allocation.reg_assignment.get(node_idx, -1)
                     if dst_reg < 0:
                         continue
 
                     gate = gates[g_idx]
-                    line = self._emit_gate(gate, dst_reg, allocation, node_in_reg)
+                    line = self._emit_gate(gate, dst_reg, ctx, node_in_reg)
                     lines.append(f"    {line}")
                     _assign_reg(node_idx, dst_reg)
                     if node_idx in spilled_set:
                         lines.append(f"    stack{spill_slot[node_idx]} = r{dst_reg};")
 
         for out_idx, (node_idx, inverted) in enumerate(outputs):
-            expr = self._node_expr(node_idx, allocation, node_in_reg)
+            ctx.validate_node(node_idx)
+            expr = self._node_expr(node_idx, ctx, node_in_reg)
             if inverted:
                 lines.append(f"    out[{out_idx}] = _mm256_xor_si256({expr}, ones);")
             else:
@@ -193,18 +203,19 @@ class AVX2Emitter(BaseEmitter):
     def _node_expr(
         self,
         node: int,
-        allocation: RegAllocation,
+        ctx: EmitContext,
         node_in_reg: dict[int, int],
     ) -> str:
+        ctx.validate_node(node)
         reg = node_in_reg.get(node)
         if reg is not None and reg >= 0:
             return f"r{reg}"
         try:
-            slot = allocation.spills.index(node)
+            slot = ctx.allocation.spills.index(node)
             return f"stack{slot}"
         except ValueError:
             pass
-        reg = allocation.reg_assignment.get(node, -1)
+        reg = ctx.allocation.reg_assignment.get(node, -1)
         if reg >= 0:
             return f"r{reg}"
         return "_mm256_setzero_si256()"
@@ -231,7 +242,7 @@ class AVX2Emitter(BaseEmitter):
         self,
         gate: tuple,
         dst_reg: int,
-        allocation: RegAllocation,
+        ctx: EmitContext,
         node_in_reg: dict[int, int],
     ) -> str:
         if len(gate) == 5:
@@ -244,7 +255,9 @@ class AVX2Emitter(BaseEmitter):
             imm8 = 0
 
         def _src_expr(node: int) -> str:
-            return self._node_expr(node, allocation, node_in_reg)
+            if node >= 0:
+                ctx.validate_node(node)
+            return self._node_expr(node, ctx, node_in_reg)
 
         if op == "ternary":
             a_expr = _src_expr(a)

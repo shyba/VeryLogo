@@ -44,6 +44,24 @@ The Verilog path requires `yosys` to be installed and on `PATH` (or `STC_YOSYS` 
 - `--superopt` runs a bounded Z3-guided expression superoptimizer during reduction.
 - `--no-backend` skips emitting `avr.c` (required when SIMD types are present).
 
+### Tick fusion (generic sequential unrolling)
+
+The compiler can fuse/unroll multiple sequential ticks at the Tick-IR level (before lowering to `CircuitState` / scheduling / emit). This is useful for stateful designs where a “1 tick per call” execution model would otherwise repeatedly materialize and copy large state.
+
+- `--fuse-ticks N` enables fusion (`N=1` disables; default).
+- `--fuse-input-policy shared|replicate`
+  - `shared` (default): uses the same input variables for every fused tick.
+  - `replicate`: creates per-tick inputs named `name__t0`, `name__t1`, … `name__t{N-1}`.
+- `--fuse-mode final|all|state-only`
+  - `final` (default): outputs are computed for the last fused tick.
+  - `all`: outputs are exported for every tick, suffixed as `out__t{k}`.
+  - `state-only`: only fuses state; leaves outputs unchanged.
+- `--fuse-budget-max-step-ms N` stops fusion if a single fused step exceeds N ms (useful for very large designs).
+
+Example (replicated per-tick inputs):
+
+`\.venv/bin/python -m stc fixtures/verilog/foo.v --out out --backend x86-avx512 --fuse-ticks 8 --fuse-input-policy replicate`
+
 ### AVR artifacts
 
 - `io_map.json` is emitted for non-SIMD designs and defines the PORTB bit layout used by the AVR backend.

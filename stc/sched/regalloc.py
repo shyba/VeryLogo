@@ -62,6 +62,7 @@ class LinearScanAllocator:
         gates: list,
         input_bits: int,
         outputs: list,
+        reg_offset: int = 0,
     ) -> RegAllocation:
         """
         Perform linear scan register allocation.
@@ -117,12 +118,13 @@ class LinearScanAllocator:
                 active,
                 free_regs,
                 reg_assignment,
+                reg_offset,
             )
 
             if free_regs:
                 reg = min(free_regs)
                 free_regs.remove(reg)
-                reg_assignment[current.node] = reg
+                reg_assignment[current.node] = reg + reg_offset
                 active.append(current)
                 active.sort(key=lambda r: r.end)
             else:
@@ -138,7 +140,7 @@ class LinearScanAllocator:
                 )
 
                 if spill_target is not None:
-                    reg_assignment[current.node] = reg
+                    reg_assignment[current.node] = reg + reg_offset
                     active.append(current)
                     active.sort(key=lambda r: r.end)
                 else:
@@ -158,6 +160,7 @@ class LinearScanAllocator:
         active: list[LiveRange],
         free_regs: set[int],
         node_to_reg: dict[int, int],
+        reg_offset: int = 0,
     ) -> None:
         """Remove intervals that have ended before current_start."""
         expired = []
@@ -169,7 +172,7 @@ class LinearScanAllocator:
             active.remove(r)
             reg = node_to_reg.get(r.node)
             if reg is not None:
-                free_regs.add(reg)
+                free_regs.add(reg - reg_offset)
 
     def _spill_at_interval(
         self,
@@ -246,4 +249,5 @@ def allocate_registers(
         gates=gates,
         input_bits=input_bits,
         outputs=outputs,
+        reg_offset=input_bits,
     )

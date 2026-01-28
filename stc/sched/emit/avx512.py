@@ -3,6 +3,7 @@ from __future__ import annotations
 from stc.sched.emit.base import BaseEmitter
 from stc.sched.regalloc import RegAllocation
 from stc.sched.schedule import Schedule
+from stc.sched.validation import EmitContext
 
 
 class AVX512Emitter(BaseEmitter):
@@ -23,6 +24,13 @@ class AVX512Emitter(BaseEmitter):
         if allocation.num_spills:
             return self._emit_naive(gates, input_bits, outputs, function_name, io_split)
 
+        ctx = EmitContext(
+            input_bits=input_bits,
+            num_gates=len(gates),
+            num_physical_regs=max(allocation.reg_assignment.values(), default=0) + 1,
+            allocation=allocation,
+        )
+
         input_io_bits = input_bits
         output_io_bits = len(outputs)
         if io_split is not None:
@@ -41,7 +49,9 @@ class AVX512Emitter(BaseEmitter):
         used_regs = set(allocation.reg_assignment.values())
         used_regs.update(reg for _, reg, _ in allocation.loads if reg >= 0)
         used_regs.update(reg for _, reg, _ in allocation.stores if reg >= 0)
-        max_reg = max([input_bits - 1, *used_regs]) if input_bits > 0 else 0
+        max_reg = (
+            max([input_bits - 1, *used_regs]) if (used_regs or input_bits > 0) else 0
+        )
         for r in range(max_reg + 1):
             lines.append(f"    __m512i r{r};")
 
@@ -111,19 +121,19 @@ class AVX512Emitter(BaseEmitter):
             if cycle in gates_by_cycle:
                 for g_idx in gates_by_cycle[cycle]:
                     node_idx = input_bits + g_idx
+                    ctx.validate_node(node_idx)
                     dst_reg = allocation.reg_assignment.get(node_idx, -1)
                     if dst_reg < 0:
                         continue
-                    line = self._emit_gate(
-                        gates[g_idx], dst_reg, allocation, node_in_reg
-                    )
+                    line = self._emit_gate(gates[g_idx], dst_reg, ctx, node_in_reg)
                     lines.append(f"    {line}")
                     _assign_reg(node_idx, dst_reg)
                     if node_idx in spilled_set:
                         lines.append(f"    stack{spill_slot[node_idx]} = r{dst_reg};")
 
         for out_idx, (node_idx, inverted) in enumerate(outputs):
-            expr = self._node_expr(node_idx, allocation, node_in_reg)
+            ctx.validate_node(node_idx)
+            expr = self._node_expr(node_idx, ctx, node_in_reg)
             if io_split is None:
                 if inverted:
                     lines.append(
@@ -200,8 +210,30 @@ class AVX512Emitter(BaseEmitter):
             lines.append(
                 f"static inline void {function_name}__core(const __m512i* in_io, const __m512i* st_in, __m512i* out_io, __m512i* st_out) {{"
             )
-        total_nodes = input_bits + len(gates)
-        for r in range(total_nodes):
+        used_regs: set[int] = set(range(input_bits))
+        for g_idx, gate in enumerate(gates):
+            dst = input_bits + g_idx
+            used_regs.add(dst)
+            if len(gate) >= 5:
+                _, a, b, c, _ = gate
+                if a >= 0:
+                    used_regs.add(a)
+                if b >= 0:
+                    used_regs.add(b)
+                if c >= 0:
+                    used_regs.add(c)
+            elif len(gate) >= 2:
+                a = gate[1]
+                if a >= 0:
+                    used_regs.add(a)
+                if len(gate) >= 3:
+                    b = gate[2]
+                    if b >= 0:
+                        used_regs.add(b)
+        for node_idx, _ in outputs:
+            used_regs.add(node_idx)
+        max_reg = max(used_regs) if used_regs else 0
+        for r in sorted(used_regs):
             lines.append(f"    __m512i r{r};")
 
         needs_ones = self._needs_ones_constant(gates, outputs)
@@ -320,18 +352,19 @@ class AVX512Emitter(BaseEmitter):
     def _node_expr(
         self,
         node: int,
-        allocation: RegAllocation,
+        ctx: EmitContext,
         node_in_reg: dict[int, int],
     ) -> str:
+        ctx.validate_node(node)
         reg = node_in_reg.get(node)
         if reg is not None and reg >= 0:
             return f"r{reg}"
         try:
-            slot = allocation.spills.index(node)
+            slot = ctx.allocation.spills.index(node)
             return f"stack{slot}"
         except ValueError:
             pass
-        reg = allocation.reg_assignment.get(node, -1)
+        reg = ctx.allocation.reg_assignment.get(node, -1)
         if reg >= 0:
             return f"r{reg}"
         return "_mm512_setzero_si512()"
@@ -340,7 +373,7 @@ class AVX512Emitter(BaseEmitter):
         self,
         gate: tuple,
         dst_reg: int,
-        allocation: RegAllocation,
+        ctx: EmitContext,
         node_in_reg: dict[int, int],
     ) -> str:
         if len(gate) == 5:
@@ -353,13 +386,14 @@ class AVX512Emitter(BaseEmitter):
             imm8 = 0
 
         def _src(node: int) -> str:
-            return self._node_expr(node, allocation, node_in_reg)
+            if node >= 0:
+                ctx.validate_node(node)
+            return self._node_expr(node, ctx, node_in_reg)
 
         if op == "ternary":
             return f"r{dst_reg} = _mm512_ternarylogic_epi32({_src(a)}, {_src(b)}, {_src(c)}, {imm8});"
 
         if op == "andn":
-            return f"r{dst_reg} = _mm512_andnot_si512({_src(a)}, {_src(b)});"
             return f"r{dst_reg} = _mm512_andnot_si512({_src(a)}, {_src(b)});"
 
         if op == "xor":

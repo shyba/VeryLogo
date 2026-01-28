@@ -39,7 +39,7 @@ def _build_shared(c_path: Path, so_path: Path) -> None:
     _run(
         [
             cc,
-            "-O3",
+            "-O1",
             "-shared",
             "-fPIC",
             "-mavx512f",
@@ -313,6 +313,8 @@ def main() -> int:
                 "--force-bitsliced",
                 "--bound",
                 "8",
+                "--max-live-pressure",
+                "32",
             ],
             env={**os.environ, "PYTHONPATH": "."},
         )
