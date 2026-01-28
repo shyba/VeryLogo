@@ -453,6 +453,90 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
                 expr = a
             else:
                 expr = Not(x=Eq(a=a, b=BitVecConst(width=w, value=0)))
+        elif t == "$_NOT_":
+            a_bit = cell.connections.get("A")
+            if a_bit is None or len(a_bit) != 1:
+                raise ExtractionError("$_NOT_ requires single-bit A")
+            expr = Not(x=expr_for_bit(a_bit[0]))
+        elif t == "$_AND_":
+            a_bit = cell.connections.get("A")
+            b_bit = cell.connections.get("B")
+            if a_bit is None or len(a_bit) != 1:
+                raise ExtractionError("$_AND_ requires single-bit A")
+            if b_bit is None or len(b_bit) != 1:
+                raise ExtractionError("$_AND_ requires single-bit B")
+            expr = And(a=expr_for_bit(a_bit[0]), b=expr_for_bit(b_bit[0]))
+        elif t == "$_OR_":
+            a_bit = cell.connections.get("A")
+            b_bit = cell.connections.get("B")
+            if a_bit is None or len(a_bit) != 1:
+                raise ExtractionError("$_OR_ requires single-bit A")
+            if b_bit is None or len(b_bit) != 1:
+                raise ExtractionError("$_OR_ requires single-bit B")
+            expr = Or(a=expr_for_bit(a_bit[0]), b=expr_for_bit(b_bit[0]))
+        elif t == "$_XOR_":
+            a_bit = cell.connections.get("A")
+            b_bit = cell.connections.get("B")
+            if a_bit is None or len(a_bit) != 1:
+                raise ExtractionError("$_XOR_ requires single-bit A")
+            if b_bit is None or len(b_bit) != 1:
+                raise ExtractionError("$_XOR_ requires single-bit B")
+            expr = Xor(a=expr_for_bit(a_bit[0]), b=expr_for_bit(b_bit[0]))
+        elif t == "$_XNOR_":
+            a_bit = cell.connections.get("A")
+            b_bit = cell.connections.get("B")
+            if a_bit is None or len(a_bit) != 1:
+                raise ExtractionError("$_XNOR_ requires single-bit A")
+            if b_bit is None or len(b_bit) != 1:
+                raise ExtractionError("$_XNOR_ requires single-bit B")
+            expr = Not(x=Xor(a=expr_for_bit(a_bit[0]), b=expr_for_bit(b_bit[0])))
+        elif t == "$_NAND_":
+            a_bit = cell.connections.get("A")
+            b_bit = cell.connections.get("B")
+            if a_bit is None or len(a_bit) != 1:
+                raise ExtractionError("$_NAND_ requires single-bit A")
+            if b_bit is None or len(b_bit) != 1:
+                raise ExtractionError("$_NAND_ requires single-bit B")
+            expr = Not(x=And(a=expr_for_bit(a_bit[0]), b=expr_for_bit(b_bit[0])))
+        elif t == "$_NOR_":
+            a_bit = cell.connections.get("A")
+            b_bit = cell.connections.get("B")
+            if a_bit is None or len(a_bit) != 1:
+                raise ExtractionError("$_NOR_ requires single-bit A")
+            if b_bit is None or len(b_bit) != 1:
+                raise ExtractionError("$_NOR_ requires single-bit B")
+            expr = Not(x=Or(a=expr_for_bit(a_bit[0]), b=expr_for_bit(b_bit[0])))
+        elif t == "$_MUX_":
+            s_bit = cell.connections.get("S")
+            a_bit = cell.connections.get("A")
+            b_bit = cell.connections.get("B")
+            if s_bit is None or len(s_bit) != 1:
+                raise ExtractionError("$_MUX_ requires single-bit S")
+            if a_bit is None or len(a_bit) != 1:
+                raise ExtractionError("$_MUX_ requires single-bit A")
+            if b_bit is None or len(b_bit) != 1:
+                raise ExtractionError("$_MUX_ requires single-bit B")
+            expr = Mux(
+                cond=expr_for_bit(s_bit[0]),
+                a=expr_for_bit(b_bit[0]),
+                b=expr_for_bit(a_bit[0]),
+            )
+        elif t == "$_ANDNOT_":
+            a_bit = cell.connections.get("A")
+            b_bit = cell.connections.get("B")
+            if a_bit is None or len(a_bit) != 1:
+                raise ExtractionError("$_ANDNOT_ requires single-bit A")
+            if b_bit is None or len(b_bit) != 1:
+                raise ExtractionError("$_ANDNOT_ requires single-bit B")
+            expr = And(a=expr_for_bit(a_bit[0]), b=Not(x=expr_for_bit(b_bit[0])))
+        elif t == "$_ORNOT_":
+            a_bit = cell.connections.get("A")
+            b_bit = cell.connections.get("B")
+            if a_bit is None or len(a_bit) != 1:
+                raise ExtractionError("$_ORNOT_ requires single-bit A")
+            if b_bit is None or len(b_bit) != 1:
+                raise ExtractionError("$_ORNOT_ requires single-bit B")
+            expr = Or(a=expr_for_bit(a_bit[0]), b=Not(x=expr_for_bit(b_bit[0])))
         elif t == "$mem_v2":
             if out_port != "RD_DATA":
                 raise ExtractionError("mem_v2 supports only RD_DATA output")

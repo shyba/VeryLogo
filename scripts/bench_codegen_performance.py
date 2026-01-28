@@ -195,8 +195,12 @@ def format_report(ternary_results, codegen_results):
         "Measures the O(N³) → O(N²) batch algorithm improvement on circuits with many ternary synthesis opportunities."
     )
     lines.append("")
-    lines.append("| Circuit Size | Gates Before | Gates After | Ternary Created | Time (ms) |")
-    lines.append("|--------------|--------------|-------------|-----------------|-----------|")
+    lines.append(
+        "| Circuit Size | Gates Before | Gates After | Ternary Created | Time (ms) |"
+    )
+    lines.append(
+        "|--------------|--------------|-------------|-----------------|-----------|"
+    )
 
     for r in ternary_results:
         lines.append(
@@ -206,23 +210,21 @@ def format_report(ternary_results, codegen_results):
 
     lines.append("")
     lines.append("**Key Observations:**")
-    lines.append(
-        f"- Small circuits (10-50 patterns): Sub-millisecond synthesis time"
-    )
+    lines.append(f"- Small circuits (10-50 patterns): Sub-millisecond synthesis time")
     lines.append(
         f"- Medium circuits (100-200 patterns): ~{ternary_results[2]['time_ms']:.1f}ms synthesis time"
     )
     lines.append(
         f"- Large circuits (500 patterns): ~{ternary_results[4]['time_ms']:.1f}ms synthesis time"
     )
-    lines.append(
-        "- Linear scaling observed (O(N²) complexity working as expected)"
-    )
+    lines.append("- Linear scaling observed (O(N²) complexity working as expected)")
     lines.append("")
 
     lines.append("## Backend Code Generation Performance")
     lines.append("")
-    lines.append("Compares compilation throughput across different backends and circuit sizes.")
+    lines.append(
+        "Compares compilation throughput across different backends and circuit sizes."
+    )
     lines.append("")
 
     for circuit_name in ["tiny", "small", "medium", "large"]:
@@ -233,8 +235,12 @@ def format_report(ternary_results, codegen_results):
         gates = circuit_results[0]["gates"]
         lines.append(f"### {circuit_name.title()} Circuit ({gates} gates)")
         lines.append("")
-        lines.append("| Backend | Time (ms) | Code Size (bytes) | Throughput (gates/ms) |")
-        lines.append("|---------|-----------|-------------------|----------------------|")
+        lines.append(
+            "| Backend | Time (ms) | Code Size (bytes) | Throughput (gates/ms) |"
+        )
+        lines.append(
+            "|---------|-----------|-------------------|----------------------|"
+        )
 
         for r in circuit_results:
             throughput = r["gates"] / r["time_ms"] if r["time_ms"] > 0 else 0
@@ -246,8 +252,12 @@ def format_report(ternary_results, codegen_results):
     lines.append("## Backend Comparison Summary")
     lines.append("")
 
-    avx512_times = [r["time_ms"] for r in codegen_results if "Direct AVX-512" in r["backend"]]
-    avx512_mir_times = [r["time_ms"] for r in codegen_results if "MIR AVX-512" in r["backend"]]
+    avx512_times = [
+        r["time_ms"] for r in codegen_results if "Direct AVX-512" in r["backend"]
+    ]
+    avx512_mir_times = [
+        r["time_ms"] for r in codegen_results if "MIR AVX-512" in r["backend"]
+    ]
     ptx_times = [r["time_ms"] for r in codegen_results if "Direct PTX" in r["backend"]]
     ptx_mir_times = [r["time_ms"] for r in codegen_results if "MIR PTX" in r["backend"]]
 
@@ -259,40 +269,40 @@ def format_report(ternary_results, codegen_results):
     lines.append("")
 
     overhead = (
-        (sum(avx512_mir_times) / sum(avx512_times) - 1) * 100 if sum(avx512_times) > 0 else 0
+        (sum(avx512_mir_times) / sum(avx512_times) - 1) * 100
+        if sum(avx512_times) > 0
+        else 0
     )
-    lines.append(f"**MIR Overhead:** ~{overhead:.1f}% (acceptable for architecture benefits)")
+    lines.append(
+        f"**MIR Overhead:** ~{overhead:.1f}% (acceptable for architecture benefits)"
+    )
     lines.append("")
 
     lines.append("## Conclusions")
     lines.append("")
     lines.append("### Phase 1: Ternary Synthesis ✅")
-    lines.append(
-        "- Batch algorithm shows linear scaling with circuit size"
-    )
-    lines.append(
-        "- Sub-millisecond performance on small-medium circuits"
-    )
-    lines.append(
-        "- Expected to handle 35K gate Keccak circuits in reasonable time"
-    )
+    lines.append("- Batch algorithm shows linear scaling with circuit size")
+    lines.append("- Sub-millisecond performance on small-medium circuits")
+    lines.append("- Expected to handle 35K gate Keccak circuits in reasonable time")
     lines.append("")
 
     lines.append("### Phase 3: MIR Layer ✅")
-    lines.append(
-        f"- MIR backends add minimal overhead (~{overhead:.1f}%)"
-    )
+    lines.append(f"- MIR backends add minimal overhead (~{overhead:.1f}%)")
     lines.append("- Compilation throughput remains excellent across all sizes")
     lines.append(
         "- Architecture benefits (extensibility, target independence) justify small overhead"
     )
-    lines.append("- Both AVX-512 and PTX paths achieve >1000 gates/ms on large circuits")
+    lines.append(
+        "- Both AVX-512 and PTX paths achieve >1000 gates/ms on large circuits"
+    )
     lines.append("")
 
     lines.append("### Overall Performance")
     lines.append("- ✅ Fast compilation: All test circuits compile in <5ms")
     lines.append("- ✅ Scalable: Linear performance characteristics")
-    lines.append("- ✅ Production ready: Throughput sufficient for real-world workloads")
+    lines.append(
+        "- ✅ Production ready: Throughput sufficient for real-world workloads"
+    )
     lines.append("")
 
     return "\n".join(lines)

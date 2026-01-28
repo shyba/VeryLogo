@@ -57,6 +57,7 @@ def run_pipeline(
     superopt_max_nodes: int = 6,
     superopt_timeout_ms: int = 200,
     no_backend: bool = False,
+    use_synth: bool = False,
     io_map: Path | None = None,
     avr_project: bool = False,
     backend: str = "generic",
@@ -90,6 +91,7 @@ def run_pipeline(
             normalized_json,
             top=top,
             output_script=out_dir / "normalized.ys",
+            use_synth=use_synth,
         )
     else:
         normalized_json = input_path
@@ -311,6 +313,12 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--superopt-max-nodes", type=int, default=6)
     p.add_argument("--superopt-timeout-ms", type=int, default=200)
     p.add_argument("--no-backend", action="store_true", default=False)
+    p.add_argument(
+        "--use-synth",
+        action="store_true",
+        default=False,
+        help="Use Yosys synth pass with ABC optimization (generates techmap cells)",
+    )
     p.add_argument("--io-map", type=Path, default=None)
     p.add_argument("--avr-project", action="store_true", default=False)
     p.add_argument(
@@ -569,6 +577,7 @@ def main(argv: list[str] | None = None) -> int:
             superopt_max_nodes=ns.superopt_max_nodes,
             superopt_timeout_ms=ns.superopt_timeout_ms,
             no_backend=ns.no_backend,
+            use_synth=ns.use_synth,
             io_map=ns.io_map,
             avr_project=ns.avr_project,
             backend=ns.backend,

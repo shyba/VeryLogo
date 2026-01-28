@@ -129,24 +129,43 @@ def _mask(width: int) -> int:
 
 
 def reduce_expr(
-    expr: Expr, types: dict[str, BoolType | BitVecType | FloatType | SimdType]
+    expr: Expr,
+    types: dict[str, BoolType | BitVecType | FloatType | SimdType],
+    _cache: dict[int, Expr] | None = None,
+) -> Expr:
+    if _cache is not None:
+        expr_id = id(expr)
+        if expr_id in _cache:
+            return _cache[expr_id]
+
+    result = _reduce_expr_impl(expr, types, _cache)
+
+    if _cache is not None:
+        _cache[expr_id] = result
+    return result
+
+
+def _reduce_expr_impl(
+    expr: Expr,
+    types: dict[str, BoolType | BitVecType | FloatType | SimdType],
+    _cache: dict[int, Expr] | None,
 ) -> Expr:
     if isinstance(expr, (BoolConst, BitVecConst, FloatConst, SimdConst, Var)):
         return expr
 
     if isinstance(expr, Bitcast):
-        x = reduce_expr(expr.x, types)
+        x = reduce_expr(expr.x, types, _cache)
         return Bitcast(to=expr.to, x=x)
 
     from stc.tick_ir import Rotl, Rotr
 
     if isinstance(expr, (Rotl, Rotr)):
-        x = reduce_expr(expr.x, types)
-        sh = reduce_expr(expr.sh, types)
+        x = reduce_expr(expr.x, types, _cache)
+        sh = reduce_expr(expr.sh, types, _cache)
         return expr.__class__(x=x, sh=sh)
 
     if isinstance(expr, Lut8):
-        x = reduce_expr(expr.x, types)
+        x = reduce_expr(expr.x, types, _cache)
         if isinstance(x, BitVecConst) and x.width == 8:
             return BitVecConst(width=8, value=int(expr.table[int(x.value) & 0xFF]))
         return Lut8(x=x, table=list(expr.table))
@@ -154,13 +173,13 @@ def reduce_expr(
     from stc.tick_ir import TernaryLut
 
     if isinstance(expr, TernaryLut):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
-        c = reduce_expr(expr.c, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
+        c = reduce_expr(expr.c, types, _cache)
         return TernaryLut(a=a, b=b, c=c, imm8=expr.imm8)
 
     if isinstance(expr, Not):
-        x = reduce_expr(expr.x, types)
+        x = reduce_expr(expr.x, types, _cache)
         if isinstance(x, BoolConst):
             return BoolConst(value=not x.value)
         if isinstance(x, BitVecConst):
@@ -172,8 +191,8 @@ def reduce_expr(
         return Not(x=x)
 
     if isinstance(expr, And):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         t = infer_type(a, types)
         if isinstance(t, BoolType):
             if isinstance(a, BoolConst) and isinstance(b, BoolConst):
@@ -209,8 +228,8 @@ def reduce_expr(
         return And(a=a, b=b)
 
     if isinstance(expr, Or):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         t = infer_type(a, types)
         if isinstance(t, BoolType):
             if isinstance(a, BoolConst) and isinstance(b, BoolConst):
@@ -246,8 +265,8 @@ def reduce_expr(
         return Or(a=a, b=b)
 
     if isinstance(expr, Xor):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         t = infer_type(a, types)
         if isinstance(t, BoolType):
             if isinstance(a, BoolConst) and isinstance(b, BoolConst):
@@ -319,35 +338,36 @@ def reduce_expr(
         return cur
 
     if isinstance(expr, Mux):
-        cond = reduce_expr(expr.cond, types)
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        cond = reduce_expr(expr.cond, types, _cache)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         if isinstance(cond, BoolConst):
             return a if cond.value else b
         if a == b:
             return a
+
         return Mux(cond=cond, a=a, b=b)
 
     if isinstance(expr, (FNeg, FAbs, FSqrt)):
-        x = reduce_expr(expr.x, types)
+        x = reduce_expr(expr.x, types, _cache)
         return expr.__class__(x=x)
 
     if isinstance(expr, (FAdd, FMul, FSub, FDiv, FEq, FLt, FLe, FNe)):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         return expr.__class__(a=a, b=b)
 
     if isinstance(expr, Concat):
-        parts = [reduce_expr(p, types) for p in expr.parts]
+        parts = [reduce_expr(p, types, _cache) for p in expr.parts]
         return Concat(parts=parts)
 
     if isinstance(expr, Slice):
-        x = reduce_expr(expr.x, types)
+        x = reduce_expr(expr.x, types, _cache)
         return Slice(x=x, offset=expr.offset, width=expr.width)
 
     if isinstance(expr, (Add, Sub, Shl, LShr, AShr, Eq, Ult, Ule, Ugt, Uge)):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         t = infer_type(a, types)
         if isinstance(expr, Eq):
             if a == b:
@@ -419,20 +439,20 @@ def reduce_expr(
         return expr.__class__(a=a, b=b)
 
     if isinstance(expr, SimdAdd):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         return SimdAdd(a=a, b=b)
 
     if isinstance(expr, SimdSub):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         return SimdSub(a=a, b=b)
 
     if isinstance(expr, (SimdAddMasked, SimdSubMasked)):
-        mask = reduce_expr(expr.mask, types)
-        passthru = reduce_expr(expr.passthru, types)
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        mask = reduce_expr(expr.mask, types, _cache)
+        passthru = reduce_expr(expr.passthru, types, _cache)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
 
         if isinstance(mask, SimdConst) and mask.lane_width == 1:
             if mask.value == 0:
@@ -448,7 +468,7 @@ def reduce_expr(
         return expr.__class__(mask=mask, passthru=passthru, a=a, b=b)
 
     if isinstance(expr, (SimdFSqrt, SimdFNeg, SimdFAbs)):
-        x = reduce_expr(expr.x, types)
+        x = reduce_expr(expr.x, types, _cache)
         return expr.__class__(x=x)
 
     if isinstance(
@@ -464,24 +484,24 @@ def reduce_expr(
             SimdFCmpNe,
         ),
     ):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         return expr.__class__(a=a, b=b)
 
     if isinstance(expr, SimdFFma):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
-        c = reduce_expr(expr.c, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
+        c = reduce_expr(expr.c, types, _cache)
         return SimdFFma(a=a, b=b, c=c)
 
     if isinstance(expr, (SimdAddSatU, SimdSubSatU, SimdAddSatS, SimdSubSatS)):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         return expr.__class__(a=a, b=b)
 
     if isinstance(expr, (SimdMulLo, SimdMulHiU, SimdMulHiS, SimdMaddS16)):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         return expr.__class__(a=a, b=b)
 
     if isinstance(
@@ -494,89 +514,89 @@ def reduce_expr(
             SimdPackSS32To16,
         ),
     ):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         return expr.__class__(a=a, b=b)
 
     if isinstance(expr, SimdMaskExpand):
-        x = reduce_expr(expr.x, types)
+        x = reduce_expr(expr.x, types, _cache)
         return SimdMaskExpand(to=expr.to, x=x)
 
     if isinstance(expr, SimdMaskPack):
-        x = reduce_expr(expr.x, types)
+        x = reduce_expr(expr.x, types, _cache)
         if isinstance(x, SimdMaskExpand):
             return x.x
         return SimdMaskPack(x=x)
 
     if isinstance(expr, (SimdMinU, SimdMaxU, SimdMinS, SimdMaxS)):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         return expr.__class__(a=a, b=b)
 
     if isinstance(expr, SimdBlend):
-        m = reduce_expr(expr.mask, types)
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        m = reduce_expr(expr.mask, types, _cache)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         return SimdBlend(mask=m, a=a, b=b)
 
     if isinstance(expr, (SimdZExtLo, SimdSExtLo)):
-        x = reduce_expr(expr.x, types)
+        x = reduce_expr(expr.x, types, _cache)
         return expr.__class__(to=expr.to, x=x)
 
     if isinstance(expr, SimdEq):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         return SimdEq(a=a, b=b)
 
     if isinstance(expr, SimdNot):
-        x = reduce_expr(expr.x, types)
+        x = reduce_expr(expr.x, types, _cache)
         return SimdNot(x=x)
 
     if isinstance(expr, (SimdAnd, SimdOr, SimdXor)):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         return expr.__class__(a=a, b=b)
 
     if isinstance(expr, SimdShl):
-        a = reduce_expr(expr.a, types)
-        sh = reduce_expr(expr.sh, types)
+        a = reduce_expr(expr.a, types, _cache)
+        sh = reduce_expr(expr.sh, types, _cache)
         return SimdShl(a=a, sh=sh)
 
     if isinstance(expr, SimdLShr):
-        a = reduce_expr(expr.a, types)
-        sh = reduce_expr(expr.sh, types)
+        a = reduce_expr(expr.a, types, _cache)
+        sh = reduce_expr(expr.sh, types, _cache)
         return SimdLShr(a=a, sh=sh)
 
     if isinstance(expr, SimdAShr):
-        a = reduce_expr(expr.a, types)
-        sh = reduce_expr(expr.sh, types)
+        a = reduce_expr(expr.a, types, _cache)
+        sh = reduce_expr(expr.sh, types, _cache)
         return SimdAShr(a=a, sh=sh)
 
     if isinstance(expr, (SimdUlt, SimdUle, SimdUgt, SimdUge)):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         return expr.__class__(a=a, b=b)
 
     if isinstance(expr, (SimdSlt, SimdSle, SimdSgt, SimdSge)):
-        a = reduce_expr(expr.a, types)
-        b = reduce_expr(expr.b, types)
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
         return expr.__class__(a=a, b=b)
 
     if isinstance(expr, SimdSplat):
-        x = reduce_expr(expr.x, types)
+        x = reduce_expr(expr.x, types, _cache)
         return SimdSplat(to=expr.to, x=x)
 
     if isinstance(expr, SimdExtractLane):
-        x = reduce_expr(expr.x, types)
+        x = reduce_expr(expr.x, types, _cache)
         return SimdExtractLane(x=x, lane=expr.lane)
 
     if isinstance(expr, SimdInsertLane):
-        x = reduce_expr(expr.x, types)
-        v = reduce_expr(expr.value, types)
+        x = reduce_expr(expr.x, types, _cache)
+        v = reduce_expr(expr.value, types, _cache)
         return SimdInsertLane(x=x, lane=expr.lane, value=v)
 
     if isinstance(expr, SimdShuffle):
-        x = reduce_expr(expr.x, types)
+        x = reduce_expr(expr.x, types, _cache)
         src_t = infer_type(x, types)
         assert isinstance(src_t, SimdType)
         indices = list(expr.indices)
@@ -599,9 +619,10 @@ def reduce_expr(
 
 
 def reduce_tick_ir(ir: TickIR) -> TickIR:
+    cache: dict[int, Expr] = {}
     types = {**ir.inputs, **ir.state}
-    reduced_next = {k: reduce_expr(v, types) for k, v in ir.next_state.items()}
-    reduced_out = {k: reduce_expr(v, types) for k, v in ir.output_exprs.items()}
+    reduced_next = {k: reduce_expr(v, types, cache) for k, v in ir.next_state.items()}
+    reduced_out = {k: reduce_expr(v, types, cache) for k, v in ir.output_exprs.items()}
     return TickIR(
         name=ir.name,
         inputs=dict(ir.inputs),

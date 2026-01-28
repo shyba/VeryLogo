@@ -21,17 +21,32 @@ def run_yosys(
     *,
     top: str | None = None,
     output_script: Path | None = None,
+    use_synth: bool = False,
 ) -> None:
     yosys = require_tool("yosys")
     top_arg = f"; hierarchy -check -top {top}" if top else "; hierarchy -check"
-    script = (
-        f"read_verilog -sv {input_v}"
-        f"{top_arg}"
-        "; proc"
-        "; opt"
-        "; opt_clean"
-        f"; write_json {output_json}"
-    )
+
+    if use_synth:
+        script = (
+            f"read_verilog -sv {input_v}"
+            f"{top_arg}"
+            "; proc"
+            "; opt"
+            "; techmap"
+            "; abc"
+            "; opt"
+            f"; write_json {output_json}"
+        )
+    else:
+        script = (
+            f"read_verilog -sv {input_v}"
+            f"{top_arg}"
+            "; proc"
+            "; opt"
+            "; opt_clean"
+            f"; write_json {output_json}"
+        )
+
     if output_script is not None:
         output_script.write_text(script + "\n", encoding="utf-8")
 

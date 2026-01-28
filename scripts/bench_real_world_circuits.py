@@ -120,7 +120,10 @@ def bench_aes128():
         print(f"Extraction time: {extract_time:.2f}s")
         print(f"IR: {len(tick_ir.state_vars)} state vars")
 
-        return {"extraction_time_s": extract_time, "state_vars": len(tick_ir.state_vars)}
+        return {
+            "extraction_time_s": extract_time,
+            "state_vars": len(tick_ir.state_vars),
+        }
 
     except Exception as e:
         print(f"ERROR: {e}")
@@ -202,9 +205,7 @@ def format_markdown_report(bp_results, keccak_results, aes_results):
     lines.append(
         "✅ **Boyar-Peralta S-box:** Sub-millisecond compilation across all backends"
     )
-    lines.append(
-        "✅ **MIR Layer:** Negligible overhead, maintains high throughput"
-    )
+    lines.append("✅ **MIR Layer:** Negligible overhead, maintains high throughput")
     lines.append("✅ **Production Ready:** Real crypto primitives compile instantly")
     lines.append("")
 

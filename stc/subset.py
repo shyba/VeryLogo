@@ -43,6 +43,16 @@ SUPPORTED_CELL_TYPES = {
     "$reduce_or",
     "$reduce_bool",
     "$scopeinfo",
+    "$_NOT_",
+    "$_AND_",
+    "$_OR_",
+    "$_XOR_",
+    "$_XNOR_",
+    "$_NAND_",
+    "$_NOR_",
+    "$_MUX_",
+    "$_ANDNOT_",
+    "$_ORNOT_",
 }
 
 
