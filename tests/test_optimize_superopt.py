@@ -20,7 +20,7 @@ class TestOptimizeSuperopt(unittest.TestCase):
             output_exprs={"o": spec},
         )
 
-        out = optimize_tick_ir(
+        out, _ = optimize_tick_ir(
             ir,
             bound=1,
             superopt=True,

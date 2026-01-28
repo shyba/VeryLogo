@@ -310,6 +310,7 @@ def main() -> int:
                 str(out_dir),
                 "--backend",
                 "x86-avx512",
+                "--force-bitsliced",
                 "--bound",
                 "8",
             ],

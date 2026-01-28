@@ -21,18 +21,25 @@ class LoweringChoice:
     reason: str
     unsupported: list[str]
     stats: dict[str, int]
+    gate_comparison: dict[str, int | float] | None = None
 
     def to_dict(self) -> dict:
-        return {
+        d = {
             "path": self.path,
             "reason": self.reason,
             "unsupported": self.unsupported,
             "stats": self.stats,
         }
+        if self.gate_comparison is not None:
+            d["gate_comparison"] = self.gate_comparison
+        return d
 
 
 def coordinate_lowering(
     ir: TickIR,
+    *,
+    prefer_packed: bool = False,
+    force_choice: bool = False,
 ) -> tuple[
     CircuitState | PackedCircuitState,
     PackedLayout | PackedWordLayout,
@@ -41,8 +48,15 @@ def coordinate_lowering(
     """
     Coordinate lowering with automatic fallback and choice reporting.
 
-    Tries packed lowering first. On PackedLoweringError, falls back to bit-level
-    lowering and generates a detailed report explaining the choice.
+    If prefer_packed is True, tries packed lowering first. On PackedLoweringError,
+    falls back to bit-level lowering (unless force_choice=True) and generates a
+    detailed report explaining the choice.
+
+    If prefer_packed is False (default), uses bit-level lowering. This is the
+    safest choice for backends that assume bit-level CircuitState semantics.
+
+    If force_choice is True, does not fall back on error - raises the exception instead
+    (e.g., AVX2/PTX bitsliced emitters).
 
     Returns:
         - circuit: Either PackedCircuitState (word-level) or CircuitState (bit-level)
@@ -61,37 +75,73 @@ def coordinate_lowering(
         "expr_depth": metrics.expr_depth_max,
     }
 
-    try:
-        packed, layout = lower_tick_ir_to_packed_circuit_state(ir)
-        choice = LoweringChoice(
-            path="packed",
-            reason="Successfully lowered to packed 64-bit word-level representation",
-            unsupported=[],
-            stats=stats,
-        )
-        return (packed, layout, choice)
-    except PackedLoweringError as e:
-        unsupported_types = []
-        if e.expression_type:
-            unsupported_types.append(e.expression_type)
+    if prefer_packed:
+        try:
+            packed, layout = lower_tick_ir_to_packed_circuit_state(ir)
+            circuit, bit_layout = lower_tick_ir_to_circuit_state(ir)
+            packed_gates = len(packed.gates)
+            bit_gates = len(circuit.gates)
+            ratio = packed_gates / bit_gates if bit_gates > 0 else 0.0
 
-        reason_parts = [
-            "Packed lowering failed, using bit-level lowering as fallback.",
-            f"Error: {e.message}",
-        ]
-        if e.variable_name:
-            reason_parts.append(f"Failed at variable: {e.variable_name}")
-        if e.subexpression_context:
-            reason_parts.append(f"Context: {e.subexpression_context}")
+            gate_comparison = {
+                "packed_gates": packed_gates,
+                "bitsliced_gates": bit_gates,
+                "ratio": round(ratio, 2),
+            }
 
-        circuit, layout = lower_tick_ir_to_circuit_state(ir)
-        choice = LoweringChoice(
-            path="bit",
-            reason=" ".join(reason_parts),
-            unsupported=unsupported_types,
-            stats=stats,
-        )
-        return (circuit, layout, choice)
+            if ratio > 5.0 and not force_choice:
+                choice = LoweringChoice(
+                    path="bit",
+                    reason=f"Packed lowering inefficient (ratio={ratio:.1f}x), automatic fallback to bit-level",
+                    unsupported=[],
+                    stats=stats,
+                    gate_comparison=gate_comparison,
+                )
+                return (circuit, bit_layout, choice)
+
+            choice = LoweringChoice(
+                path="packed",
+                reason="Successfully lowered to packed 64-bit word-level representation",
+                unsupported=[],
+                stats=stats,
+                gate_comparison=gate_comparison,
+            )
+            return (packed, layout, choice)
+        except PackedLoweringError as e:
+            if force_choice:
+                raise
+            unsupported_types = []
+            if e.expression_type:
+                unsupported_types.append(e.expression_type)
+
+            reason_parts = [
+                "Packed lowering failed, using bit-level lowering as fallback.",
+                f"Error: {e.message}",
+            ]
+            if e.variable_name:
+                reason_parts.append(f"Failed at variable: {e.variable_name}")
+            if e.subexpression_context:
+                reason_parts.append(f"Context: {e.subexpression_context}")
+
+            circuit, layout = lower_tick_ir_to_circuit_state(ir)
+            choice = LoweringChoice(
+                path="bit",
+                reason=" ".join(reason_parts),
+                unsupported=unsupported_types,
+                stats=stats,
+                gate_comparison=None,
+            )
+            return (circuit, layout, choice)
+
+    circuit, layout = lower_tick_ir_to_circuit_state(ir)
+    choice = LoweringChoice(
+        path="bit",
+        reason="Bit-level lowering selected (prefer_packed disabled).",
+        unsupported=[],
+        stats=stats,
+        gate_comparison=None,
+    )
+    return (circuit, layout, choice)
 
 
 def _width_bits(t) -> int:

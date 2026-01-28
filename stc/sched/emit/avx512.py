@@ -232,6 +232,8 @@ class AVX512Emitter(BaseEmitter):
                 lines.append(
                     f"    r{dst} = _mm512_ternarylogic_epi32(r{a}, r{b}, r{c}, {imm8});"
                 )
+            elif op == "andn":
+                lines.append(f"    r{dst} = _mm512_andnot_si512(r{a}, r{b});")
             elif op == "xor":
                 lines.append(f"    r{dst} = _mm512_xor_si512(r{a}, r{b});")
             elif op == "and":
@@ -355,6 +357,10 @@ class AVX512Emitter(BaseEmitter):
 
         if op == "ternary":
             return f"r{dst_reg} = _mm512_ternarylogic_epi32({_src(a)}, {_src(b)}, {_src(c)}, {imm8});"
+
+        if op == "andn":
+            return f"r{dst_reg} = _mm512_andnot_si512({_src(a)}, {_src(b)});"
+            return f"r{dst_reg} = _mm512_andnot_si512({_src(a)}, {_src(b)});"
 
         if op == "xor":
             return f"r{dst_reg} = _mm512_xor_si512({_src(a)}, {_src(b)});"

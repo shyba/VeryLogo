@@ -69,11 +69,17 @@ def run_pipeline(
     fuse_budget_max_step_ms: int | None = None,
     use_regions: bool = False,
     region_max_gates: int = 50000,
+    force_bitsliced: bool = False,
+    force_packed: bool = False,
     region_max_boundary: int = 8192,
     autotune: bool = False,
     autotune_seed: int = 42,
     autotune_budget_ms: int = 60000,
     autotune_candidates: int = 8,
+    arith_classify: bool = True,
+    mul_div_max_width: int = 32,
+    dump_arith_report: Path | None = None,
+    max_live_pressure: int | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -94,7 +100,7 @@ def run_pipeline(
     if infer_simd or autovec:
         tick_ir = infer_simd_types(tick_ir)
         validate_tick_ir(tick_ir)
-    reduced = optimize_tick_ir(
+    reduced, arith_report = optimize_tick_ir(
         tick_ir,
         bound=bound,
         autovec=autovec,
@@ -113,8 +119,13 @@ def run_pipeline(
         fuse_budget_max_nodes=fuse_budget_max_nodes,
         fuse_budget_max_depth=fuse_budget_max_depth,
         fuse_budget_max_step_ms=fuse_budget_max_step_ms,
+        arith_classify=arith_classify,
+        mul_div_max_width=mul_div_max_width,
     )
     validate_tick_ir(reduced)
+
+    if dump_arith_report is not None and arith_report is not None:
+        _write_json(dump_arith_report, arith_report)
 
     _write_json(out_dir / "tick_ir.json", tick_ir.to_dict())
     _write_json(out_dir / "reduced_tick_ir.json", reduced.to_dict())
@@ -130,111 +141,143 @@ def run_pipeline(
     # This enables full Verilog-derived designs (including wide state) to target AVX-512.
     if backend in {"x86-avx512", "x86-avx2"}:
         target = "avx512" if backend == "x86-avx512" else "avx2"
-        if backend == "x86-avx512":
-            circuit, layout, choice = coordinate_lowering(reduced)
-            write_lowering_choice_report(choice, out_dir)
+        if force_packed and force_bitsliced:
+            raise ValueError(
+                "Cannot use both --force-packed and --force-bitsliced simultaneously"
+            )
+        if force_packed:
+            prefer_packed = True
+        elif force_bitsliced:
+            prefer_packed = False
+        else:
+            prefer_packed = backend == "x86-avx512"
 
-            if isinstance(circuit, PackedCircuitState):
-                layout_w = layout
-                _write_json(out_dir / "packed_circuit_state.json", circuit.to_dict())
-                _write_json(out_dir / "packed_word_layout.json", layout_w.to_dict())
+        circuit, layout, choice = coordinate_lowering(
+            reduced,
+            prefer_packed=prefer_packed,
+            force_choice=force_packed or force_bitsliced,
+        )
+        write_lowering_choice_report(choice, out_dir)
 
-                input_io_words = sum(
-                    (int(v["width_bits"]) + 63) // 64 for v in layout_w.inputs.values()
+        if isinstance(circuit, PackedCircuitState):
+            layout_w = layout
+            _write_json(out_dir / "packed_circuit_state.json", circuit.to_dict())
+            _write_json(out_dir / "packed_word_layout.json", layout_w.to_dict())
+
+            input_io_words = sum(
+                (int(v["width_bits"]) + 63) // 64 for v in layout_w.inputs.values()
+            )
+            output_io_words = sum(
+                (int(v["width_bits"]) + 63) // 64 for v in layout_w.outputs.values()
+            )
+
+            if use_regions:
+                from stc.packed_region_emit import (
+                    EmitRegionsConfig,
+                    emit_avx512_u64_regions,
                 )
-                output_io_words = sum(
-                    (int(v["width_bits"]) + 63) // 64 for v in layout_w.outputs.values()
-                )
+                from stc.packed_regions import RegionCaps
 
-                if use_regions:
-                    from stc.packed_region_emit import (
-                        EmitRegionsConfig,
-                        emit_avx512_u64_regions,
-                    )
-                    from stc.packed_regions import RegionCaps
-
-                    if autotune:
-                        results, choice = autotune_configuration(
-                            circuit,
-                            seed=autotune_seed,
-                            budget_ms=autotune_budget_ms,
-                            num_candidates=autotune_candidates,
-                        )
-                        write_autotune_results(results, choice, out_dir)
-                        region_max_gates = choice.config.region_max_gates
-                        region_max_boundary = choice.config.region_max_boundary
-
-                    code = emit_avx512_u64_regions(
+                if autotune:
+                    results, choice = autotune_configuration(
                         circuit,
-                        layout_w,
-                        function_name="circuit",
-                        config=EmitRegionsConfig(
-                            caps=RegionCaps(
-                                max_gates=region_max_gates,
-                                max_boundary=region_max_boundary,
-                            ),
-                            diagnostics_dir=out_dir,
+                        seed=autotune_seed,
+                        budget_ms=autotune_budget_ms,
+                        num_candidates=autotune_candidates,
+                    )
+                    write_autotune_results(results, choice, out_dir)
+                    region_max_gates = choice.config.region_max_gates
+                    region_max_boundary = choice.config.region_max_boundary
+
+                code = emit_avx512_u64_regions(
+                    circuit,
+                    layout_w,
+                    function_name="circuit",
+                    config=EmitRegionsConfig(
+                        caps=RegionCaps(
+                            max_gates=region_max_gates,
+                            max_boundary=region_max_boundary,
                         ),
-                    )
-                    (out_dir / "circuit_avx512_u64_regions.c").write_text(
-                        code, encoding="utf-8"
-                    )
-                else:
-                    code = generate_scheduled_code(
-                        circuit,
-                        target="avx512_u64",
-                        scheduler="list",
-                        function_name="circuit",
-                        io_split=(input_io_words, output_io_words),
-                    )
-                    (out_dir / "circuit_avx512_u64.c").write_text(
-                        code, encoding="utf-8"
-                    )
-                    _write_json(
-                        out_dir / "schedule_stats.json",
-                        get_schedule_stats(circuit, "avx512_u64", "list"),
-                    )
-                return
+                        diagnostics_dir=out_dir,
+                    ),
+                )
+                (out_dir / "circuit_avx512_u64_regions.c").write_text(
+                    code, encoding="utf-8"
+                )
             else:
-                _write_json(out_dir / "circuit_state.json", circuit.to_dict())
-                _write_json(out_dir / "io_layout.json", layout.to_dict())
-
-                input_io_bits = sum(int(v["width"]) for v in layout.inputs.values())
-                output_io_bits = sum(int(v["width"]) for v in layout.outputs.values())
-
                 code = generate_scheduled_code(
                     circuit,
-                    target=target,
+                    target="avx512_u64",
                     scheduler="list",
                     function_name="circuit",
-                    io_split=(input_io_bits, output_io_bits),
+                    io_split=(input_io_words, output_io_words),
+                    max_live_pressure=max_live_pressure,
                 )
-                (out_dir / f"circuit_{target}.c").write_text(code, encoding="utf-8")
+                (out_dir / "circuit_avx512_u64.c").write_text(code, encoding="utf-8")
                 _write_json(
                     out_dir / "schedule_stats.json",
-                    get_schedule_stats(circuit, target, "list"),
+                    get_schedule_stats(circuit, "avx512_u64", "list"),
                 )
-                return
+            return
+        else:
+            _write_json(out_dir / "circuit_state.json", circuit.to_dict())
+            _write_json(out_dir / "io_layout.json", layout.to_dict())
 
-        circuit, layout = lower_tick_ir_to_circuit_state(reduced)
-        _write_json(out_dir / "circuit_state.json", circuit.to_dict())
-        _write_json(out_dir / "io_layout.json", layout.to_dict())
+            if target in ("avx512", "avx2"):
+                from stc.gate_ternary_synth import (
+                    apply_andnot_optimization,
+                    apply_ternary_synthesis,
+                    eliminate_double_nots,
+                )
 
-        input_io_bits = sum(int(v["width"]) for v in layout.inputs.values())
-        output_io_bits = sum(int(v["width"]) for v in layout.outputs.values())
+                gates_initial = len(circuit.gates)
 
-        code = generate_scheduled_code(
-            circuit,
-            target=target,
-            scheduler="list",
-            function_name="circuit",
-            io_split=(input_io_bits, output_io_bits),
-        )
-        (out_dir / f"circuit_{target}.c").write_text(code, encoding="utf-8")
-        _write_json(
-            out_dir / "schedule_stats.json", get_schedule_stats(circuit, target, "list")
-        )
-        return
+                circuit, dnot_stats = eliminate_double_nots(circuit)
+
+                circuit, andnot_stats = apply_andnot_optimization(circuit)
+
+                circuit, ternary_stats = apply_ternary_synthesis(circuit)
+
+                _write_json(out_dir / "circuit_state_ternary.json", circuit.to_dict())
+                _write_json(
+                    out_dir / "gate_opt_stats.json",
+                    {
+                        "double_nots_eliminated": dnot_stats.get(
+                            "double_nots_eliminated", 0
+                        ),
+                        "andnot_created": andnot_stats.get("andnot_created", 0),
+                        "ternary_gates_created": ternary_stats.ternary_gates_created,
+                        "patterns_found": ternary_stats.patterns_found,
+                        "total_gates_before": gates_initial,
+                        "total_gates_after": ternary_stats.gates_after,
+                        "total_reduction_percent": (
+                            round(
+                                100 * (1 - ternary_stats.gates_after / gates_initial),
+                                1,
+                            )
+                            if gates_initial > 0
+                            else 0
+                        ),
+                    },
+                )
+
+            input_io_bits = sum(int(v["width"]) for v in layout.inputs.values())
+            output_io_bits = sum(int(v["width"]) for v in layout.outputs.values())
+
+            code = generate_scheduled_code(
+                circuit,
+                target=target,
+                scheduler="list",
+                function_name="circuit",
+                io_split=(input_io_bits, output_io_bits),
+                max_live_pressure=max_live_pressure,
+            )
+            (out_dir / f"circuit_{target}.c").write_text(code, encoding="utf-8")
+            _write_json(
+                out_dir / "schedule_stats.json",
+                get_schedule_stats(circuit, target, "list"),
+            )
+            return
 
     if not _has_simd_types(reduced):
         if io_map is None:
@@ -276,6 +319,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         choices=["generic", "avr", "ptx", "x86-avx2", "x86-avx512"],
         default="generic",
         help="Target backend for optimization",
+    )
+    p.add_argument(
+        "--force-bitsliced",
+        action="store_true",
+        default=False,
+        help="Force bit-level lowering even for AVX-512 (workaround for packed lowering gate explosion)",
+    )
+    p.add_argument(
+        "--force-packed",
+        action="store_true",
+        default=False,
+        help="Force packed word-level lowering for AVX-512 (for testing packed lowering)",
     )
     p.add_argument(
         "--ternary-mapping",
@@ -334,6 +389,13 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         choices=["avx2", "avx512", "ptx"],
         default=None,
         help="Target for scheduled code emission",
+    )
+    p.add_argument(
+        "--max-live-pressure",
+        type=int,
+        default=None,
+        help="Maximum live values during scheduling (default: unlimited). "
+        "Set to ~28 for AVX-512 to avoid spills.",
     )
     p.add_argument(
         "--fuse-ticks",
@@ -413,6 +475,25 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         default=8,
         help="Number of candidate configurations to try (default: 8).",
     )
+    p.add_argument(
+        "--no-arith-classify",
+        action="store_false",
+        dest="arith_classify",
+        default=True,
+        help="Disable arithmetic classification pass (enabled by default).",
+    )
+    p.add_argument(
+        "--mul-div-max-width",
+        type=int,
+        default=32,
+        help="Maximum bit width for mul/div lowering (default: 32).",
+    )
+    p.add_argument(
+        "--dump-arith-report",
+        type=Path,
+        default=None,
+        help="Output path for arithmetic classification report JSON.",
+    )
     return p.parse_args(argv)
 
 
@@ -439,6 +520,7 @@ def run_scheduled_backend(
     scheduler: str,
     emit_target: str,
     function_name: str = "circuit",
+    max_live_pressure: int | None = None,
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -453,6 +535,7 @@ def run_scheduled_backend(
         target=emit_target,
         scheduler=scheduler,
         function_name=function_name,
+        max_live_pressure=max_live_pressure,
     )
 
     stats = get_schedule_stats(circuit, emit_target, scheduler)
@@ -471,6 +554,7 @@ def main(argv: list[str] | None = None) -> int:
             ns.out,
             scheduler=ns.scheduler,
             emit_target=ns.emit_target,
+            max_live_pressure=ns.max_live_pressure,
         )
     else:
         run_pipeline(
@@ -502,5 +586,11 @@ def main(argv: list[str] | None = None) -> int:
             autotune_seed=ns.autotune_seed,
             autotune_budget_ms=ns.autotune_budget_ms,
             autotune_candidates=ns.autotune_candidates,
+            force_bitsliced=ns.force_bitsliced,
+            force_packed=ns.force_packed,
+            arith_classify=ns.arith_classify,
+            mul_div_max_width=ns.mul_div_max_width,
+            dump_arith_report=ns.dump_arith_report,
+            max_live_pressure=ns.max_live_pressure,
         )
     return 0

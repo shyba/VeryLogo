@@ -160,6 +160,8 @@ class AVX2Emitter(BaseEmitter):
                 lines.append(
                     f"    r{dst} = _mm256_ternarylogic_epi32(r{a}, r{b}, r{c}, {imm8});"
                 )
+            elif op == "andnot":
+                lines.append(f"    r{dst} = _mm256_andnot_si256(r{a}, r{b});")
             elif op == "xor":
                 lines.append(f"    r{dst} = _mm256_xor_si256(r{a}, r{b});")
             elif op == "and":
@@ -252,6 +254,9 @@ class AVX2Emitter(BaseEmitter):
 
         left_expr = _src_expr(a)
         right_expr = _src_expr(b)
+
+        if op == "andnot":
+            return f"r{dst_reg} = _mm256_andnot_si256({left_expr}, {right_expr});"
 
         if op == "xor":
             return f"r{dst_reg} = _mm256_xor_si256({left_expr}, {right_expr});"

@@ -57,7 +57,7 @@ class TestVerilogAstarSelectMinSimdOptional(unittest.TestCase):
         self.assertEqual(ir1.inputs["b"], SimdType(lane_width=16, lanes=8))
         self.assertEqual(ir1.outputs["o"], SimdType(lane_width=16, lanes=8))
 
-        ir2 = optimize_tick_ir(
+        ir2, _ = optimize_tick_ir(
             ir1,
             bound=1,
             autovec=False,
@@ -75,7 +75,7 @@ class TestVerilogAstarSelectMinSimdOptional(unittest.TestCase):
         ir0 = _load_ir_from_verilog(src, top="top")
         ir1 = infer_simd_types(ir0)
         validate_tick_ir(ir1)
-        ir2 = optimize_tick_ir(
+        ir2, _ = optimize_tick_ir(
             ir1,
             bound=1,
             autovec=False,

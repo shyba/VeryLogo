@@ -35,5 +35,5 @@ class TestOptimizeAutovec(unittest.TestCase):
             next_state={},
             output_exprs={"o": packed},
         )
-        out = optimize_tick_ir(ir, bound=1, autovec=True)
+        out, _ = optimize_tick_ir(ir, bound=1, autovec=True)
         self.assertEqual(out.output_exprs["o"], SimdAdd(a=Var("x"), b=Var("y")))

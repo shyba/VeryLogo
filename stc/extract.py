@@ -161,7 +161,7 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
     for port in module.ports.values():
         t = _port_type(port.bits)
         if port.direction == "input":
-            if port.name in {"clk", "rst"}:
+            if port.name == "clk":
                 continue
             inputs[port.name] = t
             if isinstance(t, BoolType):
@@ -285,6 +285,50 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
                 raise ExtractionError(f"missing port {port_name} on {cell.name}")
             return _bus_from_bits(bits, expr_for_bit, width_of_expr)
 
+        y_bits = cell.connections.get(out_port, [])
+        y_width = len(y_bits)
+
+        def _repeat_bool(bit: Expr, n: int) -> Expr:
+            if n == 1:
+                return bit
+            return Concat(parts=tuple(bit for _ in range(n)))
+
+        def ext_to_width(x: Expr, from_w: int, to_w: int, *, signed: bool) -> Expr:
+            if from_w == to_w:
+                return x
+            if from_w < 1 or to_w < 1 or from_w > to_w:
+                raise ExtractionError("invalid zext widths")
+            pad = to_w - from_w
+            if pad == 0:
+                return x
+            # Concat parts are MSB-first; pad on the left.
+            if signed:
+                sign = Slice(x=x, offset=from_w - 1, width=1) if from_w > 1 else x
+                pad_expr = _repeat_bool(sign, pad)
+                return Concat(parts=(pad_expr, x))
+            if pad == 1:
+                return Concat(parts=(BoolConst(value=False), x))
+            return Concat(parts=(BitVecConst(width=pad, value=0), x))
+
+        def match_widths_to(target_w: int, a: Expr, b: Expr) -> tuple[Expr, Expr]:
+            wa = width_of_expr(a)
+            wb = width_of_expr(b)
+            if wa != target_w:
+                a = ext_to_width(
+                    a,
+                    wa,
+                    target_w,
+                    signed=bool(_parse_param_int(cell.parameters.get("A_SIGNED", "0"))),
+                )
+            if wb != target_w:
+                b = ext_to_width(
+                    b,
+                    wb,
+                    target_w,
+                    signed=bool(_parse_param_int(cell.parameters.get("B_SIGNED", "0"))),
+                )
+            return (a, b)
+
         t = cell.type
         if t == "$not":
             expr = Not(x=bus("A"))
@@ -296,33 +340,71 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
             else:
                 expr = Eq(a=a, b=BitVecConst(width=w, value=0))
         elif t == "$and":
-            expr = And(a=bus("A"), b=bus("B"))
+            a, b = match_widths_to(y_width, bus("A"), bus("B"))
+            expr = And(a=a, b=b)
         elif t == "$or":
-            expr = Or(a=bus("A"), b=bus("B"))
+            a, b = match_widths_to(y_width, bus("A"), bus("B"))
+            expr = Or(a=a, b=b)
         elif t == "$xor":
-            expr = Xor(a=bus("A"), b=bus("B"))
+            a, b = match_widths_to(y_width, bus("A"), bus("B"))
+            expr = Xor(a=a, b=b)
         elif t == "$add":
-            expr = Add(a=bus("A"), b=bus("B"))
+            a, b = match_widths_to(y_width, bus("A"), bus("B"))
+            expr = Add(a=a, b=b)
         elif t == "$sub":
-            expr = Sub(a=bus("A"), b=bus("B"))
+            a, b = match_widths_to(y_width, bus("A"), bus("B"))
+            expr = Sub(a=a, b=b)
         elif t == "$shl":
-            expr = Shl(a=bus("A"), b=bus("B"))
+            a, b = match_widths_to(y_width, bus("A"), bus("B"))
+            expr = Shl(a=a, b=b)
         elif t == "$shr":
-            expr = LShr(a=bus("A"), b=bus("B"))
+            a, b = match_widths_to(y_width, bus("A"), bus("B"))
+            expr = LShr(a=a, b=b)
         elif t == "$sshr":
-            expr = AShr(a=bus("A"), b=bus("B"))
+            a, b = match_widths_to(y_width, bus("A"), bus("B"))
+            expr = AShr(a=a, b=b)
         elif t == "$eq":
-            expr = Eq(a=bus("A"), b=bus("B"))
+            a, b = match_widths_to(
+                max(width_of_expr(bus("A")), width_of_expr(bus("B"))),
+                bus("A"),
+                bus("B"),
+            )
+            expr = Eq(a=a, b=b)
         elif t == "$ne":
-            expr = Not(x=Eq(a=bus("A"), b=bus("B")))
+            a, b = match_widths_to(
+                max(width_of_expr(bus("A")), width_of_expr(bus("B"))),
+                bus("A"),
+                bus("B"),
+            )
+            expr = Not(x=Eq(a=a, b=b))
         elif t == "$lt":
-            expr = Ult(a=bus("A"), b=bus("B"))
+            a, b = match_widths_to(
+                max(width_of_expr(bus("A")), width_of_expr(bus("B"))),
+                bus("A"),
+                bus("B"),
+            )
+            expr = Ult(a=a, b=b)
         elif t == "$le":
-            expr = Ule(a=bus("A"), b=bus("B"))
+            a, b = match_widths_to(
+                max(width_of_expr(bus("A")), width_of_expr(bus("B"))),
+                bus("A"),
+                bus("B"),
+            )
+            expr = Ule(a=a, b=b)
         elif t == "$gt":
-            expr = Ugt(a=bus("A"), b=bus("B"))
+            a, b = match_widths_to(
+                max(width_of_expr(bus("A")), width_of_expr(bus("B"))),
+                bus("A"),
+                bus("B"),
+            )
+            expr = Ugt(a=a, b=b)
         elif t == "$ge":
-            expr = Uge(a=bus("A"), b=bus("B"))
+            a, b = match_widths_to(
+                max(width_of_expr(bus("A")), width_of_expr(bus("B"))),
+                bus("A"),
+                bus("B"),
+            )
+            expr = Uge(a=a, b=b)
         elif t == "$mux":
             s_bits = cell.connections.get("S")
             if s_bits is None or len(s_bits) != 1:

@@ -2,9 +2,11 @@ import random
 import unittest
 
 from stc.tick_ir import (
+    Add,
     BitVecType,
     BitVecConst,
     BoolConst,
+    Sub,
     Var,
     Xor,
     Slice,
@@ -1001,6 +1003,137 @@ class TestPackedLowering(unittest.TestCase):
                     inner_result = av if c2 == 1 else bv
                     expected = inner_result if c1 == 1 else dv
                     self.assertEqual(outs[0], expected)
+
+    def test_add_simple_64bit(self) -> None:
+        expr = Add(a=Var("x"), b=Var("y"))
+        ir = TickIR(
+            name="add64",
+            inputs={"x": BitVecType(64), "y": BitVecType(64)},
+            outputs={"o": BitVecType(64)},
+            state={},
+            reset_state={},
+            next_state={},
+            output_exprs={"o": expr},
+        )
+        circuit, layout = lower_tick_ir_to_packed_circuit_state(ir)
+
+        for _ in range(50):
+            xv = random.getrandbits(64)
+            yv = random.getrandbits(64)
+            inputs = [xv, yv]
+            outs = eval_packed_circuit_words(circuit, inputs)
+            expected = (xv + yv) & ((1 << 64) - 1)
+            self.assertEqual(outs[0], expected)
+
+    def test_add_multiword_128bit(self) -> None:
+        expr = Add(a=Var("x"), b=Var("y"))
+        ir = TickIR(
+            name="add128",
+            inputs={"x": BitVecType(128), "y": BitVecType(128)},
+            outputs={"o": BitVecType(128)},
+            state={},
+            reset_state={},
+            next_state={},
+            output_exprs={"o": expr},
+        )
+        circuit, layout = lower_tick_ir_to_packed_circuit_state(ir)
+
+        for _ in range(50):
+            xv = random.getrandbits(128)
+            yv = random.getrandbits(128)
+            x_inputs = [xv & ((1 << 64) - 1), (xv >> 64) & ((1 << 64) - 1)]
+            y_inputs = [yv & ((1 << 64) - 1), (yv >> 64) & ((1 << 64) - 1)]
+            inputs = x_inputs + y_inputs
+            outs = eval_packed_circuit_words(circuit, inputs)
+            expected = (xv + yv) & ((1 << 128) - 1)
+            reconstructed = outs[0] | (outs[1] << 64)
+            self.assertEqual(reconstructed, expected)
+
+    def test_sub_simple_64bit(self) -> None:
+        expr = Sub(a=Var("x"), b=Var("y"))
+        ir = TickIR(
+            name="sub64",
+            inputs={"x": BitVecType(64), "y": BitVecType(64)},
+            outputs={"o": BitVecType(64)},
+            state={},
+            reset_state={},
+            next_state={},
+            output_exprs={"o": expr},
+        )
+        circuit, layout = lower_tick_ir_to_packed_circuit_state(ir)
+
+        for _ in range(50):
+            xv = random.getrandbits(64)
+            yv = random.getrandbits(64)
+            inputs = [xv, yv]
+            outs = eval_packed_circuit_words(circuit, inputs)
+            expected = (xv - yv) & ((1 << 64) - 1)
+            self.assertEqual(outs[0], expected)
+
+    def test_sub_multiword_128bit(self) -> None:
+        expr = Sub(a=Var("x"), b=Var("y"))
+        ir = TickIR(
+            name="sub128",
+            inputs={"x": BitVecType(128), "y": BitVecType(128)},
+            outputs={"o": BitVecType(128)},
+            state={},
+            reset_state={},
+            next_state={},
+            output_exprs={"o": expr},
+        )
+        circuit, layout = lower_tick_ir_to_packed_circuit_state(ir)
+
+        for _ in range(50):
+            xv = random.getrandbits(128)
+            yv = random.getrandbits(128)
+            x_inputs = [xv & ((1 << 64) - 1), (xv >> 64) & ((1 << 64) - 1)]
+            y_inputs = [yv & ((1 << 64) - 1), (yv >> 64) & ((1 << 64) - 1)]
+            inputs = x_inputs + y_inputs
+            outs = eval_packed_circuit_words(circuit, inputs)
+            expected = (xv - yv) & ((1 << 128) - 1)
+            reconstructed = outs[0] | (outs[1] << 64)
+            self.assertEqual(reconstructed, expected)
+
+    def test_slice_single_word_efficiency(self) -> None:
+        slice_expr = Slice(x=Var("x"), offset=0, width=64)
+        ir = TickIR(
+            name="slice_efficient",
+            inputs={"x": BitVecType(64)},
+            outputs={"o": BitVecType(64)},
+            state={},
+            reset_state={},
+            next_state={},
+            output_exprs={"o": slice_expr},
+        )
+        circuit, _layout = lower_tick_ir_to_packed_circuit_state(ir)
+        self.assertLess(len(circuit.gates), 20)
+
+    def test_concat_word_aligned_efficiency(self) -> None:
+        ir = TickIR(
+            name="concat_efficient",
+            inputs={"a": BitVecType(64), "b": BitVecType(64)},
+            outputs={"o": BitVecType(128)},
+            state={},
+            reset_state={},
+            next_state={},
+            output_exprs={"o": Concat(parts=[Var("a"), Var("b")])},
+        )
+        circuit, _layout = lower_tick_ir_to_packed_circuit_state(ir)
+        self.assertLess(len(circuit.gates), 10)
+
+    def test_rotate_pattern_efficiency(self) -> None:
+        expr = Rotl(x=Var("x"), sh=BitVecConst(width=8, value=7))
+        ir = TickIR(
+            name="rotl_efficient",
+            inputs={"x": BitVecType(64)},
+            outputs={"o": BitVecType(64)},
+            state={},
+            reset_state={},
+            next_state={},
+            output_exprs={"o": expr},
+        )
+        circuit, _layout = lower_tick_ir_to_packed_circuit_state(ir)
+        self.assertLess(len(circuit.gates), 30)
 
 
 if __name__ == "__main__":

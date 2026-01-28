@@ -18,6 +18,7 @@ from stc.tick_ir import (
     BoolConst,
     BoolType,
     Concat,
+    Div,
     Eq,
     Expr,
     FAdd,
@@ -32,6 +33,7 @@ from stc.tick_ir import (
     FSqrt,
     FSub,
     LShr,
+    Mul,
     Mux,
     Not,
     Or,
@@ -308,7 +310,8 @@ def infer_type(expr: Expr, ctx: dict[str, Type]) -> Type:
         return t
 
     if isinstance(
-        expr, (And, Or, Xor, Add, Sub, Shl, LShr, AShr, Eq, Ult, Ule, Ugt, Uge)
+        expr,
+        (And, Or, Xor, Add, Sub, Mul, Div, Shl, LShr, AShr, Eq, Ult, Ule, Ugt, Uge),
     ):
         a_t = infer_type(expr.a, ctx)
         b_t = infer_type(expr.b, ctx)
@@ -318,7 +321,7 @@ def infer_type(expr: Expr, ctx: dict[str, Type]) -> Type:
             raise TickIRValidationError("bitwise ops do not support float")
         if isinstance(expr, (Eq, Ult, Ule, Ugt, Uge)):
             return BoolType()
-        if isinstance(expr, (Add, Sub, Shl, LShr, AShr)) and not isinstance(
+        if isinstance(expr, (Add, Sub, Mul, Div, Shl, LShr, AShr)) and not isinstance(
             a_t, BitVecType
         ):
             raise TickIRValidationError("bitvec op requires bitvec operands")
@@ -955,7 +958,8 @@ def eval_expr(
         raise TypeError("unknown type")
 
     if isinstance(
-        expr, (And, Or, Xor, Add, Sub, Shl, LShr, AShr, Eq, Ult, Ule, Ugt, Uge)
+        expr,
+        (And, Or, Xor, Add, Sub, Mul, Div, Shl, LShr, AShr, Eq, Ult, Ule, Ugt, Uge),
     ):
         a = eval_expr(expr.a, ctx_types, env)
         b = eval_expr(expr.b, ctx_types, env)
@@ -1013,6 +1017,12 @@ def eval_expr(
                 return (aa + bb) & _mask(t.width)
             if isinstance(expr, Sub):
                 return (aa - bb) & _mask(t.width)
+            if isinstance(expr, Mul):
+                return (aa * bb) & _mask(t.width)
+            if isinstance(expr, Div):
+                if bb == 0:
+                    return 0
+                return (aa // bb) & _mask(t.width)
             if isinstance(expr, Shl):
                 return (aa << bb) & _mask(t.width)
             if isinstance(expr, LShr):

@@ -128,9 +128,43 @@ def compute_metrics(ir: TickIR) -> IRMetrics:
             state_bits += t.total_width
 
     exprs = list(ir.next_state.values()) + list(ir.output_exprs.values())
-    ops_total = sum(_count_ops(e) for e in exprs)
-    expr_nodes_total = sum(_count_nodes(e) for e in exprs)
-    expr_depth_max = max((_depth(e) for e in exprs), default=0)
+
+    # These metrics are frequently used on large DAGs (shared subexpressions),
+    # so avoid recursive re-traversal by memoizing on object identity.
+    seen: set[int] = set()
+    depth_by_id: dict[int, int] = {}
+    ops_total = 0
+    expr_nodes_total = 0
+    expr_depth_max = 0
+
+    def _iter_children(e: Expr) -> list[Expr]:
+        return _expr_children(e)
+
+    for root in exprs:
+        stack: list[tuple[Expr, int]] = [(root, 0)]
+        while stack:
+            e, phase = stack.pop()
+            eid = id(e)
+            if phase == 0:
+                if eid in seen:
+                    continue
+                seen.add(eid)
+                expr_nodes_total += 1
+                stack.append((e, 1))
+                for c in _iter_children(e):
+                    stack.append((c, 0))
+            else:
+                children = _iter_children(e)
+                if not children:
+                    d = 1
+                else:
+                    d = 1 + max(depth_by_id[id(c)] for c in children)
+                    if not isinstance(e, (Var, BoolConst, BitVecConst, SimdConst)):
+                        ops_total += 1
+                depth_by_id[eid] = d
+                if d > expr_depth_max:
+                    expr_depth_max = d
+
     return IRMetrics(
         state_regs=state_regs,
         state_bits=state_bits,

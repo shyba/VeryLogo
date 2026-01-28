@@ -17,7 +17,9 @@ from stc.sched.emit.avx512_u64 import AVX512U64Emitter
 
 
 SCHEDULERS = {
-    "list": lambda g, i, o, t: list_schedule(g, i, o, t, "slack"),
+    "list": lambda g, i, o, t, max_live_pressure=None: list_schedule(
+        g, i, o, t, "slack", max_live_pressure=max_live_pressure
+    ),
     "pipelined": pipelined_schedule,
 }
 
@@ -42,6 +44,7 @@ def generate_scheduled_code(
     scheduler: str = "list",
     function_name: str = "circuit",
     io_split: tuple[int, int] | None = None,
+    max_live_pressure: int | None = None,
 ) -> str:
     gates = list(circuit.gates)
     input_bits = circuit.input_bits
@@ -51,7 +54,12 @@ def generate_scheduled_code(
     schedule_fn = SCHEDULERS[scheduler]
     emitter_cls = EMITTERS[target]
 
-    schedule = schedule_fn(gates, input_bits, outputs, target_model)
+    if scheduler == "list" and max_live_pressure is not None:
+        schedule = schedule_fn(
+            gates, input_bits, outputs, target_model, max_live_pressure
+        )
+    else:
+        schedule = schedule_fn(gates, input_bits, outputs, target_model)
 
     live_ranges = compute_live_ranges(schedule, gates, input_bits, outputs)
     allocation = allocate_registers(

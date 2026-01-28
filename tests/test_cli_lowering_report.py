@@ -23,7 +23,7 @@ class TestCliLoweringReport(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             out_dir = Path(tmpdir) / "out"
 
-            _circuit, _layout, choice = coordinate_lowering(ir)
+            _circuit, _layout, choice = coordinate_lowering(ir, prefer_packed=True)
             write_lowering_choice_report(choice, out_dir)
 
             report_path = out_dir / "lowering_choice.json"
@@ -68,7 +68,7 @@ class TestCliLoweringReport(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmpdir:
             out_dir = Path(tmpdir) / "out"
 
-            _circuit, _layout, choice = coordinate_lowering(ir)
+            _circuit, _layout, choice = coordinate_lowering(ir, prefer_packed=True)
             write_lowering_choice_report(choice, out_dir)
 
             report_path = out_dir / "lowering_choice.json"

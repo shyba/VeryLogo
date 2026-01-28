@@ -426,6 +426,24 @@ class Sub:
 
 
 @dataclass(frozen=True)
+class Mul:
+    a: Expr
+    b: Expr
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": "mul", "a": self.a.to_dict(), "b": self.b.to_dict()}
+
+
+@dataclass(frozen=True)
+class Div:
+    a: Expr
+    b: Expr
+
+    def to_dict(self) -> dict[str, Any]:
+        return {"kind": "div", "a": self.a.to_dict(), "b": self.b.to_dict()}
+
+
+@dataclass(frozen=True)
 class Shl:
     a: Expr
     b: Expr
@@ -1159,6 +1177,8 @@ Expr = (
     | Xor
     | Add
     | Sub
+    | Mul
+    | Div
     | Shl
     | LShr
     | AShr
@@ -1375,6 +1395,10 @@ def expr_from_dict(data: dict[str, Any]) -> Expr:
         return Add(a=expr_from_dict(data["a"]), b=expr_from_dict(data["b"]))
     if kind == "sub":
         return Sub(a=expr_from_dict(data["a"]), b=expr_from_dict(data["b"]))
+    if kind == "mul":
+        return Mul(a=expr_from_dict(data["a"]), b=expr_from_dict(data["b"]))
+    if kind == "div":
+        return Div(a=expr_from_dict(data["a"]), b=expr_from_dict(data["b"]))
     if kind == "shl":
         return Shl(a=expr_from_dict(data["a"]), b=expr_from_dict(data["b"]))
     if kind == "lshr":

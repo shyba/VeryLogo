@@ -32,7 +32,7 @@ class TestLoweringCoordinator(unittest.TestCase):
             output_exprs={"o": Xor(a=Var("x"), b=Var("s"))},
         )
 
-        circuit, layout, choice = coordinate_lowering(ir)
+        circuit, layout, choice = coordinate_lowering(ir, prefer_packed=True)
 
         self.assertIsInstance(circuit, PackedCircuitState)
         self.assertEqual(choice.path, "packed")

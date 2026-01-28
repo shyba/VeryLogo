@@ -18,7 +18,7 @@ class TestOptimizeConstantSimdState(unittest.TestCase):
             output_exprs={"o": Var("s")},
         )
         validate_tick_ir(ir)
-        out = optimize_tick_ir(ir, bound=3)
+        out, _ = optimize_tick_ir(ir, bound=3)
         self.assertEqual(out.state, {})
         self.assertEqual(
             out.output_exprs["o"], SimdConst(lane_width=4, lanes=2, value=0xAB)

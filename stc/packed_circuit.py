@@ -17,6 +17,7 @@ Gate forms:
 - (op, a, imm): unary ops with immediate ("shl","lshr") where imm in [0,63]
 - ("not", a, 0): unary not encoded as 3-tuple for simplicity
 - ("const", imm, 0): constant word node; imm is a 64-bit value
+- ("ult", a, b): unsigned compare; returns 1 if a<b else 0 (boolean-in-word form)
 """
 
 
@@ -111,6 +112,8 @@ def eval_packed_circuit_words(
                 v = (nodes[a] + nodes[b]) & mask
             elif op == "sub":
                 v = (nodes[a] - nodes[b]) & mask
+            elif op == "ult":
+                v = 1 if (nodes[a] & mask) < (nodes[b] & mask) else 0
             elif op == "not":
                 v = (~nodes[a]) & mask
             elif op == "const":

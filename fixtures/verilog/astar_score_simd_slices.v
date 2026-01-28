@@ -1,6 +1,5 @@
 module top(
   input logic clk,
-  input logic rst,
   input logic [127:0] g,
   input logic [127:0] h,
   output logic [127:0] f
@@ -34,4 +33,3 @@ module top(
 
   assign f = { f7, f6, f5, f4, f3, f2, f1, f0 };
 endmodule
-

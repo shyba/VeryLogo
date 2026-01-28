@@ -43,7 +43,7 @@ def main() -> None:
         ir2 = autovectorize_tick_ir(ir2, timeout_ms=args.autovec_timeout_ms)
         validate_tick_ir(ir2)
     if args.superopt:
-        ir2 = optimize_tick_ir(
+        ir2, _ = optimize_tick_ir(
             ir2,
             bound=1,
             autovec=False,

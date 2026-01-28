@@ -6,20 +6,25 @@ from stc.circuit_synth import CircuitState
 from stc.interp import infer_type
 from stc.tick_ir import (
     AShr,
+    Add,
     And,
     BitVecConst,
     BitVecType,
     BoolConst,
     BoolType,
     Concat,
+    Div,
     Eq,
     Expr,
     LShr,
+    Mul,
+    Ult,
     Mux,
     Not,
     Or,
     Shl,
     Slice,
+    Sub,
     TickIR,
     Type,
     Var,
@@ -250,6 +255,34 @@ def lower_tick_ir_to_circuit_state(ir: TickIR) -> tuple[CircuitState, PackedLayo
             memo_bits[key] = bits
             return bits
 
+        if isinstance(e, Ult):
+            a_bits = lower_bits(e.a)
+            b_bits = lower_bits(e.b)
+            if len(a_bits) != len(b_bits):
+                raise LoweringError("ult width mismatch")
+            n = len(a_bits)
+            if n == 0:
+                raise LoweringError("ult on empty bitvector")
+
+            # Unsigned compare: MSB-first.
+            eq = new_gate("const", 1, 1)  # all higher bits equal so far
+            lt = new_gate("const", 0, 1)
+            for i in reversed(range(n)):
+                abit = a_bits[i]
+                bbit = b_bits[i]
+                not_a = new_gate("not", abit, 0)
+                a_lt_b = new_gate("and", not_a, bbit)
+                lt_here = new_gate("and", eq, a_lt_b)
+                lt = new_gate("or", lt, lt_here)
+
+                axb = new_gate("xor", abit, bbit)
+                xnor = new_gate("not", axb, 0)
+                eq = new_gate("and", eq, xnor)
+
+            bits = [lt]
+            memo_bits[key] = bits
+            return bits
+
         if isinstance(e, Mux):
             c = lower_bool(e.cond)
             tb = lower_bits(e.a)
@@ -284,6 +317,153 @@ def lower_tick_ir_to_circuit_state(ir: TickIR) -> tuple[CircuitState, PackedLayo
             bits = bits[:w]
             memo_bits[key] = bits
             return bits
+
+        if isinstance(e, Add):
+            ab = lower_bits(e.a)
+            bb = lower_bits(e.b)
+            if len(ab) != len(bb):
+                raise LoweringError("add width mismatch")
+            if w == 0:
+                memo_bits[key] = []
+                return []
+            bits = []
+            c = new_gate("const", 0, 1)
+            for i in range(w):
+                s_partial = new_gate("xor", ab[i], bb[i])
+                s = new_gate("xor", s_partial, c)
+                bits.append(s)
+                ab_and_bb = new_gate("and", ab[i], bb[i])
+                ab_xor_bb = s_partial
+                c_and_xor = new_gate("and", c, ab_xor_bb)
+                c = new_gate("or", ab_and_bb, c_and_xor)
+            memo_bits[key] = bits
+            return bits
+
+        if isinstance(e, Sub):
+            ab = lower_bits(e.a)
+            bb = lower_bits(e.b)
+            if len(ab) != len(bb):
+                raise LoweringError("sub width mismatch")
+            if w == 0:
+                memo_bits[key] = []
+                return []
+            bits = []
+            c = new_gate("const", 1, 1)
+            for i in range(w):
+                bb_not = new_gate("not", bb[i], 0)
+                s_partial = new_gate("xor", ab[i], bb_not)
+                s = new_gate("xor", s_partial, c)
+                bits.append(s)
+                ab_and_bbnot = new_gate("and", ab[i], bb_not)
+                ab_xor_bbnot = s_partial
+                c_and_xor = new_gate("and", c, ab_xor_bbnot)
+                c = new_gate("or", ab_and_bbnot, c_and_xor)
+            memo_bits[key] = bits
+            return bits
+
+        if isinstance(e, Mul):
+            ab = lower_bits(e.a)
+            bb = lower_bits(e.b)
+            if len(ab) != len(bb):
+                raise LoweringError("mul width mismatch")
+            if w == 0:
+                memo_bits[key] = []
+                return []
+            if w > 16:
+                raise LoweringError(
+                    f"Mul with width {w} exceeds bit-level lowering cap of 16 bits. "
+                    f"Suggestion: Use power-of-2 constants (will be reduced to shifts) "
+                    f"or synthesize multiplication as a Verilog module."
+                )
+
+            # Schoolbook multiplication: compute partial products and sum them
+            # For each bit position i, compute ab[i] * bb (shifted left by i positions)
+            # and accumulate into result
+            result_bits = [new_gate("const", 0, 1) for _ in range(w)]
+
+            for i in range(w):
+                # Compute partial product: ab[i] * bb, which gives w bits starting at position i
+                # We accumulate this into result_bits[i:i+w]
+                carry = new_gate("const", 0, 1)
+                for j in range(w - i):
+                    # Partial product bit: ab[i] AND bb[j]
+                    pp = new_gate("and", ab[i], bb[j])
+                    # Three-input addition: result_bits[i+j] + pp + carry
+                    sum1 = new_gate("xor", result_bits[i + j], pp)
+                    sum_final = new_gate("xor", sum1, carry)
+                    # Compute carry for next position
+                    and1 = new_gate("and", result_bits[i + j], pp)
+                    and2 = new_gate("and", result_bits[i + j], carry)
+                    and3 = new_gate("and", pp, carry)
+                    or1 = new_gate("or", and1, and2)
+                    carry = new_gate("or", or1, and3)
+                    result_bits[i + j] = sum_final
+
+            memo_bits[key] = result_bits
+            return result_bits
+
+        if isinstance(e, Div):
+            ab = lower_bits(e.a)
+            bb = lower_bits(e.b)
+            if len(ab) != len(bb):
+                raise LoweringError("div width mismatch")
+            if w == 0:
+                memo_bits[key] = []
+                return []
+            if w > 16:
+                raise LoweringError(
+                    f"Div with width {w} exceeds bit-level lowering cap of 16 bits. "
+                    f"Suggestion: Use power-of-2 constants (will be reduced to right shifts) "
+                    f"or synthesize division as a Verilog module."
+                )
+
+            # Restoring division algorithm (unsigned)
+            # We process bits from MSB to LSB of dividend (ab[w-1] down to ab[0])
+            # and generate quotient bits from MSB to LSB
+            quotient_bits = [new_gate("const", 0, 1) for _ in range(w)]
+            remainder_bits = [new_gate("const", 0, 1) for _ in range(w)]
+
+            for idx in range(w):
+                # Process dividend bit from MSB to LSB
+                dividend_bit_idx = w - 1 - idx
+                # Store quotient bit from MSB to LSB
+                quotient_bit_idx = w - 1 - idx
+
+                # Shift remainder left by 1 and bring down ab[dividend_bit_idx]
+                new_remainder_bits = [ab[dividend_bit_idx]] + remainder_bits[: w - 1]
+
+                # Subtract divisor from remainder (unsigned subtract: remainder - bb)
+                # Using two's complement: remainder - bb = remainder + (~bb + 1)
+                carry = new_gate("const", 1, 1)
+                diff_bits = []
+                for j in range(w):
+                    bb_not = new_gate("not", bb[j], 0)
+                    s_partial = new_gate("xor", new_remainder_bits[j], bb_not)
+                    s = new_gate("xor", s_partial, carry)
+                    diff_bits.append(s)
+                    r_and_bbnot = new_gate("and", new_remainder_bits[j], bb_not)
+                    r_xor_bbnot = s_partial
+                    c_and_xor = new_gate("and", carry, r_xor_bbnot)
+                    carry = new_gate("or", r_and_bbnot, c_and_xor)
+
+                # Check if remainder >= divisor by examining final carry
+                # In two's complement subtraction, carry out = 1 means no borrow (remainder >= divisor)
+                # If carry is 1, then remainder >= divisor, so quotient bit is 1
+                # If carry is 0, then remainder < divisor, so quotient bit is 0
+                quotient_bit = carry
+                quotient_bits[quotient_bit_idx] = quotient_bit
+
+                # If quotient_bit is 1, update remainder to diff_bits
+                updated_remainder = []
+                for j in range(w):
+                    selected = new_gate("and", quotient_bit, diff_bits[j])
+                    not_qbit = new_gate("not", quotient_bit, 0)
+                    unselected = new_gate("and", not_qbit, new_remainder_bits[j])
+                    updated_remainder.append(new_gate("or", selected, unselected))
+                remainder_bits = updated_remainder
+
+            memo_bits[key] = quotient_bits
+            return quotient_bits
 
         raise LoweringError(
             f"unsupported expression for CircuitState lowering: {type(e)}"

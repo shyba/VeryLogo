@@ -27,25 +27,32 @@ class TickIRValidationError(Exception):
 
 
 def iter_vars(expr: Expr) -> Iterable[str]:
-    if isinstance(expr, Var):
-        yield expr.name
-        return
-    if isinstance(expr, (BoolConst, BitVecConst, FloatConst, SimdConst)):
-        return
-    if isinstance(expr, Bitcast):
-        yield from iter_vars(expr.x)
-        return
+    stack: list[Expr] = [expr]
+    seen: set[int] = set()
+    while stack:
+        cur = stack.pop()
+        cur_id = id(cur)
+        if cur_id in seen:
+            continue
+        seen.add(cur_id)
 
-    child_exprs: list[Expr] = []
-    for field_name in getattr(expr, "__dataclass_fields__", {}):
-        value = getattr(expr, field_name)
-        if isinstance(value, (tuple, list)):
-            child_exprs.extend([v for v in value if isinstance(v, EXPR_CLASSES)])
-        elif isinstance(value, EXPR_CLASSES):
-            child_exprs.append(value)
+        if isinstance(cur, Var):
+            yield cur.name
+            continue
+        if isinstance(cur, (BoolConst, BitVecConst, FloatConst, SimdConst)):
+            continue
+        if isinstance(cur, Bitcast):
+            stack.append(cur.x)
+            continue
 
-    for child in child_exprs:
-        yield from iter_vars(child)
+        for field_name in getattr(cur, "__dataclass_fields__", {}):
+            value = getattr(cur, field_name)
+            if isinstance(value, (tuple, list)):
+                for v in value:
+                    if isinstance(v, EXPR_CLASSES):
+                        stack.append(v)
+            elif isinstance(value, EXPR_CLASSES):
+                stack.append(value)
 
 
 def _is_const(expr: Expr) -> bool:

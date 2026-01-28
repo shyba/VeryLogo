@@ -19,6 +19,6 @@ class TestReachabilitySmt(unittest.TestCase):
         )
         validate_tick_ir(ir)
 
-        out = optimize_tick_ir(ir, bound=4)
+        out, _ = optimize_tick_ir(ir, bound=4)
         self.assertEqual(out.state, {})
         self.assertEqual(out.output_exprs["o"], BitVecConst(width=16, value=0x1234))

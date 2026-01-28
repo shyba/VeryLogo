@@ -157,10 +157,130 @@ def list_schedule(
     outputs: list,
     target: TargetModel,
     priority: str = "slack",
+    max_live_pressure: int | None = None,
 ) -> Schedule:
-    """Convenience function for list scheduling."""
+    """Convenience function for list scheduling.
+
+    Args:
+        gates: List of gate tuples
+        input_bits: Number of input bits
+        outputs: List of output tuples
+        target: Target model with latencies and throughput
+        priority: Priority function to use
+        max_live_pressure: Maximum live values allowed during scheduling (None = unlimited)
+    """
+    if max_live_pressure is None:
+        scheduler = ListScheduler(priority_fn=priority)
+        return scheduler.schedule(gates, input_bits, outputs, target)
+
+    num_gates = len(gates)
+    if not gates:
+        return Schedule()
+
+    latencies = target.latencies
+
+    asap = compute_asap(gates, input_bits, latencies)
+    max_depth = max(asap.values()) + max(latencies.values(), default=1) if asap else 1
+    alap = compute_alap(gates, input_bits, outputs, latencies, max_depth)
+    slack = compute_slack(asap, alap)
+
+    deps = compute_dependencies(gates, input_bits, outputs)
+
     scheduler = ListScheduler(priority_fn=priority)
-    return scheduler.schedule(gates, input_bits, outputs, target)
+    priority_values = scheduler._compute_priority(gates, asap, alap, slack, deps)
+
+    schedule = Schedule()
+    scheduled = set()
+    ready_at = {}
+    gate_cycle = {}
+
+    for g in range(num_gates):
+        if not deps.predecessors[g]:
+            ready_at[g] = 0
+
+    def get_current_live_count(cycle: int, include_inputs: bool = True) -> int:
+        """Count values live at given cycle.
+
+        A value is live if it has been computed but not yet consumed by all its uses.
+        """
+        count = input_bits if include_inputs else 0
+
+        for g in scheduled:
+            gate_ready_cycle = gate_cycle[g]
+            if gate_ready_cycle <= cycle:
+                has_future_use = False
+                for succ in deps.successors.get(g, set()):
+                    if succ not in scheduled or gate_cycle.get(succ, cycle + 1) > cycle:
+                        has_future_use = True
+                        break
+
+                is_output = any(out_idx == input_bits + g for out_idx, _ in outputs)
+                if has_future_use or is_output:
+                    count += 1
+
+        return count
+
+    cycle = 0
+    max_cycles = max(max_depth * 2, num_gates + 10)
+
+    while len(scheduled) < num_gates and cycle < max_cycles:
+        ready = [
+            g
+            for g in range(num_gates)
+            if g not in scheduled and g in ready_at and ready_at[g] <= cycle
+        ]
+
+        ready.sort(key=lambda g: priority_values.get(g, 0))
+
+        op_counts: dict[str, int] = {}
+
+        for g in ready:
+            current_live = get_current_live_count(cycle)
+            if current_live + 1 > max_live_pressure:
+                break
+
+            op = gates[g][0]
+            max_throughput = target.max_per_cycle(op)
+            current = op_counts.get(op, 0)
+
+            if current < max_throughput:
+                schedule.gate_cycle[g] = cycle
+                gate_cycle[g] = cycle
+                scheduled.add(g)
+                op_counts[op] = current + 1
+
+                latency = latencies.get(op, 1)
+                result_ready = cycle + latency
+
+                for succ in deps.successors.get(g, set()):
+                    if succ not in ready_at:
+                        all_preds_scheduled = all(
+                            p in scheduled for p in deps.predecessors[succ]
+                        )
+                        if all_preds_scheduled:
+                            pred_ready = 0
+                            for p in deps.predecessors[succ]:
+                                p_cycle = schedule.gate_cycle[p]
+                                p_op = gates[p][0]
+                                p_latency = latencies.get(p_op, 1)
+                                pred_ready = max(pred_ready, p_cycle + p_latency)
+                            ready_at[succ] = pred_ready
+                    else:
+                        node_idx = input_bits + g
+                        succ_gate = gates[succ]
+                        succ_op = succ_gate[0]
+                        if succ_op == "ternary":
+                            succ_operands = succ_gate[1:4]
+                        elif succ_op in ("const", "not", "shl", "lshr"):
+                            succ_operands = [succ_gate[1]]
+                        else:
+                            succ_operands = succ_gate[1:3]
+                        if node_idx in succ_operands:
+                            ready_at[succ] = max(ready_at[succ], result_ready)
+
+        cycle += 1
+
+    return schedule
 
 
 def schedule_circuit(circuit, target: TargetModel, priority: str = "slack") -> Schedule:

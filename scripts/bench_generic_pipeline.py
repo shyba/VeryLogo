@@ -5,13 +5,16 @@ import ctypes
 import json
 import os
 import subprocess
+import sys
 import tempfile
 import time
 from pathlib import Path
 
 
-def _run(cmd: list[str], *, env: dict[str, str] | None = None) -> None:
-    subprocess.run(cmd, check=True, env=env)
+def _run(
+    cmd: list[str], *, env: dict[str, str] | None = None
+) -> subprocess.CompletedProcess:
+    return subprocess.run(cmd, check=True, env=env)
 
 
 def _have_avx2() -> bool:
@@ -159,6 +162,17 @@ def _benchmark_steps_shared(
     }
 
 
+def _have_cuda() -> bool:
+    try:
+        import stc.cuda_driver
+
+        cuda = stc.cuda_driver.Cuda()
+        cuda.init()
+        return cuda.device_count() > 0
+    except Exception:
+        return False
+
+
 def _get_backend_cflags(backend: str) -> tuple[list[str], str]:
     if backend == "x86-avx512":
         if not _have_avx512():
@@ -171,6 +185,10 @@ def _get_backend_cflags(backend: str) -> tuple[list[str], str]:
         if not _have_avx2():
             raise SystemExit("CPU lacks AVX2 support")
         return (["-mavx2"], "avx2")
+    elif backend == "ptx":
+        if not _have_cuda():
+            raise SystemExit("CUDA not available")
+        return ([], "ptx")
     else:
         raise ValueError(f"Unsupported backend: {backend}")
 
@@ -201,62 +219,168 @@ def _get_metrics_from_json(metrics_path: Path) -> dict:
     }
 
 
+def _benchmark_ptx(
+    ptx_code: str,
+    *,
+    input_io_words: int,
+    state_words: int,
+    output_io_words: int,
+    threads: int,
+    block: int,
+    reps: int,
+) -> dict:
+    sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+    from stc.cuda_driver import Cuda
+
+    cuda = Cuda()
+    cuda.init()
+    dev = cuda.device(0)
+    ctx = cuda.ctx_create(dev)
+
+    try:
+        mod = cuda.module_load_ptx(ptx_code)
+        fn = cuda.module_get_function(mod, "stc_eval")
+
+        n = threads
+        h_in = (ctypes.c_uint32 * max(1, n * input_io_words))()
+        h_out = (ctypes.c_uint32 * max(1, n * output_io_words))()
+        h_st0 = (ctypes.c_uint32 * max(1, n * state_words))()
+        h_st1 = (ctypes.c_uint32 * max(1, n * state_words))()
+
+        for i in range(len(h_in)):
+            h_in[i] = ctypes.c_uint32(0)
+        for i in range(len(h_st0)):
+            h_st0[i] = ctypes.c_uint32(0)
+            h_st1[i] = ctypes.c_uint32(0)
+
+        d_in = cuda.mem_alloc(ctypes.sizeof(h_in))
+        d_out = cuda.mem_alloc(ctypes.sizeof(h_out))
+        d_st0 = cuda.mem_alloc(ctypes.sizeof(h_st0))
+        d_st1 = cuda.mem_alloc(ctypes.sizeof(h_st1))
+
+        try:
+            cuda.memcpy_htod(d_in, h_in, ctypes.sizeof(h_in))
+            cuda.memcpy_htod(d_out, h_out, ctypes.sizeof(h_out))
+            cuda.memcpy_htod(d_st0, h_st0, ctypes.sizeof(h_st0))
+            cuda.memcpy_htod(d_st1, h_st1, ctypes.sizeof(h_st1))
+
+            def launch() -> None:
+                arg_in = ctypes.c_uint64(d_in)
+                arg_st_in = ctypes.c_uint64(d_st0)
+                arg_out = ctypes.c_uint64(d_out)
+                arg_st_out = ctypes.c_uint64(d_st1)
+                arg_n = ctypes.c_uint32(n)
+                kernel_args = [
+                    ctypes.cast(ctypes.byref(arg_in), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_st_in), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_out), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_st_out), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_n), ctypes.c_void_p),
+                ]
+                grid = ((n + block - 1) // block, 1, 1)
+                cuda.launch_async(fn, grid, (block, 1, 1), kernel_args)
+
+            launch()
+            cuda.synchronize()
+
+            times = []
+            for _ in range(reps):
+                t0 = time.perf_counter()
+                launch()
+                cuda.synchronize()
+                t1 = time.perf_counter()
+                times.append(t1 - t0)
+
+            min_time = min(times)
+            avg_time = sum(times) / len(times)
+            throughput = threads / min_time if min_time > 0 else 0
+
+            return {
+                "time_per_iter_us": (min_time * 1e6),
+                "throughput_evals_per_s": throughput,
+                "total_time_s": avg_time,
+                "min_time_s": min_time,
+                "avg_time_s": avg_time,
+            }
+        finally:
+            cuda.mem_free(d_in)
+            cuda.mem_free(d_out)
+            cuda.mem_free(d_st0)
+            cuda.mem_free(d_st1)
+    finally:
+        cuda.ctx_destroy(ctx)
+
+
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     ap = argparse.ArgumentParser(
         description="Generic benchmark harness for VeryLogo pipeline"
     )
-    ap.add_argument("--input", type=Path, required=True, help="Input Verilog or JSON")
+    ap.add_argument("--case", type=str, help="Case name (e.g., vec_add)")
+    ap.add_argument(
+        "--input", type=Path, help="Input Verilog or JSON (alternative to --case)"
+    )
     ap.add_argument("--top", type=str, default=None, help="Top module name")
     ap.add_argument(
         "--backend",
         type=str,
         default="x86-avx512",
-        choices=["x86-avx512", "x86-avx2"],
+        choices=["x86-avx512", "x86-avx2", "ptx"],
         help="Target backend (default: x86-avx512)",
     )
     ap.add_argument(
-        "--steps", type=int, default=1000, help="Number of steps per iteration"
+        "--steps",
+        type=int,
+        default=1000,
+        help="Number of steps per iteration (CPU only)",
     )
-    ap.add_argument("--iters", type=int, default=100, help="Number of iterations")
+    ap.add_argument("--reps", type=int, default=100, help="Number of repetitions")
     ap.add_argument(
-        "--output", type=Path, default=None, help="Output JSON file (optional)"
+        "--threads", type=int, default=1048576, help="Number of threads (PTX only)"
     )
+    ap.add_argument("--block", type=int, default=256, help="Block size (PTX only)")
     ap.add_argument(
         "--bound", type=int, default=8, help="Bound for equivalence checking"
     )
     ap.add_argument(
         "--no-compile", action="store_true", help="Skip compilation, only benchmark"
     )
-    ap.add_argument(
-        "--work-dir", type=Path, default=None, help="Working directory (default: tmp)"
-    )
     return ap.parse_args(argv)
 
 
 def main() -> int:
-    import sys
-
     args = parse_args(sys.argv[1:])
 
-    if not args.input.exists():
-        raise SystemExit(f"Input file not found: {args.input}")
+    if args.case and args.input:
+        raise SystemExit("Cannot specify both --case and --input")
+    if not args.case and not args.input:
+        raise SystemExit("Must specify either --case or --input")
+
+    if args.case:
+        input_path = Path(f"fixtures/verilog_stress/{args.case}.v")
+        if not input_path.exists():
+            raise SystemExit(f"Fixture not found: {input_path}")
+        top_module = args.top if args.top else args.case
+        design_name = args.case
+        out_dir = Path(f"out/{args.case}")
+        out_dir.mkdir(parents=True, exist_ok=True)
+        output_json = out_dir / "bench.json"
+        cleanup = False
+    else:
+        input_path = args.input
+        if not input_path.exists():
+            raise SystemExit(f"Input file not found: {input_path}")
+        top_module = args.top
+        design_name = input_path.stem
+        work_dir = Path(tempfile.mkdtemp(prefix="stc_bench_"))
+        out_dir = work_dir / "out"
+        out_dir.mkdir(exist_ok=True)
+        output_json = None
+        cleanup = True
 
     python = os.environ.get("PYTHON", ".venv/bin/python")
     cflags, target = _get_backend_cflags(args.backend)
 
-    if args.work_dir is not None:
-        work_dir = args.work_dir
-        work_dir.mkdir(parents=True, exist_ok=True)
-        cleanup = False
-    else:
-        work_dir = Path(tempfile.mkdtemp(prefix="stc_bench_"))
-        cleanup = True
-
     try:
-        out_dir = work_dir / "out"
-        out_dir.mkdir(exist_ok=True)
-
-        design_name = args.input.stem
 
         if not args.no_compile:
             compile_start = time.perf_counter()
@@ -266,7 +390,7 @@ def main() -> int:
                     python,
                     "-m",
                     "stc",
-                    str(args.input),
+                    str(input_path),
                     "--out",
                     str(out_dir),
                     "--backend",
@@ -274,7 +398,7 @@ def main() -> int:
                     "--bound",
                     str(args.bound),
                 ]
-                + (["--top", args.top] if args.top else []),
+                + (["--top", top_module] if top_module else []),
                 env={**os.environ, "PYTHONPATH": "."},
             )
 
@@ -283,91 +407,177 @@ def main() -> int:
         else:
             compile_time = 0.0
 
-        c_path_packed = out_dir / f"circuit_{target}_u64.c"
-        c_path_bitsliced = out_dir / f"circuit_{target}.c"
+        if args.backend == "ptx":
+            ptx_path = out_dir / "circuit.ptx"
+            if not ptx_path.exists():
+                raise SystemExit(f"Generated PTX file not found: {ptx_path}")
 
-        if c_path_packed.exists():
-            c_path = c_path_packed
-            layout_path = out_dir / "packed_word_layout.json"
-            layout = json.loads(layout_path.read_text(encoding="utf-8"))
-            input_io_words, output_io_words = _parse_circuit_offsets(c_path)
-            total_input_words = int(layout["input_words"])
-            total_output_words = int(layout["output_words"])
-            input_io_bits = input_io_words
-            state_bits = total_input_words - input_io_words
-            output_io_bits = output_io_words
-        elif c_path_bitsliced.exists():
-            c_path = c_path_bitsliced
-            layout_path = out_dir / "io_layout.json"
-            layout = json.loads(layout_path.read_text(encoding="utf-8"))
-            input_io_bits = sum(int(v["width"]) for v in layout["inputs"].values())
-            state_bits = sum(int(v["width"]) for v in layout["state"].values())
-            output_io_bits = sum(int(v["width"]) for v in layout["outputs"].values())
-        else:
-            raise SystemExit(
-                f"Generated C file not found: {c_path_bitsliced} or {c_path_packed}"
+            ptx_code = ptx_path.read_text(encoding="utf-8")
+
+            def _words_for_width(w: int) -> int:
+                return (w + 31) // 32
+
+            io_layout_path = out_dir / "io_layout.json"
+            if io_layout_path.exists():
+                layout = json.loads(io_layout_path.read_text(encoding="utf-8"))
+                input_io_bits = sum(int(v["width"]) for v in layout["inputs"].values())
+                state_bits = sum(int(v["width"]) for v in layout["state"].values())
+                output_io_bits = sum(
+                    int(v["width"]) for v in layout["outputs"].values()
+                )
+                input_io_words = (
+                    _words_for_width(input_io_bits) if input_io_bits > 0 else 0
+                )
+                state_words = _words_for_width(state_bits) if state_bits > 0 else 0
+                output_io_words = (
+                    _words_for_width(output_io_bits) if output_io_bits > 0 else 0
+                )
+            else:
+                raise SystemExit(f"Layout file not found: {io_layout_path}")
+
+            print(f"Design: {design_name}")
+            print(f"Backend: {args.backend}")
+            print(f"Input words: {input_io_words}")
+            print(f"State words: {state_words}")
+            print(f"Output words: {output_io_words}")
+            print(f"Threads: {args.threads}")
+            print(f"Block size: {args.block}")
+            print(f"Repetitions: {args.reps}")
+            if not args.no_compile:
+                print(f"Compilation time: {compile_time:.2f}s")
+            print()
+
+            bench_results = _benchmark_ptx(
+                ptx_code,
+                input_io_words=input_io_words,
+                state_words=state_words,
+                output_io_words=output_io_words,
+                threads=args.threads,
+                block=args.block,
+                reps=args.reps,
             )
 
-        so_path = c_path.with_suffix(".so")
-        _build_shared(c_path, so_path, cflags=cflags)
-        lib = ctypes.CDLL(str(so_path))
+            print("Benchmark Results:")
+            print(f"  Time per iteration: {bench_results['time_per_iter_us']:.3f} us")
+            print(
+                f"  Throughput: {bench_results['throughput_evals_per_s']:.0f} evals/s"
+            )
+            print(f"  Min time: {bench_results['min_time_s']:.6f}s")
+            print(f"  Avg time: {bench_results['avg_time_s']:.6f}s")
 
-        print(f"Design: {design_name}")
-        print(f"Backend: {args.backend}")
-        print(f"Input bits: {input_io_bits}")
-        print(f"State bits: {state_bits}")
-        print(f"Output bits: {output_io_bits}")
-        print(f"Steps: {args.steps}")
-        print(f"Iterations: {args.iters}")
-        if not args.no_compile:
-            print(f"Compilation time: {compile_time:.2f}s")
-        print()
+            reduced_metrics = _get_metrics_from_json(out_dir / "reduced_metrics.json")
+            code_size = ptx_path.stat().st_size if ptx_path.exists() else 0
 
-        bench_results = _benchmark_steps_shared(
-            lib,
-            input_io_bits=input_io_bits,
-            state_bits=state_bits,
-            output_io_bits=output_io_bits,
-            steps=args.steps,
-            iters=args.iters,
-        )
+            output_data = {
+                "design": design_name,
+                "backend": args.backend,
+                "threads": args.threads,
+                "block": args.block,
+                "reps": args.reps,
+                "results": bench_results,
+                "compilation": {
+                    "time_s": compile_time,
+                    "gates": reduced_metrics.get("gates", 0),
+                    "depth": reduced_metrics.get("depth", 0),
+                    "nodes": reduced_metrics.get("nodes", 0),
+                    "code_size_bytes": code_size,
+                },
+                "layout": {
+                    "input_words": input_io_words,
+                    "state_words": state_words,
+                    "output_words": output_io_words,
+                },
+            }
+        else:
+            c_path_packed = out_dir / f"circuit_{target}_u64.c"
+            c_path_bitsliced = out_dir / f"circuit_{target}.c"
 
-        print("Benchmark Results:")
-        print(f"  Time per step: {bench_results['time_per_step_us']:.3f} us")
-        print(f"  Throughput: {bench_results['throughput_steps_per_s']:.0f} steps/s")
-        print(f"  Min iteration time: {bench_results['min_time_s']:.6f}s")
-        print(f"  Avg iteration time: {bench_results['avg_time_s']:.6f}s")
+            if c_path_packed.exists():
+                c_path = c_path_packed
+                layout_path = out_dir / "packed_word_layout.json"
+                layout = json.loads(layout_path.read_text(encoding="utf-8"))
+                input_io_words, output_io_words = _parse_circuit_offsets(c_path)
+                total_input_words = int(layout["input_words"])
+                total_output_words = int(layout["output_words"])
+                input_io_bits = input_io_words
+                state_bits = total_input_words - input_io_words
+                output_io_bits = output_io_words
+            elif c_path_bitsliced.exists():
+                c_path = c_path_bitsliced
+                layout_path = out_dir / "io_layout.json"
+                layout = json.loads(layout_path.read_text(encoding="utf-8"))
+                input_io_bits = sum(int(v["width"]) for v in layout["inputs"].values())
+                state_bits = sum(int(v["width"]) for v in layout["state"].values())
+                output_io_bits = sum(
+                    int(v["width"]) for v in layout["outputs"].values()
+                )
+            else:
+                raise SystemExit(
+                    f"Generated C file not found: {c_path_bitsliced} or {c_path_packed}"
+                )
 
-        reduced_metrics = _get_metrics_from_json(out_dir / "reduced_metrics.json")
-        code_size = c_path.stat().st_size if c_path.exists() else 0
+            so_path = c_path.with_suffix(".so")
+            _build_shared(c_path, so_path, cflags=cflags)
+            lib = ctypes.CDLL(str(so_path))
 
-        output_data = {
-            "design": design_name,
-            "backend": args.backend,
-            "steps": args.steps,
-            "iters": args.iters,
-            "results": bench_results,
-            "compilation": {
-                "time_s": compile_time,
-                "gates": reduced_metrics.get("gates", 0),
-                "depth": reduced_metrics.get("depth", 0),
-                "nodes": reduced_metrics.get("nodes", 0),
-                "code_size_bytes": code_size,
-            },
-            "layout": {
-                "input_bits": input_io_bits,
-                "state_bits": state_bits,
-                "output_bits": output_io_bits,
-            },
-        }
+            print(f"Design: {design_name}")
+            print(f"Backend: {args.backend}")
+            print(f"Input bits: {input_io_bits}")
+            print(f"State bits: {state_bits}")
+            print(f"Output bits: {output_io_bits}")
+            print(f"Steps: {args.steps}")
+            print(f"Repetitions: {args.reps}")
+            if not args.no_compile:
+                print(f"Compilation time: {compile_time:.2f}s")
+            print()
 
-        if args.output:
-            args.output.parent.mkdir(parents=True, exist_ok=True)
-            args.output.write_text(
+            bench_results = _benchmark_steps_shared(
+                lib,
+                input_io_bits=input_io_bits,
+                state_bits=state_bits,
+                output_io_bits=output_io_bits,
+                steps=args.steps,
+                iters=args.reps,
+            )
+
+            print("Benchmark Results:")
+            print(f"  Time per step: {bench_results['time_per_step_us']:.3f} us")
+            print(
+                f"  Throughput: {bench_results['throughput_steps_per_s']:.0f} steps/s"
+            )
+            print(f"  Min time: {bench_results['min_time_s']:.6f}s")
+            print(f"  Avg time: {bench_results['avg_time_s']:.6f}s")
+
+            reduced_metrics = _get_metrics_from_json(out_dir / "reduced_metrics.json")
+            code_size = c_path.stat().st_size if c_path.exists() else 0
+
+            output_data = {
+                "design": design_name,
+                "backend": args.backend,
+                "steps": args.steps,
+                "reps": args.reps,
+                "results": bench_results,
+                "compilation": {
+                    "time_s": compile_time,
+                    "gates": reduced_metrics.get("gates", 0),
+                    "depth": reduced_metrics.get("depth", 0),
+                    "nodes": reduced_metrics.get("nodes", 0),
+                    "code_size_bytes": code_size,
+                },
+                "layout": {
+                    "input_bits": input_io_bits,
+                    "state_bits": state_bits,
+                    "output_bits": output_io_bits,
+                },
+            }
+
+        if output_json:
+            output_json.parent.mkdir(parents=True, exist_ok=True)
+            output_json.write_text(
                 json.dumps(output_data, indent=2, sort_keys=True) + "\n",
                 encoding="utf-8",
             )
-            print(f"\nResults written to: {args.output}")
+            print(f"\nResults written to: {output_json}")
 
     finally:
         if cleanup:

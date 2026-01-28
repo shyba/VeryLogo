@@ -170,10 +170,10 @@ class TestExtract(unittest.TestCase):
             yosys = load_design(p)
 
         ir = extract_tick_ir(yosys)
-        self.assertNotIn("rst", ir.inputs)
+        self.assertIn("rst", ir.inputs)
         state = reset_state(ir)
         self.assertTrue(next(iter(state.state.values())))
-        state1, out0 = tick(ir, state, {"i": 0})
+        state1, out0 = tick(ir, state, {"rst": False, "i": 0})
         self.assertEqual(out0["o"], 0)
-        _, out1 = tick(ir, state1, {"i": 0})
+        _, out1 = tick(ir, state1, {"rst": False, "i": 0})
         self.assertEqual(out1["o"], 1)

@@ -1,19 +1,26 @@
 from __future__ import annotations
 
+import os
+import sys
+from collections import defaultdict
 from dataclasses import dataclass
 
 from stc.packed_circuit import PackedCircuitState, PackedGate
 from stc.interp import infer_type
 from stc.tick_ir import (
+    Add,
     And,
     BitVecConst,
     BitVecType,
     BoolConst,
     BoolType,
     Concat,
+    Div,
     Eq,
     Expr,
+    Ult,
     LShr,
+    Mul,
     Mux,
     Not,
     Or,
@@ -21,6 +28,7 @@ from stc.tick_ir import (
     Rotr,
     Shl,
     Slice,
+    Sub,
     TickIR,
     Type,
     Var,
@@ -83,6 +91,41 @@ WORD_MASK = (1 << WORD_BITS) - 1
 
 def _ceil_div(a: int, b: int) -> int:
     return (a + b - 1) // b
+
+
+@dataclass
+class GateStats:
+    total_gates: int = 0
+    expr_gate_counts: dict[str, int] = None
+    large_expressions: list[tuple[str, int]] = None
+
+    def __post_init__(self):
+        if self.expr_gate_counts is None:
+            self.expr_gate_counts = defaultdict(int)
+        if self.large_expressions is None:
+            self.large_expressions = []
+
+
+@dataclass
+class MemoStats:
+    hits: int = 0
+    misses: int = 0
+    hits_by_type: dict[str, int] = None
+    misses_by_type: dict[str, int] = None
+
+    def __post_init__(self):
+        if self.hits_by_type is None:
+            self.hits_by_type = defaultdict(int)
+        if self.misses_by_type is None:
+            self.misses_by_type = defaultdict(int)
+
+    def hit_rate(self) -> float:
+        total = self.hits + self.misses
+        return self.hits / total if total > 0 else 0.0
+
+    def hit_rate_by_type(self, expr_type: str) -> float:
+        total = self.hits_by_type[expr_type] + self.misses_by_type[expr_type]
+        return self.hits_by_type[expr_type] / total if total > 0 else 0.0
 
 
 def lower_tick_ir_to_packed_circuit_state(
@@ -175,6 +218,9 @@ def lower_tick_ir_to_packed_circuit_state(
         add_var_words(name, st_offsets[name], width_bits(ir.state[name]))
 
     gates: list[PackedGate] = []
+    memo: dict[int, tuple[list[int], int]] = {}
+    gate_stats = GateStats()
+    memo_stats = MemoStats()
 
     def emit_const_u64(val: int) -> int:
         gates.append(("const", int(val) & WORD_MASK, 0))
@@ -217,23 +263,68 @@ def lower_tick_ir_to_packed_circuit_state(
         """
         Returns (word_nodes_le, width_bits), where word_nodes_le[0] is bits [0..63].
         """
+        eid = id(e)
+        expr_type = type(e).__name__
+        cached = memo.get(eid)
+        if cached is not None:
+            memo_stats.hits += 1
+            memo_stats.hits_by_type[expr_type] += 1
+            ws, w = cached
+            return (list(ws), int(w))
+
+        memo_stats.misses += 1
+        memo_stats.misses_by_type[expr_type] += 1
+        gates_before = len(gates)
+
+        def _track_and_return(result: tuple[list[int], int]) -> tuple[list[int], int]:
+            gates_after = len(gates)
+            gate_delta = gates_after - gates_before
+            gate_stats.total_gates += gate_delta
+            gate_stats.expr_gate_counts[expr_type] += gate_delta
+            if gate_delta > 1000:
+                print(
+                    f"WARNING: {expr_type} generated {gate_delta} gates",
+                    file=sys.stderr,
+                )
+                gate_stats.large_expressions.append((expr_type, gate_delta))
+            return result
+
+        def _truncate(words_le: list[int], width_b: int) -> tuple[list[int], int]:
+            if width_b <= 0:
+                return (words_le, width_b)
+            top = width_b % WORD_BITS
+            if top == 0:
+                return (words_le, width_b)
+            mask = (1 << top) - 1
+            words_le = list(words_le)
+            words_le[-1] = emit_bin("and", words_le[-1], emit_const_u64(mask))
+            return (words_le, width_b)
+
         if isinstance(e, Var):
             ws, w = get_var_words(e)
-            return (list(ws), w)
+            out = _truncate(list(ws), w)
+            memo[eid] = (list(out[0]), int(out[1]))
+            return _track_and_return(out)
         if isinstance(e, BoolConst):
             node = emit_const_u64(1 if e.value else 0)
-            return ([node], 1)
+            out = _truncate([node], 1)
+            memo[eid] = (list(out[0]), int(out[1]))
+            return _track_and_return(out)
         if isinstance(e, BitVecConst):
             nwords = _ceil_div(e.width, WORD_BITS)
             out: list[int] = []
             for i in range(nwords):
                 chunk = (e.value >> (i * WORD_BITS)) & WORD_MASK
                 out.append(emit_const_u64(chunk))
-            return (out, e.width)
+            res = _truncate(out, e.width)
+            memo[eid] = (list(res[0]), int(res[1]))
+            return _track_and_return(res)
         if isinstance(e, Not):
             ws, w = lower_expr_to_words(e.x)
             out = [emit_unary("not", wi) for wi in ws]
-            return (out, w)
+            res = _truncate(out, w)
+            memo[eid] = (list(res[0]), int(res[1]))
+            return _track_and_return(res)
         if isinstance(e, (And, Or, Xor)):
             wa, aw = lower_expr_to_words(e.a)  # type: ignore[attr-defined]
             wb, bw = lower_expr_to_words(e.b)  # type: ignore[attr-defined]
@@ -245,7 +336,29 @@ def lower_tick_ir_to_packed_circuit_state(
                 )
             op = "and" if isinstance(e, And) else "or" if isinstance(e, Or) else "xor"
             out = [emit_bin(op, wa[i], wb[i]) for i in range(len(wa))]
-            return (out, aw)
+            res = _truncate(out, aw)
+            memo[eid] = (list(res[0]), int(res[1]))
+            return _track_and_return(res)
+        if isinstance(e, Ult):
+            wa, aw = lower_expr_to_words(e.a)
+            wb, bw = lower_expr_to_words(e.b)
+            if aw != bw:
+                raise PackedLoweringError("width mismatch in ult")
+            if aw > WORD_BITS:
+                raise PackedLoweringError(
+                    "ult >64 bits not supported in packed lowering yet"
+                )
+            if aw < WORD_BITS:
+                m = (1 << aw) - 1
+                wa0 = emit_bin("and", wa[0], emit_const_u64(m))
+                wb0 = emit_bin("and", wb[0], emit_const_u64(m))
+            else:
+                wa0 = wa[0]
+                wb0 = wb[0]
+            out = [emit_bin("ult", wa0, wb0)]
+            res = _truncate(out, 1)
+            memo[eid] = (list(res[0]), int(res[1]))
+            return _track_and_return(res)
         if isinstance(e, Slice):
             src_words, src_w = lower_expr_to_words(e.x)
             if e.offset < 0 or e.width < 1 or e.offset + e.width > src_w:
@@ -258,7 +371,36 @@ def lower_tick_ir_to_packed_circuit_state(
             if e.offset % WORD_BITS == 0 and e.width % WORD_BITS == 0:
                 start = e.offset // WORD_BITS
                 nwords = e.width // WORD_BITS
-                return (src_words[start : start + nwords], e.width)
+                res = (src_words[start : start + nwords], e.width)
+                memo[eid] = (list(res[0]), int(res[1]))
+                return _track_and_return(res)
+            # Fast path: single-word slice (fits in one 64-bit word).
+            word_i = e.offset // WORD_BITS
+            bit_end = e.offset + e.width
+            word_i_end = (bit_end - 1) // WORD_BITS if bit_end > 0 else word_i
+            if e.width <= WORD_BITS and word_i == word_i_end:
+                # Slice fits entirely within one source word.
+                bit_off = e.offset % WORD_BITS
+                src_word = (
+                    src_words[word_i] if word_i < len(src_words) else emit_const_u64(0)
+                )
+                if bit_off == 0 and e.width == WORD_BITS:
+                    # Full word extraction
+                    res = ([src_word], e.width)
+                    memo[eid] = (list(res[0]), int(res[1]))
+                    return _track_and_return(res)
+                # Shift right to align bits to LSB, then mask.
+                shifted = (
+                    emit_shift("lshr", src_word, bit_off) if bit_off > 0 else src_word
+                )
+                if e.width < WORD_BITS:
+                    mask = (1 << e.width) - 1
+                    masked = emit_bin("and", shifted, emit_const_u64(mask))
+                    res = ([masked], e.width)
+                else:
+                    res = ([shifted], e.width)
+                memo[eid] = (list(res[0]), int(res[1]))
+                return _track_and_return(res)
             # Multi-word unaligned slice: word-by-word gather.
             bit_off = e.offset
             word_i = bit_off // WORD_BITS
@@ -271,7 +413,9 @@ def lower_tick_ir_to_packed_circuit_state(
                     top_bits = e.width % WORD_BITS
                     mask = (1 << top_bits) - 1
                     out[-1] = emit_bin("and", out[-1], emit_const_u64(mask))
-                return (out, e.width)
+                res = (out, e.width)
+                memo[eid] = (list(res[0]), int(res[1]))
+                return _track_and_return(res)
             # Unaligned: gather bits from multiple source words.
             zeros_node = emit_const_u64(0)
 
@@ -294,7 +438,9 @@ def lower_tick_ir_to_packed_circuit_state(
                 top_bits = e.width % WORD_BITS
                 mask = (1 << top_bits) - 1
                 out[-1] = emit_bin("and", out[-1], emit_const_u64(mask))
-            return (out, e.width)
+            res = (out, e.width)
+            memo[eid] = (list(res[0]), int(res[1]))
+            return _track_and_return(res)
         if isinstance(e, Concat):
             parts: list[tuple[list[int], int]] = [
                 lower_expr_to_words(p) for p in e.parts
@@ -305,38 +451,38 @@ def lower_tick_ir_to_packed_circuit_state(
                 out_words: list[int] = []
                 for ws, _w in reversed(parts):
                     out_words.extend(ws)
-                return (out_words, total_w)
+                res = (out_words, total_w)
+                memo[eid] = (list(res[0]), int(res[1]))
+                return _track_and_return(res)
             # General case: pack mixed-width parts across word boundaries.
             # Concat semantics: parts[0] is MSB, parts[-1] is LSB.
             # We build output words LSB-first, so process parts in reverse.
+            # Optimization: process words at a time instead of bits.
             out_words: list[int] = []
             current_word = emit_const_u64(0)
             bits_in_current = 0
             for ws, part_width in reversed(parts):
-                # Extract bits from this part and pack into output words.
+                # Process this part word-by-word instead of bit-by-bit.
+                part_word_idx = 0
                 part_bit_offset = 0
                 while part_bit_offset < part_width:
                     bits_remaining_in_part = part_width - part_bit_offset
                     space_in_current = WORD_BITS - bits_in_current
-                    bits_to_copy = min(bits_remaining_in_part, space_in_current)
-                    # Extract bits_to_copy from part starting at part_bit_offset.
-                    part_word_idx = part_bit_offset // WORD_BITS
+                    # Determine how many bits to extract from current source word.
                     bit_offset_in_word = part_bit_offset % WORD_BITS
-                    src_word = ws[part_word_idx]
+                    bits_avail_in_src_word = WORD_BITS - bit_offset_in_word
+                    bits_to_copy = min(
+                        bits_remaining_in_part, space_in_current, bits_avail_in_src_word
+                    )
+                    # Extract bits_to_copy from source word.
+                    src_word = (
+                        ws[part_word_idx]
+                        if part_word_idx < len(ws)
+                        else emit_const_u64(0)
+                    )
                     # Shift right to align the bits we want to the LSB.
                     if bit_offset_in_word > 0:
                         src_word = emit_shift("lshr", src_word, bit_offset_in_word)
-                    # If we need bits spanning two words, merge them.
-                    if (
-                        bit_offset_in_word + bits_to_copy > WORD_BITS
-                        and part_word_idx + 1 < len(ws)
-                    ):
-                        next_word = ws[part_word_idx + 1]
-                        carry_bits = bit_offset_in_word + bits_to_copy - WORD_BITS
-                        carry = emit_shift(
-                            "shl", next_word, WORD_BITS - bit_offset_in_word
-                        )
-                        src_word = emit_bin("or", src_word, carry)
                     # Mask to extract exactly bits_to_copy.
                     if bits_to_copy < WORD_BITS:
                         mask = (1 << bits_to_copy) - 1
@@ -347,7 +493,10 @@ def lower_tick_ir_to_packed_circuit_state(
                     current_word = emit_bin("or", current_word, src_word)
                     bits_in_current += bits_to_copy
                     part_bit_offset += bits_to_copy
-                    # If current word is full, emit it and start a new one.
+                    # Move to next source word if we consumed all bits from current word.
+                    if (part_bit_offset % WORD_BITS) == 0:
+                        part_word_idx += 1
+                    # If current output word is full, emit it and start a new one.
                     if bits_in_current == WORD_BITS:
                         out_words.append(current_word)
                         current_word = emit_const_u64(0)
@@ -355,7 +504,9 @@ def lower_tick_ir_to_packed_circuit_state(
             # Emit final partial word if any bits remain.
             if bits_in_current > 0:
                 out_words.append(current_word)
-            return (out_words, total_w)
+            res = (out_words, total_w)
+            memo[eid] = (list(res[0]), int(res[1]))
+            return _track_and_return(res)
         if isinstance(e, (Shl, LShr)):
             wa, aw = lower_expr_to_words(e.a)
             shift_expr = e.b
@@ -373,11 +524,15 @@ def lower_tick_ir_to_packed_circuit_state(
                     subexpression_context=f"{type(e).__name__} by {sh}",
                 )
             if sh == 0:
-                return (wa, aw)
+                res = (wa, aw)
+                memo[eid] = (list(res[0]), int(res[1]))
+                return _track_and_return(res)
             if sh >= aw:
                 # shift out completely
                 zeros = [emit_const_u64(0) for _ in range(_ceil_div(aw, WORD_BITS))]
-                return (zeros, aw)
+                res = (zeros, aw)
+                memo[eid] = (list(res[0]), int(res[1]))
+                return _track_and_return(res)
             word_shift = sh // WORD_BITS
             inner = sh % WORD_BITS
             nwords = _ceil_div(aw, WORD_BITS)
@@ -416,7 +571,7 @@ def lower_tick_ir_to_packed_circuit_state(
                 top_bits = aw % WORD_BITS
                 mask = (1 << top_bits) - 1
                 out[-1] = emit_bin("and", out[-1], emit_const_u64(mask))
-            return (out, aw)
+            return _track_and_return((out, aw))
         if isinstance(e, (Rotl, Rotr)):
             wa, aw = lower_expr_to_words(e.x)
             sh_expr = e.sh
@@ -428,7 +583,9 @@ def lower_tick_ir_to_packed_circuit_state(
                 )
             sh = int(sh_expr.value) % aw
             if sh == 0:
-                return (wa, aw)
+                res = (wa, aw)
+                memo[eid] = (list(res[0]), int(res[1]))
+                return _track_and_return(res)
             # Implement rotate using: rotl(x, k) = (x << k) | (x >> (n-k))
             # For rotr, swap the shift amounts.
             if isinstance(e, Rotl):
@@ -484,7 +641,7 @@ def lower_tick_ir_to_packed_circuit_state(
                 top_bits = aw % WORD_BITS
                 mask = (1 << top_bits) - 1
                 out[-1] = emit_bin("and", out[-1], emit_const_u64(mask))
-            return (out, aw)
+            return _track_and_return((out, aw))
         if isinstance(e, Eq):
             wa, aw = lower_expr_to_words(e.a)
             wb, bw = lower_expr_to_words(e.b)
@@ -534,7 +691,7 @@ def lower_tick_ir_to_packed_circuit_state(
             sign_bit = emit_shift("lshr", or_neg, 63)
             one = emit_const_u64(1)
             result = emit_bin("xor", sign_bit, one)
-            return ([result], 1)
+            return _track_and_return(([result], 1))
         if isinstance(e, Mux):
             cond_words, cond_w = lower_expr_to_words(e.cond)
             if cond_w != 1:
@@ -565,7 +722,112 @@ def lower_tick_ir_to_packed_circuit_state(
                 masked_b = emit_bin("and", not_mask, b_words[i])
                 merged = emit_bin("or", masked_a, masked_b)
                 result_words.append(merged)
-            return (result_words, a_w)
+            return _track_and_return((result_words, a_w))
+        if isinstance(e, (Add, Sub)):
+            wa, aw = lower_expr_to_words(e.a)
+            wb, bw = lower_expr_to_words(e.b)
+            if aw != bw:
+                raise PackedLoweringError(
+                    message=f"width mismatch in {type(e).__name__}: {aw} vs {bw}",
+                    expression_type=type(e).__name__,
+                    subexpression_context=f"{type(e).__name__} with widths {aw} and {bw}",
+                )
+            # Multiword add/sub with carry/borrow propagation.
+            result_words: list[int] = []
+            carry = emit_const_u64(0)
+
+            if isinstance(e, Add):
+                for i in range(len(wa)):
+                    # Compute a[i] + b[i] + carry
+                    temp = emit_bin("add", wa[i], wb[i])
+                    result = emit_bin("add", temp, carry)
+                    result_words.append(result)
+                    # Detect carry-out using: carry = ((a & b) | ((a ^ b) & ~sum)) >> 63
+                    # But we need to account for the carry-in too.
+                    # carry_from_ab = ((a & b) | ((a ^ b) & ~temp)) >> 63
+                    # carry_from_temp_cin = ((temp & cin) | ((temp ^ cin) & ~result)) >> 63
+                    # carry_out = carry_from_ab | carry_from_temp_cin
+                    if i < len(wa) - 1:
+                        # Carry from a[i] + b[i]
+                        a_and_b = emit_bin("and", wa[i], wb[i])
+                        a_xor_b = emit_bin("xor", wa[i], wb[i])
+                        not_temp = emit_unary("not", temp)
+                        term1 = emit_bin("and", a_xor_b, not_temp)
+                        carry_ab = emit_bin("or", a_and_b, term1)
+                        carry_ab_bit = emit_shift("lshr", carry_ab, 63)
+                        # Carry from temp + carry_in
+                        temp_and_cin = emit_bin("and", temp, carry)
+                        temp_xor_cin = emit_bin("xor", temp, carry)
+                        not_result = emit_unary("not", result)
+                        term2 = emit_bin("and", temp_xor_cin, not_result)
+                        carry_cin = emit_bin("or", temp_and_cin, term2)
+                        carry_cin_bit = emit_shift("lshr", carry_cin, 63)
+                        # Combine carries
+                        carry = emit_bin("or", carry_ab_bit, carry_cin_bit)
+            else:
+                for i in range(len(wa)):
+                    # Compute a[i] - b[i] - borrow
+                    temp = emit_bin("sub", wa[i], wb[i])
+                    result = emit_bin("sub", temp, carry)
+                    result_words.append(result)
+                    # Detect borrow-out using: borrow = ((~a & b) | ((~a ^ b) & sum)) >> 63
+                    # borrow_from_ab = ((~a & b) | ((~a ^ b) & temp)) >> 63
+                    # borrow_from_temp_cin = ((~temp & borrow) | ((~temp ^ borrow) & result)) >> 63
+                    # borrow_out = borrow_from_ab | borrow_from_temp_cin
+                    if i < len(wa) - 1:
+                        # Borrow from a[i] - b[i]
+                        not_a = emit_unary("not", wa[i])
+                        not_a_and_b = emit_bin("and", not_a, wb[i])
+                        not_a_xor_b = emit_bin("xor", not_a, wb[i])
+                        term1 = emit_bin("and", not_a_xor_b, temp)
+                        borrow_ab = emit_bin("or", not_a_and_b, term1)
+                        borrow_ab_bit = emit_shift("lshr", borrow_ab, 63)
+                        # Borrow from temp - borrow_in
+                        not_temp = emit_unary("not", temp)
+                        not_temp_and_cin = emit_bin("and", not_temp, carry)
+                        not_temp_xor_cin = emit_bin("xor", not_temp, carry)
+                        term2 = emit_bin("and", not_temp_xor_cin, result)
+                        borrow_cin = emit_bin("or", not_temp_and_cin, term2)
+                        borrow_cin_bit = emit_shift("lshr", borrow_cin, 63)
+                        # Combine borrows
+                        carry = emit_bin("or", borrow_ab_bit, borrow_cin_bit)
+
+            # Mask the top word if width not multiple of 64
+            if aw % WORD_BITS:
+                top_bits = aw % WORD_BITS
+                mask = (1 << top_bits) - 1
+                result_words[-1] = emit_bin(
+                    "and", result_words[-1], emit_const_u64(mask)
+                )
+            return _track_and_return((result_words, aw))
+
+        if isinstance(e, Mul):
+            # Try to infer width for better error message
+            width = None
+            if isinstance(e.a, Var) and e.a.name in var_widths:
+                width = var_widths[e.a.name]
+            elif isinstance(e.a, BitVecConst):
+                width = e.a.width
+            width_str = str(width) if width else "unknown"
+            raise PackedLoweringError(
+                message=f"Mul with width {width_str} not supported in packed lowering. Suggestion: Use power-of-2 constants (will be reduced to shifts by classification pass) or pre-map multiplication in Verilog synthesis.",
+                expression_type="Mul",
+                subexpression_context=f"Mul operation with {width_str}-bit operands",
+            )
+
+        if isinstance(e, Div):
+            # Try to infer width for better error message
+            width = None
+            if isinstance(e.a, Var) and e.a.name in var_widths:
+                width = var_widths[e.a.name]
+            elif isinstance(e.a, BitVecConst):
+                width = e.a.width
+            width_str = str(width) if width else "unknown"
+            raise PackedLoweringError(
+                message=f"Div with width {width_str} not supported in packed lowering. Suggestion: Use power-of-2 constants (will be reduced to LShr by classification pass) or pre-map division in Verilog synthesis.",
+                expression_type="Div",
+                subexpression_context=f"Div operation with {width_str}-bit operands",
+            )
 
         raise PackedLoweringError(
             message=f"unsupported expression for packed lowering: {type(e).__name__}",
@@ -609,4 +871,80 @@ def lower_tick_ir_to_packed_circuit_state(
         gates=tuple(gates),
         outputs=tuple(output_nodes),
     )
+
+    debug_enabled = os.environ.get("STC_DEBUG_GATE_EXPLOSION", "") in {
+        "1",
+        "true",
+        "TRUE",
+    }
+
+    if debug_enabled:
+        print(f"\n=== Packed Lowering Gate Statistics ===", file=sys.stderr)
+        print(f"Total gates generated: {len(gates)}", file=sys.stderr)
+        print(f"Total gates tracked: {gate_stats.total_gates}", file=sys.stderr)
+
+        if gate_stats.expr_gate_counts:
+            sorted_expr_types = sorted(
+                gate_stats.expr_gate_counts.items(), key=lambda x: x[1], reverse=True
+            )
+            print(f"\nTop 5 expression types by gate count:", file=sys.stderr)
+            for expr_type, count in sorted_expr_types[:5]:
+                print(f"  {expr_type}: {count} gates", file=sys.stderr)
+
+        if gate_stats.large_expressions:
+            print(f"\nExpressions that generated > 1000 gates:", file=sys.stderr)
+            for expr_type, count in gate_stats.large_expressions:
+                print(f"  {expr_type}: {count} gates", file=sys.stderr)
+
+        print(f"=====================================\n", file=sys.stderr)
+
+        print(f"\n=== Memoization Statistics ===", file=sys.stderr)
+        print(
+            f"Total expressions lowered: {memo_stats.hits + memo_stats.misses}",
+            file=sys.stderr,
+        )
+        print(f"Memo hits: {memo_stats.hits}", file=sys.stderr)
+        print(f"Memo misses: {memo_stats.misses}", file=sys.stderr)
+        print(f"Hit rate: {memo_stats.hit_rate() * 100:.1f}%", file=sys.stderr)
+
+        if memo_stats.hits > 0:
+            dedup_ratio = (memo_stats.hits + memo_stats.misses) / memo_stats.misses
+            print(f"Deduplication ratio: {dedup_ratio:.1f}x", file=sys.stderr)
+
+        all_types = set(memo_stats.hits_by_type.keys()) | set(
+            memo_stats.misses_by_type.keys()
+        )
+        if all_types:
+            type_stats = []
+            for expr_type in all_types:
+                hits = memo_stats.hits_by_type[expr_type]
+                misses = memo_stats.misses_by_type[expr_type]
+                total = hits + misses
+                hit_rate = hits / total if total > 0 else 0.0
+                type_stats.append((expr_type, hits, misses, total, hit_rate))
+
+            type_stats.sort(key=lambda x: x[3], reverse=True)
+            print(f"\nMemo hit rates by expression type (top 10):", file=sys.stderr)
+            for expr_type, hits, misses, total, hit_rate in type_stats[:10]:
+                print(
+                    f"  {expr_type}: {hits}/{total} hits ({hit_rate * 100:.1f}%)",
+                    file=sys.stderr,
+                )
+
+        print(f"==============================\n", file=sys.stderr)
+
+    if len(gates) > 100_000:
+        print(
+            f"WARNING: Packed lowering generated {len(gates)} gates",
+            file=sys.stderr,
+        )
+        print(
+            "  This design may be better suited for bit-level lowering.",
+            file=sys.stderr,
+        )
+        print(
+            "  Consider using bit-level lowering (without --force-packed) for more efficient compilation.",
+            file=sys.stderr,
+        )
+
     return (circuit, layout)

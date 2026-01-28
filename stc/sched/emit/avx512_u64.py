@@ -23,6 +23,12 @@ class AVX512U64Emitter(BaseEmitter):
         if allocation.num_spills:
             return self._emit_naive(gates, input_bits, outputs, function_name, io_split)
 
+        # Convention: inputs live in fixed registers r0..r(input_bits-1).
+        # Allocator-assigned registers are mapped to a disjoint namespace by
+        # adding this offset to avoid clobbering live inputs.
+        self._input_bits = int(input_bits)
+        self._reg_offset = int(input_bits)
+
         input_io_words = input_bits
         output_io_words = len(outputs)
         if io_split is not None:
@@ -39,10 +45,15 @@ class AVX512U64Emitter(BaseEmitter):
                 f"static inline void {function_name}__core(const __m512i* in_io, const __m512i* st_in, __m512i* out_io, __m512i* st_out) {{"
             )
 
-        used_regs = set(allocation.reg_assignment.values())
-        used_regs.update(reg for _, reg, _ in allocation.loads if reg >= 0)
-        used_regs.update(reg for _, reg, _ in allocation.stores if reg >= 0)
-        max_reg = max([input_bits - 1, *used_regs]) if input_bits > 0 else 0
+        used_alloc_regs = set(allocation.reg_assignment.values())
+        used_alloc_regs.update(reg for _, reg, _ in allocation.loads if reg >= 0)
+        used_alloc_regs.update(reg for _, reg, _ in allocation.stores if reg >= 0)
+        max_alloc_reg = max(used_alloc_regs) if used_alloc_regs else -1
+        max_reg = (
+            max(input_bits - 1, self._reg_offset + max_alloc_reg)
+            if input_bits > 0
+            else 0
+        )
         for r in range(max_reg + 1):
             lines.append(f"    __m512i r{r};")
 
@@ -51,10 +62,14 @@ class AVX512U64Emitter(BaseEmitter):
         spill_slots_used: set[int] = set(range(len(allocation.spills)))
         stores_by_cycle: dict[int, list[tuple[int, int, int]]] = {}
         for node, reg, cycle in allocation.stores:
+            if reg >= 0:
+                reg = self._reg_offset + reg
             stores_by_cycle.setdefault(cycle, []).append((node, reg, cycle))
 
         loads_by_cycle: dict[int, list[tuple[int, int, int]]] = {}
         for node, reg, cycle in allocation.loads:
+            if reg >= 0:
+                reg = self._reg_offset + reg
             loads_by_cycle.setdefault(cycle, []).append((node, reg, cycle))
             slot = self._get_spill_slot(node, allocation)
             spill_slots_used.add(slot)
@@ -112,6 +127,7 @@ class AVX512U64Emitter(BaseEmitter):
                     dst_reg = allocation.reg_assignment.get(node_idx, -1)
                     if dst_reg < 0:
                         continue
+                    dst_reg = self._reg_offset + dst_reg
                     lines.append(
                         f"    {self._emit_gate(gates[g_idx], dst_reg, allocation, node_in_reg)}"
                     )
@@ -253,6 +269,9 @@ class AVX512U64Emitter(BaseEmitter):
         return "\n".join(lines)
 
     def _emit_gate_naive(self, gate: tuple, dst: int) -> str:
+        def _src(n: int) -> str:
+            return "ones" if n == -1 else f"r{n}"
+
         op = gate[0]
         if op == "const":
             imm = int(gate[1])
@@ -261,25 +280,32 @@ class AVX512U64Emitter(BaseEmitter):
             return f"r{dst} = _mm512_set1_epi64((long long){imm}ULL);"
         if op == "not":
             a = int(gate[1])
-            return f"r{dst} = _mm512_xor_si512(r{a}, _mm512_set1_epi64(-1LL));"
-        if op in ("xor", "and", "or", "add", "sub"):
+            return f"r{dst} = _mm512_xor_si512({_src(a)}, ones);"
+        if op in ("xor", "and", "or", "add", "sub", "ult"):
             a = int(gate[1])
             b = int(gate[2])
             if op == "xor":
-                return f"r{dst} = _mm512_xor_si512(r{a}, r{b});"
+                return f"r{dst} = _mm512_xor_si512({_src(a)}, {_src(b)});"
             if op == "and":
-                return f"r{dst} = _mm512_and_si512(r{a}, r{b});"
+                return f"r{dst} = _mm512_and_si512({_src(a)}, {_src(b)});"
+            if op == "andnot":
+                return f"r{dst} = _mm512_andnot_si512({_src(a)}, {_src(b)});"
             if op == "or":
-                return f"r{dst} = _mm512_or_si512(r{a}, r{b});"
+                return f"r{dst} = _mm512_or_si512({_src(a)}, {_src(b)});"
             if op == "add":
-                return f"r{dst} = _mm512_add_epi64(r{a}, r{b});"
-            return f"r{dst} = _mm512_sub_epi64(r{a}, r{b});"
+                return f"r{dst} = _mm512_add_epi64({_src(a)}, {_src(b)});"
+            if op == "sub":
+                return f"r{dst} = _mm512_sub_epi64({_src(a)}, {_src(b)});"
+            return (
+                f"r{dst} = _mm512_maskz_set1_epi64("
+                f"_mm512_cmp_epu64_mask({_src(a)}, {_src(b)}, _MM_CMPINT_LT), 1LL);"
+            )
         if op in ("shl", "lshr"):
             a = int(gate[1])
             imm = int(gate[2])
             if op == "shl":
-                return f"r{dst} = _mm512_slli_epi64(r{a}, {imm});"
-            return f"r{dst} = _mm512_srli_epi64(r{a}, {imm});"
+                return f"r{dst} = _mm512_slli_epi64({_src(a)}, {imm});"
+            return f"r{dst} = _mm512_srli_epi64({_src(a)}, {imm});"
         return f"r{dst} = _mm512_setzero_si512();"
 
     def _emit_gate(
@@ -299,7 +325,7 @@ class AVX512U64Emitter(BaseEmitter):
             a = int(gate[1])
             a_expr = self._node_expr(a, allocation, node_in_reg)
             return f"r{dst_reg} = _mm512_xor_si512({a_expr}, _mm512_set1_epi64(-1LL));"
-        if op in ("xor", "and", "or", "add", "sub"):
+        if op in ("xor", "and", "andnot", "or", "add", "sub", "ult"):
             a = int(gate[1])
             b = int(gate[2])
             a_expr = self._node_expr(a, allocation, node_in_reg)
@@ -308,11 +334,18 @@ class AVX512U64Emitter(BaseEmitter):
                 return f"r{dst_reg} = _mm512_xor_si512({a_expr}, {b_expr});"
             if op == "and":
                 return f"r{dst_reg} = _mm512_and_si512({a_expr}, {b_expr});"
+            if op == "andnot":
+                return f"r{dst_reg} = _mm512_andnot_si512({a_expr}, {b_expr});"
             if op == "or":
                 return f"r{dst_reg} = _mm512_or_si512({a_expr}, {b_expr});"
             if op == "add":
                 return f"r{dst_reg} = _mm512_add_epi64({a_expr}, {b_expr});"
-            return f"r{dst_reg} = _mm512_sub_epi64({a_expr}, {b_expr});"
+            if op == "sub":
+                return f"r{dst_reg} = _mm512_sub_epi64({a_expr}, {b_expr});"
+            return (
+                f"r{dst_reg} = _mm512_maskz_set1_epi64("
+                f"_mm512_cmp_epu64_mask({a_expr}, {b_expr}, _MM_CMPINT_LT), 1LL);"
+            )
         if op in ("shl", "lshr"):
             a = int(gate[1])
             imm = int(gate[2])
@@ -325,9 +358,19 @@ class AVX512U64Emitter(BaseEmitter):
     def _node_expr(
         self, node_idx: int, allocation: RegAllocation, node_in_reg: dict[int, int]
     ) -> str:
+        if node_idx == -1:
+            return "ones"
         reg = node_in_reg.get(node_idx)
         if reg is None:
-            reg = allocation.reg_assignment.get(node_idx, -1)
+            if 0 <= node_idx < getattr(self, "_input_bits", 0):
+                reg = node_idx
+            else:
+                alloc_reg = allocation.reg_assignment.get(node_idx, -1)
+                reg = (
+                    (getattr(self, "_reg_offset", 0) + alloc_reg)
+                    if alloc_reg >= 0
+                    else -1
+                )
         return f"r{reg}"
 
     def _get_spill_slot(self, node: int, allocation: RegAllocation) -> int:

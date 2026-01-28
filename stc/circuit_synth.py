@@ -1448,6 +1448,8 @@ class CircuitState:
                     node_vals.append(node_vals[left] & node_vals[right])
                 elif op == "or":
                     node_vals.append(node_vals[left] | node_vals[right])
+                elif op == "andn":
+                    node_vals.append((~node_vals[left]) & node_vals[right] & 1)
                 elif op == "not":
                     node_vals.append(node_vals[left] ^ 1)
                 elif op == "const":

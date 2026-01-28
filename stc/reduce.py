@@ -631,7 +631,9 @@ def optimize_tick_ir(
     fuse_budget_max_nodes: int = 1 << 60,
     fuse_budget_max_depth: int = 1 << 60,
     fuse_budget_max_step_ms: int | None = None,
-) -> TickIR:
+    arith_classify: bool = True,
+    mul_div_max_width: int = 32,
+) -> tuple[TickIR, dict[str, int] | None]:
     from stc.delay_lower import lower_delays
     from stc.tech import get_technology
     from stc.mapping.ternary import TernaryMappingPass
@@ -639,7 +641,7 @@ def optimize_tick_ir(
 
     ir = lower_delays(ir)
     ir = reduce_tick_ir(ir)
-    if fuse_ticks > 1:
+    if fuse_ticks is not None and fuse_ticks > 1:
         from stc.fuse_ticks import FuseBudget, fuse_ticks as _fuse_ticks
 
         ir = _fuse_ticks(
@@ -698,17 +700,24 @@ def optimize_tick_ir(
             next_state={k: go(v) for k, v in ir.next_state.items()},
             output_exprs={k: go(v) for k, v in ir.output_exprs.items()},
         )
+
+    arith_report = None
+    if arith_classify:
+        from stc.tick_ir_classify_arith import classify_arithmetic
+
+        ir, arith_report = classify_arithmetic(ir)
+
     if not bounded_state_opt:
-        return hashcons_tick_ir(ir)
+        return hashcons_tick_ir(ir), arith_report
 
     ir = remove_dead_state(ir, bound)
     try:
         consts = constant_state_within_bound(ir, bound)
     except ReachabilityError:
-        return hashcons_tick_ir(ir)
+        return hashcons_tick_ir(ir), arith_report
 
     if not consts:
-        return hashcons_tick_ir(ir)
+        return hashcons_tick_ir(ir), arith_report
 
     repl: dict[str, Expr] = {}
     for name, value in consts.items():
@@ -733,17 +742,17 @@ def optimize_tick_ir(
     new_reset = {k: v for k, v in ir.reset_state.items() if k not in removed}
     new_next = {k: v for k, v in new_next_state.items() if k not in removed}
 
-    return hashcons_tick_ir(
-        TickIR(
-            name=ir.name,
-            inputs=dict(ir.inputs),
-            outputs=dict(ir.outputs),
-            state=new_state,
-            reset_state=new_reset,
-            next_state=new_next,
-            output_exprs=new_output_exprs,
-        )
+    ir = TickIR(
+        name=ir.name,
+        inputs=dict(ir.inputs),
+        outputs=dict(ir.outputs),
+        state=new_state,
+        reset_state=new_reset,
+        next_state=new_next,
+        output_exprs=new_output_exprs,
     )
+
+    return hashcons_tick_ir(ir), arith_report
 
 
 def fold_constants(ir: TickIR) -> tuple[TickIR, bool]:

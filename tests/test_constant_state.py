@@ -16,6 +16,6 @@ class TestConstantState(unittest.TestCase):
             output_exprs={"o": Var(name="s")},
         )
 
-        opt = optimize_tick_ir(ir, bound=2)
+        opt, _ = optimize_tick_ir(ir, bound=2)
         self.assertEqual(opt.state, {})
         self.assertEqual(opt.output_exprs["o"], BoolConst(value=False))
