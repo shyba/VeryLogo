@@ -6,6 +6,7 @@ from collections import defaultdict
 from dataclasses import dataclass
 
 from stc.packed_circuit import PackedCircuitState, PackedGate
+from stc.hashcons import hashcons_tick_ir, _key_expr
 from stc.interp import infer_type
 from stc.tick_ir import (
     Add,
@@ -140,6 +141,7 @@ def lower_tick_ir_to_packed_circuit_state(
     raise PackedLoweringError so callers can fall back to bit-level lowering.
     """
     validate_tick_ir(ir)
+    ir = hashcons_tick_ir(ir)
 
     input_order = sorted(ir.inputs.keys())
     state_order = sorted(ir.state.keys())
@@ -218,7 +220,7 @@ def lower_tick_ir_to_packed_circuit_state(
         add_var_words(name, st_offsets[name], width_bits(ir.state[name]))
 
     gates: list[PackedGate] = []
-    memo: dict[int, tuple[list[int], int]] = {}
+    memo: dict[tuple, tuple[list[int], int]] = {}
     gate_stats = GateStats()
     memo_stats = MemoStats()
 
@@ -263,9 +265,9 @@ def lower_tick_ir_to_packed_circuit_state(
         """
         Returns (word_nodes_le, width_bits), where word_nodes_le[0] is bits [0..63].
         """
-        eid = id(e)
+        ekey = _key_expr(e)
         expr_type = type(e).__name__
-        cached = memo.get(eid)
+        cached = memo.get(ekey)
         if cached is not None:
             memo_stats.hits += 1
             memo_stats.hits_by_type[expr_type] += 1
@@ -303,12 +305,12 @@ def lower_tick_ir_to_packed_circuit_state(
         if isinstance(e, Var):
             ws, w = get_var_words(e)
             out = _truncate(list(ws), w)
-            memo[eid] = (list(out[0]), int(out[1]))
+            memo[ekey] = (list(out[0]), int(out[1]))
             return _track_and_return(out)
         if isinstance(e, BoolConst):
             node = emit_const_u64(1 if e.value else 0)
             out = _truncate([node], 1)
-            memo[eid] = (list(out[0]), int(out[1]))
+            memo[ekey] = (list(out[0]), int(out[1]))
             return _track_and_return(out)
         if isinstance(e, BitVecConst):
             nwords = _ceil_div(e.width, WORD_BITS)
@@ -317,13 +319,13 @@ def lower_tick_ir_to_packed_circuit_state(
                 chunk = (e.value >> (i * WORD_BITS)) & WORD_MASK
                 out.append(emit_const_u64(chunk))
             res = _truncate(out, e.width)
-            memo[eid] = (list(res[0]), int(res[1]))
+            memo[ekey] = (list(res[0]), int(res[1]))
             return _track_and_return(res)
         if isinstance(e, Not):
             ws, w = lower_expr_to_words(e.x)
             out = [emit_unary("not", wi) for wi in ws]
             res = _truncate(out, w)
-            memo[eid] = (list(res[0]), int(res[1]))
+            memo[ekey] = (list(res[0]), int(res[1]))
             return _track_and_return(res)
         if isinstance(e, (And, Or, Xor)):
             wa, aw = lower_expr_to_words(e.a)  # type: ignore[attr-defined]
@@ -337,7 +339,7 @@ def lower_tick_ir_to_packed_circuit_state(
             op = "and" if isinstance(e, And) else "or" if isinstance(e, Or) else "xor"
             out = [emit_bin(op, wa[i], wb[i]) for i in range(len(wa))]
             res = _truncate(out, aw)
-            memo[eid] = (list(res[0]), int(res[1]))
+            memo[ekey] = (list(res[0]), int(res[1]))
             return _track_and_return(res)
         if isinstance(e, Ult):
             wa, aw = lower_expr_to_words(e.a)
@@ -357,7 +359,7 @@ def lower_tick_ir_to_packed_circuit_state(
                 wb0 = wb[0]
             out = [emit_bin("ult", wa0, wb0)]
             res = _truncate(out, 1)
-            memo[eid] = (list(res[0]), int(res[1]))
+            memo[ekey] = (list(res[0]), int(res[1]))
             return _track_and_return(res)
         if isinstance(e, Slice):
             src_words, src_w = lower_expr_to_words(e.x)
@@ -372,7 +374,7 @@ def lower_tick_ir_to_packed_circuit_state(
                 start = e.offset // WORD_BITS
                 nwords = e.width // WORD_BITS
                 res = (src_words[start : start + nwords], e.width)
-                memo[eid] = (list(res[0]), int(res[1]))
+                memo[ekey] = (list(res[0]), int(res[1]))
                 return _track_and_return(res)
             # Fast path: single-word slice (fits in one 64-bit word).
             word_i = e.offset // WORD_BITS
@@ -387,7 +389,7 @@ def lower_tick_ir_to_packed_circuit_state(
                 if bit_off == 0 and e.width == WORD_BITS:
                     # Full word extraction
                     res = ([src_word], e.width)
-                    memo[eid] = (list(res[0]), int(res[1]))
+                    memo[ekey] = (list(res[0]), int(res[1]))
                     return _track_and_return(res)
                 # Shift right to align bits to LSB, then mask.
                 shifted = (
@@ -399,7 +401,7 @@ def lower_tick_ir_to_packed_circuit_state(
                     res = ([masked], e.width)
                 else:
                     res = ([shifted], e.width)
-                memo[eid] = (list(res[0]), int(res[1]))
+                memo[ekey] = (list(res[0]), int(res[1]))
                 return _track_and_return(res)
             # Multi-word unaligned slice: word-by-word gather.
             bit_off = e.offset
@@ -414,7 +416,7 @@ def lower_tick_ir_to_packed_circuit_state(
                     mask = (1 << top_bits) - 1
                     out[-1] = emit_bin("and", out[-1], emit_const_u64(mask))
                 res = (out, e.width)
-                memo[eid] = (list(res[0]), int(res[1]))
+                memo[ekey] = (list(res[0]), int(res[1]))
                 return _track_and_return(res)
             # Unaligned: gather bits from multiple source words.
             zeros_node = emit_const_u64(0)
@@ -439,7 +441,7 @@ def lower_tick_ir_to_packed_circuit_state(
                 mask = (1 << top_bits) - 1
                 out[-1] = emit_bin("and", out[-1], emit_const_u64(mask))
             res = (out, e.width)
-            memo[eid] = (list(res[0]), int(res[1]))
+            memo[ekey] = (list(res[0]), int(res[1]))
             return _track_and_return(res)
         if isinstance(e, Concat):
             parts: list[tuple[list[int], int]] = [
@@ -452,7 +454,7 @@ def lower_tick_ir_to_packed_circuit_state(
                 for ws, _w in reversed(parts):
                     out_words.extend(ws)
                 res = (out_words, total_w)
-                memo[eid] = (list(res[0]), int(res[1]))
+                memo[ekey] = (list(res[0]), int(res[1]))
                 return _track_and_return(res)
             # General case: pack mixed-width parts across word boundaries.
             # Concat semantics: parts[0] is MSB, parts[-1] is LSB.
@@ -505,7 +507,7 @@ def lower_tick_ir_to_packed_circuit_state(
             if bits_in_current > 0:
                 out_words.append(current_word)
             res = (out_words, total_w)
-            memo[eid] = (list(res[0]), int(res[1]))
+            memo[ekey] = (list(res[0]), int(res[1]))
             return _track_and_return(res)
         if isinstance(e, (Shl, LShr)):
             wa, aw = lower_expr_to_words(e.a)
@@ -525,13 +527,13 @@ def lower_tick_ir_to_packed_circuit_state(
                 )
             if sh == 0:
                 res = (wa, aw)
-                memo[eid] = (list(res[0]), int(res[1]))
+                memo[ekey] = (list(res[0]), int(res[1]))
                 return _track_and_return(res)
             if sh >= aw:
                 # shift out completely
                 zeros = [emit_const_u64(0) for _ in range(_ceil_div(aw, WORD_BITS))]
                 res = (zeros, aw)
-                memo[eid] = (list(res[0]), int(res[1]))
+                memo[ekey] = (list(res[0]), int(res[1]))
                 return _track_and_return(res)
             word_shift = sh // WORD_BITS
             inner = sh % WORD_BITS
@@ -584,7 +586,7 @@ def lower_tick_ir_to_packed_circuit_state(
             sh = int(sh_expr.value) % aw
             if sh == 0:
                 res = (wa, aw)
-                memo[eid] = (list(res[0]), int(res[1]))
+                memo[ekey] = (list(res[0]), int(res[1]))
                 return _track_and_return(res)
             # Implement rotate using: rotl(x, k) = (x << k) | (x >> (n-k))
             # For rotr, swap the shift amounts.

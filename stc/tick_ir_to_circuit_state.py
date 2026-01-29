@@ -149,6 +149,7 @@ def lower_tick_ir_to_circuit_state(ir: TickIR) -> tuple[CircuitState, PackedLayo
     # We build nodes for boolean expressions. Inputs live at indices [0..input_bits).
     gates: list[tuple] = []
     memo_bits: dict[str, list[int]] = {}
+    const_cache: dict[tuple[int, int], int] = {}
 
     ctx_types: dict[str, Type] = {**ir.inputs, **ir.state}
 
@@ -160,6 +161,15 @@ def lower_tick_ir_to_circuit_state(ir: TickIR) -> tuple[CircuitState, PackedLayo
         raise LoweringError(f"unknown packed var: {name}")
 
     def new_gate(op: str, *args) -> int:
+        if op == "const":
+            key = (args[0], args[1])
+            cached_idx = const_cache.get(key)
+            if cached_idx is not None:
+                return cached_idx
+            idx = input_bits + len(gates)
+            gates.append((op, *args))
+            const_cache[key] = idx
+            return idx
         idx = input_bits + len(gates)
         gates.append((op, *args))
         return idx

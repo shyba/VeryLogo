@@ -9,6 +9,19 @@ from stc.hashcons import hashcons_tick_ir
 from stc.tick_ir import BoolType, EXPR_CLASSES, Expr, Mux, TickIR, Type, Var
 
 
+def _estimate_fused_nodes(ir: TickIR, steps: int) -> int:
+    """Estimate node count after fusion without building the IR.
+
+    Conservative estimate to avoid OOM: assumes exponential growth
+    with reuse capping at cubic growth for deep fusion.
+    """
+    base_metrics = compute_metrics(ir)
+    base_nodes = base_metrics.expr_nodes_total
+
+    estimated = min(base_nodes * steps, base_nodes ** min(steps, 3))
+    return estimated
+
+
 @dataclass(frozen=True)
 class FuseBudget:
     max_nodes: int
@@ -139,6 +152,11 @@ def fuse_ticks(
     states_before: list[dict[str, Expr]] = []
 
     for k in range(n):
+        if budget.stop_on_budget_hit and k > 0:
+            estimated = _estimate_fused_nodes(ir, k + 1)
+            if estimated > budget.max_nodes * 1.5:
+                break
+
         step_t0 = time.perf_counter()
         state_before = dict(cur_state_exprs)
         if input_policy == "shared":

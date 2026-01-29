@@ -87,14 +87,21 @@ class RegPressureScheduler(BaseScheduler):
        a) Have inputs that will die (freeing registers)
        b) Don't increase pressure above target register count
     3. May delay gates if scheduling them would exceed register limit
+
+    Modes:
+    - "balanced": Standard pressure-aware scheduling
+    - "use-eager": Aggressively prioritize freeing registers when pressure is high
     """
 
-    def __init__(self, max_registers: int):
+    def __init__(self, max_registers: int, mode: str = "balanced"):
         self._max_registers = max_registers
+        self._mode = mode
+        if mode not in ("balanced", "use-eager"):
+            raise ValueError(f"Invalid mode: {mode}. Must be 'balanced' or 'use-eager'")
 
     @property
     def name(self) -> str:
-        return f"regpressure_{self._max_registers}"
+        return f"regpressure_{self._max_registers}_{self._mode}"
 
     def schedule(
         self,
@@ -163,7 +170,16 @@ class RegPressureScheduler(BaseScheduler):
                         current_pressure + pressure_delta - self._max_registers
                     ) * 1000
 
-                combined_priority = base_priority - freed * 10 + penalty
+                if self._mode == "use-eager":
+                    pressure_threshold = self._max_registers * 0.7
+                    if current_pressure > pressure_threshold:
+                        freed_weight = -100
+                    else:
+                        freed_weight = -10
+                else:
+                    freed_weight = -10
+
+                combined_priority = base_priority + freed * freed_weight + penalty
                 ready_with_priority.append((combined_priority, g))
 
             ready_with_priority.sort(key=lambda x: x[0])
@@ -292,13 +308,16 @@ def regpressure_schedule(
     outputs: list,
     target: TargetModel,
     max_registers: int,
+    mode: str = "balanced",
 ) -> Schedule:
     """Convenience function for register-pressure-aware scheduling."""
-    scheduler = RegPressureScheduler(max_registers=max_registers)
+    scheduler = RegPressureScheduler(max_registers=max_registers, mode=mode)
     return scheduler.schedule(gates, input_bits, outputs, target)
 
 
-def schedule_circuit(circuit, target: TargetModel, max_registers: int) -> Schedule:
+def schedule_circuit(
+    circuit, target: TargetModel, max_registers: int, mode: str = "balanced"
+) -> Schedule:
     """Schedule a CircuitState for a target with register pressure awareness."""
     return regpressure_schedule(
         list(circuit.gates),
@@ -306,4 +325,5 @@ def schedule_circuit(circuit, target: TargetModel, max_registers: int) -> Schedu
         list(circuit.outputs),
         target,
         max_registers,
+        mode,
     )

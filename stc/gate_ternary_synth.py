@@ -579,3 +579,68 @@ def eliminate_double_nots(circuit: CircuitState) -> tuple[CircuitState, dict]:
     )
 
     return new_circuit, {"double_nots_eliminated": eliminated}
+
+
+def eliminate_dead_gates(circuit: CircuitState) -> tuple[CircuitState, dict]:
+    """Remove gates with fanout=0 that aren't circuit outputs.
+
+    Returns (optimized_circuit, stats).
+    """
+    gates = list(circuit.gates)
+    input_bits = circuit.input_bits
+    outputs = list(circuit.outputs)
+
+    gate_infos = build_gate_info(gates, input_bits)
+    output_gate_indices = {
+        idx - input_bits for idx, _ in outputs if idx >= input_bits
+    }
+
+    live_gates: set[int] = set()
+    worklist = list(output_gate_indices)
+
+    while worklist:
+        gi = worklist.pop()
+        if gi < 0 or gi >= len(gate_infos) or gi in live_gates:
+            continue
+        live_gates.add(gi)
+
+        for inp in gate_infos[gi].inputs:
+            if inp >= input_bits:
+                worklist.append(inp - input_bits)
+
+    dead_count = len(gates) - len(live_gates)
+
+    if dead_count == 0:
+        return circuit, {"dead_gates_removed": 0}
+
+    new_gates = []
+    idx_remap: dict[int, int] = {}
+
+    for i, gate in enumerate(gates):
+        if i not in live_gates:
+            continue
+
+        old_node = input_bits + i
+        new_idx = input_bits + len(new_gates)
+        idx_remap[old_node] = new_idx
+
+        remapped_gate = _remap_gate_inputs(gate, idx_remap, input_bits)
+        new_gates.append(remapped_gate)
+
+    new_outputs = []
+    for out_idx, invert in outputs:
+        if out_idx >= input_bits:
+            new_out_idx = idx_remap.get(out_idx, out_idx)
+        else:
+            new_out_idx = out_idx
+        new_outputs.append((new_out_idx, invert))
+
+    new_circuit = CircuitState(
+        input_bits=input_bits,
+        output_bits=circuit.output_bits,
+        gates=new_gates,
+        outputs=new_outputs,
+        gate_count=len(new_gates),
+    )
+
+    return new_circuit, {"dead_gates_removed": dead_count}
