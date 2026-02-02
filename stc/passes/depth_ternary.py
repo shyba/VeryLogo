@@ -408,11 +408,9 @@ class DepthBudgetPass(Pass):
         if ctx.depth_budget is None:
             return ir, PassMetrics(changed=False)
 
-        current_depth = 0
-        for expr in list(ir.output_exprs.values()) + list(ir.next_state.values()):
-            d = _expr_depth(expr, {})
-            if d > current_depth:
-                current_depth = d
+        from stc.metrics import compute_ir_depth
+
+        current_depth = compute_ir_depth(ir, ctx.depth_model)
 
         if current_depth > ctx.depth_budget:
             if ctx.best_ir is not None:

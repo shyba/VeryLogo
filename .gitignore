@@ -27,6 +27,8 @@ target/
 *.dll
 *.cubin
 *.ptx
+*.spv
+*.spvasm
 
 external-*/
 

@@ -45,12 +45,17 @@ int main(int argc, char** argv) {
     const char* spirv_path = argc > 1 ? argv[1] : "out/tower_sbox_spirv/circuit.spv";
     int iterations = argc > 2 ? atoi(argv[2]) : 1000;
     int num_threads = argc > 3 ? atoi(argv[3]) : 65536;
+    int local_x = argc > 4 ? atoi(argv[4]) : 64;
+    int local_y = argc > 5 ? atoi(argv[5]) : 1;
+    int local_z = argc > 6 ? atoi(argv[6]) : 1;
+    int local_size = local_x * local_y * local_z;
 
     printf("Tower Field S-box - Vulkan Compute Benchmark\n");
     printf("=============================================\n\n");
     printf("SPIR-V file: %s\n", spirv_path);
     printf("Iterations: %d\n", iterations);
     printf("Threads: %d\n", num_threads);
+    printf("LocalSize: %d %d %d\n", local_x, local_y, local_z);
     printf("\n");
 
     // Create instance
@@ -227,6 +232,87 @@ int main(int argc, char** argv) {
     printf("Buffers allocated: %zu bytes each\n", bufferSize);
     printf("\n");
 
+    // Create descriptor pool
+    VkDescriptorPoolSize poolSize = {};
+    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    poolSize.descriptorCount = 2;
+
+    VkDescriptorPoolCreateInfo poolInfo = {};
+    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
+    poolInfo.poolSizeCount = 1;
+    poolInfo.pPoolSizes = &poolSize;
+    poolInfo.maxSets = 1;
+
+    VkDescriptorPool descriptorPool;
+    CHECK_VK(vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool));
+
+    // Allocate descriptor set
+    VkDescriptorSetAllocateInfo allocInfo2 = {};
+    allocInfo2.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
+    allocInfo2.descriptorPool = descriptorPool;
+    allocInfo2.descriptorSetCount = 1;
+    allocInfo2.pSetLayouts = &descriptorSetLayout;
+
+    VkDescriptorSet descriptorSet;
+    CHECK_VK(vkAllocateDescriptorSets(device, &allocInfo2, &descriptorSet));
+
+    // Update descriptor set
+    VkDescriptorBufferInfo bufferInfos[2] = {};
+    bufferInfos[0].buffer = inputBuffer;
+    bufferInfos[0].offset = 0;
+    bufferInfos[0].range = bufferSize;
+
+    bufferInfos[1].buffer = outputBuffer;
+    bufferInfos[1].offset = 0;
+    bufferInfos[1].range = bufferSize;
+
+    VkWriteDescriptorSet descriptorWrites[2] = {};
+    descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[0].dstSet = descriptorSet;
+    descriptorWrites[0].dstBinding = 0;
+    descriptorWrites[0].dstArrayElement = 0;
+    descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    descriptorWrites[0].descriptorCount = 1;
+    descriptorWrites[0].pBufferInfo = &bufferInfos[0];
+
+    descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+    descriptorWrites[1].dstSet = descriptorSet;
+    descriptorWrites[1].dstBinding = 1;
+    descriptorWrites[1].dstArrayElement = 0;
+    descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+    descriptorWrites[1].descriptorCount = 1;
+    descriptorWrites[1].pBufferInfo = &bufferInfos[1];
+
+    vkUpdateDescriptorSets(device, 2, descriptorWrites, 0, nullptr);
+
+    // Create command pool
+    VkCommandPoolCreateInfo poolInfo2 = {};
+    poolInfo2.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
+    poolInfo2.queueFamilyIndex = computeQueueFamily;
+
+    VkCommandPool commandPool;
+    CHECK_VK(vkCreateCommandPool(device, &poolInfo2, nullptr, &commandPool));
+
+    // Create command buffer
+    VkCommandBufferAllocateInfo cmdAllocInfo = {};
+    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
+    cmdAllocInfo.commandPool = commandPool;
+    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
+    cmdAllocInfo.commandBufferCount = 1;
+
+    VkCommandBuffer commandBuffer;
+    CHECK_VK(vkAllocateCommandBuffers(device, &cmdAllocInfo, &commandBuffer));
+
+    // Record command buffer
+    VkCommandBufferBeginInfo beginInfo = {};
+    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
+
+    CHECK_VK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
+    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
+    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
+    vkCmdDispatch(commandBuffer, (num_threads + local_size - 1) / local_size, 1, 1);
+    CHECK_VK(vkEndCommandBuffer(commandBuffer));
+
     // Verify correctness first
     printf("Verifying correctness on all 256 S-box values...\n");
 
@@ -319,87 +405,6 @@ int main(int argc, char** argv) {
     CHECK_VK(vkMapMemory(device, inputMemory, 0, bufferSize, 0, &inputData));
     memset(inputData, 0xAA, bufferSize);
     vkUnmapMemory(device, inputMemory);
-
-    // Create descriptor pool
-    VkDescriptorPoolSize poolSize = {};
-    poolSize.type = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    poolSize.descriptorCount = 2;
-
-    VkDescriptorPoolCreateInfo poolInfo = {};
-    poolInfo.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_POOL_CREATE_INFO;
-    poolInfo.poolSizeCount = 1;
-    poolInfo.pPoolSizes = &poolSize;
-    poolInfo.maxSets = 1;
-
-    VkDescriptorPool descriptorPool;
-    CHECK_VK(vkCreateDescriptorPool(device, &poolInfo, nullptr, &descriptorPool));
-
-    // Allocate descriptor set
-    VkDescriptorSetAllocateInfo allocInfo2 = {};
-    allocInfo2.sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO;
-    allocInfo2.descriptorPool = descriptorPool;
-    allocInfo2.descriptorSetCount = 1;
-    allocInfo2.pSetLayouts = &descriptorSetLayout;
-
-    VkDescriptorSet descriptorSet;
-    CHECK_VK(vkAllocateDescriptorSets(device, &allocInfo2, &descriptorSet));
-
-    // Update descriptor set
-    VkDescriptorBufferInfo bufferInfos[2] = {};
-    bufferInfos[0].buffer = inputBuffer;
-    bufferInfos[0].offset = 0;
-    bufferInfos[0].range = bufferSize;
-
-    bufferInfos[1].buffer = outputBuffer;
-    bufferInfos[1].offset = 0;
-    bufferInfos[1].range = bufferSize;
-
-    VkWriteDescriptorSet descriptorWrites[2] = {};
-    descriptorWrites[0].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrites[0].dstSet = descriptorSet;
-    descriptorWrites[0].dstBinding = 0;
-    descriptorWrites[0].dstArrayElement = 0;
-    descriptorWrites[0].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    descriptorWrites[0].descriptorCount = 1;
-    descriptorWrites[0].pBufferInfo = &bufferInfos[0];
-
-    descriptorWrites[1].sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
-    descriptorWrites[1].dstSet = descriptorSet;
-    descriptorWrites[1].dstBinding = 1;
-    descriptorWrites[1].dstArrayElement = 0;
-    descriptorWrites[1].descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
-    descriptorWrites[1].descriptorCount = 1;
-    descriptorWrites[1].pBufferInfo = &bufferInfos[1];
-
-    vkUpdateDescriptorSets(device, 2, descriptorWrites, 0, nullptr);
-
-    // Create command pool
-    VkCommandPoolCreateInfo poolInfo2 = {};
-    poolInfo2.sType = VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO;
-    poolInfo2.queueFamilyIndex = computeQueueFamily;
-
-    VkCommandPool commandPool;
-    CHECK_VK(vkCreateCommandPool(device, &poolInfo2, nullptr, &commandPool));
-
-    // Create command buffer
-    VkCommandBufferAllocateInfo cmdAllocInfo = {};
-    cmdAllocInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO;
-    cmdAllocInfo.commandPool = commandPool;
-    cmdAllocInfo.level = VK_COMMAND_BUFFER_LEVEL_PRIMARY;
-    cmdAllocInfo.commandBufferCount = 1;
-
-    VkCommandBuffer commandBuffer;
-    CHECK_VK(vkAllocateCommandBuffers(device, &cmdAllocInfo, &commandBuffer));
-
-    // Record command buffer
-    VkCommandBufferBeginInfo beginInfo = {};
-    beginInfo.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO;
-
-    CHECK_VK(vkBeginCommandBuffer(commandBuffer, &beginInfo));
-    vkCmdBindPipeline(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipeline);
-    vkCmdBindDescriptorSets(commandBuffer, VK_PIPELINE_BIND_POINT_COMPUTE, pipelineLayout, 0, 1, &descriptorSet, 0, nullptr);
-    vkCmdDispatch(commandBuffer, (num_threads + 63) / 64, 1, 1);
-    CHECK_VK(vkEndCommandBuffer(commandBuffer));
 
     // Benchmark (verification already warmed up the GPU)
     printf("Running benchmark (%d iterations, %d threads)...\n", iterations, num_threads);

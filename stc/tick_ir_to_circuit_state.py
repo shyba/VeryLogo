@@ -25,6 +25,7 @@ from stc.tick_ir import (
     Shl,
     Slice,
     Sub,
+    TernaryLut,
     TickIR,
     Type,
     Var,
@@ -239,6 +240,16 @@ def lower_tick_ir_to_circuit_state(ir: TickIR) -> tuple[CircuitState, PackedLayo
                 "xor" if isinstance(e, Xor) else ("and" if isinstance(e, And) else "or")
             )
             bits = [new_gate(op, a, b) for a, b in zip(ab, bb)]
+            memo_bits[key] = bits
+            return bits
+
+        if isinstance(e, TernaryLut):
+            ab = lower_bits(e.a)
+            bb = lower_bits(e.b)
+            cb = lower_bits(e.c)
+            if len(ab) != len(bb) or len(ab) != len(cb):
+                raise LoweringError("ternary width mismatch")
+            bits = [new_gate("ternary", a, b, c, e.imm8) for a, b, c in zip(ab, bb, cb)]
             memo_bits[key] = bits
             return bits
 

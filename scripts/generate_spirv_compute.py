@@ -14,7 +14,13 @@ from scripts.bp_circuit_sbox import build_bp_sbox
 from stc.gate_ternary_synth import apply_ternary_synthesis
 
 
-def generate_spirv_compute_shader(circuit_opt, num_inputs=8, num_outputs=8):
+def generate_spirv_compute_shader(
+    circuit_opt,
+    num_inputs=8,
+    num_outputs=8,
+    *,
+    local_size: tuple[int, int, int] = (64, 1, 1),
+):
     """Generate complete SPIR-V compute shader with buffer I/O."""
 
     gates = list(circuit_opt.gates)
@@ -32,7 +38,9 @@ def generate_spirv_compute_shader(circuit_opt, num_inputs=8, num_outputs=8):
     lines.append("OpCapability Shader")
     lines.append("OpMemoryModel Logical GLSL450")
     lines.append('OpEntryPoint GLCompute %main "main" %gl_GlobalInvocationID')
-    lines.append("OpExecutionMode %main LocalSize 64 1 1")
+    lines.append(
+        f"OpExecutionMode %main LocalSize {local_size[0]} {local_size[1]} {local_size[2]}"
+    )
     lines.append("")
 
     # Decorations
@@ -154,31 +162,43 @@ def generate_spirv_compute_shader(circuit_opt, num_inputs=8, num_outputs=8):
             b_id = reg_map[b]
             c_id = reg_map[c]
 
-            # Decompose ternary for common cases
-            if imm8 == 150:  # a^b^c
-                temp_id = f"%t{reg_counter}"
-                reg_counter += 1
-                lines.append(f"{temp_id} = OpBitwiseXor %uint {a_id} {b_id}")
-                lines.append(f"{dst_id} = OpBitwiseXor %uint {temp_id} {c_id}")
-            elif imm8 == 106:  # a^(b&c)
-                temp_id = f"%t{reg_counter}"
-                reg_counter += 1
-                lines.append(f"{temp_id} = OpBitwiseAnd %uint {b_id} {c_id}")
-                lines.append(f"{dst_id} = OpBitwiseXor %uint {a_id} {temp_id}")
-            elif imm8 == 40:  # (a&b)^c
-                temp_id = f"%t{reg_counter}"
-                reg_counter += 1
-                lines.append(f"{temp_id} = OpBitwiseAnd %uint {a_id} {b_id}")
-                lines.append(f"{dst_id} = OpBitwiseXor %uint {temp_id} {c_id}")
-            elif imm8 == 128:  # a&b&c
-                temp_id = f"%t{reg_counter}"
-                reg_counter += 1
-                lines.append(f"{temp_id} = OpBitwiseAnd %uint {a_id} {b_id}")
-                lines.append(f"{dst_id} = OpBitwiseAnd %uint {temp_id} {c_id}")
+            # Generic minterm decomposition
+            minterms = []
+            for i in range(8):
+                if imm8 & (1 << i):
+                    term_a = a_id if (i & 4) else f"%not_a{reg_counter}_{i}"
+                    term_b = b_id if (i & 2) else f"%not_b{reg_counter}_{i}"
+                    term_c = c_id if (i & 1) else f"%not_c{reg_counter}_{i}"
+
+                    if not (i & 4):
+                        lines.append(f"{term_a} = OpNot %uint {a_id}")
+                    if not (i & 2):
+                        lines.append(f"{term_b} = OpNot %uint {b_id}")
+                    if not (i & 1):
+                        lines.append(f"{term_c} = OpNot %uint {c_id}")
+
+                    t1 = f"%term1_{reg_counter}_{i}"
+                    t2 = f"%term2_{reg_counter}_{i}"
+                    lines.append(f"{t1} = OpBitwiseAnd %uint {term_a} {term_b}")
+                    lines.append(f"{t2} = OpBitwiseAnd %uint {t1} {term_c}")
+                    minterms.append(t2)
+
+            if not minterms:
+                lines.append(f"{dst_id} = OpCopyObject %uint %uint_0")
+            elif len(minterms) == 1:
+                lines.append(f"{dst_id} = OpCopyObject %uint {minterms[0]}")
             else:
-                # Generic fallback
-                print(f"Warning: unhandled ternary pattern imm8={imm8}")
-                lines.append(f"{dst_id} = OpBitwiseXor %uint {a_id} {b_id}")
+                or_prev = f"%or_{reg_counter}_0"
+                lines.append(
+                    f"{or_prev} = OpBitwiseOr %uint {minterms[0]} {minterms[1]}"
+                )
+                for j in range(2, len(minterms)):
+                    or_next = f"%or_{reg_counter}_{j-1}"
+                    lines.append(
+                        f"{or_next} = OpBitwiseOr %uint {or_prev} {minterms[j]}"
+                    )
+                    or_prev = or_next
+                lines.append(f"{dst_id} = OpCopyObject %uint {or_prev}")
 
         reg_map[node_idx] = dst_id
 

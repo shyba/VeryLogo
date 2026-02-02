@@ -9,7 +9,11 @@ from stc.sched.regalloc import RegAllocation
 
 
 def emit_vulkan_compute(
-    mir: MIRFunction, allocation: RegAllocation, outputs=None
+    mir: MIRFunction,
+    allocation: RegAllocation,
+    outputs=None,
+    *,
+    local_size: tuple[int, int, int] = (64, 1, 1),
 ) -> str:
     """
     Generate complete Vulkan compute shader from MIR.
@@ -45,7 +49,9 @@ def emit_vulkan_compute(
     lines.append("OpCapability Shader")
     lines.append("OpMemoryModel Logical GLSL450")
     lines.append(f'OpEntryPoint GLCompute {main_id} "main" {gid_var_id}')
-    lines.append(f"OpExecutionMode {main_id} LocalSize 64 1 1")
+    lines.append(
+        f"OpExecutionMode {main_id} LocalSize {local_size[0]} {local_size[1]} {local_size[2]}"
+    )
     lines.append("")
 
     # Decorations
@@ -146,6 +152,42 @@ def emit_vulkan_compute(
 
     lines.append("")
 
+    def ternary_decompose(dst_id, a_id, b_id, c_id, imm8: int):
+        # Build OR of minterms where imm8 has bit set.
+        terms = []
+        for i in range(8):
+            if (imm8 >> i) & 1 == 0:
+                continue
+            a_sel = (i >> 2) & 1
+            b_sel = (i >> 1) & 1
+            c_sel = i & 1
+
+            def sel(x_id, bit):
+                if bit:
+                    return x_id
+                inv = nid()
+                lines.append(f"{inv} = OpNot {uint_id} {x_id}")
+                return inv
+
+            a_term = sel(a_id, a_sel)
+            b_term = sel(b_id, b_sel)
+            c_term = sel(c_id, c_sel)
+            t1 = nid()
+            t2 = nid()
+            lines.append(f"{t1} = OpBitwiseAnd {uint_id} {a_term} {b_term}")
+            lines.append(f"{t2} = OpBitwiseAnd {uint_id} {t1} {c_term}")
+            terms.append(t2)
+
+        if not terms:
+            lines.append(f"{dst_id} = OpCopyObject {uint_id} {const_0}")
+            return
+        acc = terms[0]
+        for t in terms[1:]:
+            tmp = nid()
+            lines.append(f"{tmp} = OpBitwiseOr {uint_id} {acc} {t}")
+            acc = tmp
+        lines.append(f"{dst_id} = OpCopyObject {uint_id} {acc}")
+
     # Emit circuit operations
     for inst in mir.instructions:
         if isinstance(inst, Load):
@@ -174,24 +216,7 @@ def emit_vulkan_compute(
                 a_id = reg_map.get(f"v{inst.a.id}", const_0)
                 b_id = reg_map.get(f"v{inst.b.id}", const_0)
                 c_id = reg_map.get(f"v{inst.c.id}", const_0)
-
-                # Decompose based on imm8
-                if inst.imm8 == 150:  # a^b^c
-                    temp = nid()
-                    lines.append(f"{temp} = OpBitwiseXor {uint_id} {a_id} {b_id}")
-                    lines.append(f"{dst_id} = OpBitwiseXor {uint_id} {temp} {c_id}")
-                elif inst.imm8 == 106:  # a^(b&c)
-                    temp = nid()
-                    lines.append(f"{temp} = OpBitwiseAnd {uint_id} {b_id} {c_id}")
-                    lines.append(f"{dst_id} = OpBitwiseXor {uint_id} {a_id} {temp}")
-                elif inst.imm8 == 40:  # (a&b)^c
-                    temp = nid()
-                    lines.append(f"{temp} = OpBitwiseAnd {uint_id} {a_id} {b_id}")
-                    lines.append(f"{dst_id} = OpBitwiseXor {uint_id} {temp} {c_id}")
-                elif inst.imm8 == 128:  # a&b&c
-                    temp = nid()
-                    lines.append(f"{temp} = OpBitwiseAnd {uint_id} {a_id} {b_id}")
-                    lines.append(f"{dst_id} = OpBitwiseAnd {uint_id} {temp} {c_id}")
+                ternary_decompose(dst_id, a_id, b_id, c_id, inst.imm8)
 
             elif isinstance(inst, Unary):
                 a_id = reg_map.get(f"v{inst.a.id}", const_0)

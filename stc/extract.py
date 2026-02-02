@@ -20,6 +20,7 @@ from stc.tick_ir import (
     Or,
     Shl,
     Slice,
+    TernaryLut,
     Lut8,
     Sub,
     TickIR,
@@ -47,6 +48,83 @@ def _parse_param_int(value: str) -> int:
     if v and all(c in "01" for c in v):
         return int(v, 2)
     return int(v, 10)
+
+
+def _parse_lut_bits(raw: str, *, size: int) -> list[int]:
+    s = raw.strip()
+    if not s:
+        raise ExtractionError("lut parameter empty")
+    # Support Verilog-like width/base literals (e.g., 8'b1010, 8'hA5)
+    if "'" in s:
+        parts = s.split("'")
+        if len(parts) == 2:
+            _, rhs = parts
+            if rhs:
+                base = rhs[0].lower()
+                digits = rhs[1:]
+                if base == "b":
+                    s = digits
+                elif base == "h":
+                    v = int(digits, 16)
+                    s = bin(v)[2:]
+                elif base == "d":
+                    v = int(digits, 10)
+                    s = bin(v)[2:]
+    if any(c in "abcdefABCDEF" for c in s):
+        v = int(s, 16)
+        s = bin(v)[2:]
+    if any(c not in "01" for c in s):
+        raise ExtractionError("lut parameter must be binary/hex")
+    bits = [1 if c == "1" else 0 for c in s[::-1]]  # LSB-first
+    if len(bits) < size:
+        bits += [0] * (size - len(bits))
+    if len(bits) != size:
+        raise ExtractionError("lut parameter size mismatch")
+    return bits
+
+
+def _lut1_expr(x: Expr, bits: list[int]) -> Expr:
+    if bits[0] == 0 and bits[1] == 0:
+        return BoolConst(value=False)
+    if bits[0] == 1 and bits[1] == 1:
+        return BoolConst(value=True)
+    if bits[0] == 0 and bits[1] == 1:
+        return x
+    if bits[0] == 1 and bits[1] == 0:
+        return Not(x=x)
+    raise ExtractionError("invalid LUT1 bits")
+
+
+def _lut2_expr(x: Expr, y: Expr, bits: list[int]) -> Expr:
+    # bits index = x + 2*y (LSB-first)
+    t = bits[0] | (bits[1] << 1) | (bits[2] << 2) | (bits[3] << 3)
+    if t == 0b0000:
+        return BoolConst(value=False)
+    if t == 0b1111:
+        return BoolConst(value=True)
+    if t == 0b1010:
+        return x
+    if t == 0b1100:
+        return y
+    if t == 0b0101:
+        return Not(x=x)
+    if t == 0b0011:
+        return Not(x=y)
+    if t == 0b1000:
+        return And(a=x, b=y)
+    if t == 0b1110:
+        return Or(a=x, b=y)
+    if t == 0b0110:
+        return Xor(a=x, b=y)
+    if t == 0b1001:
+        return Not(x=Xor(a=x, b=y))
+    # Shannon expansion via mux on y, then x
+    def _const(v: int) -> Expr:
+        return BoolConst(value=bool(v))
+
+    f0 = Mux(cond=x, a=_const(bits[1]), b=_const(bits[0]))
+    f1 = Mux(cond=x, a=_const(bits[3]), b=_const(bits[2]))
+    return Mux(cond=y, a=f1, b=f0)
 
 
 def _port_type(bits: list[int]) -> Type:
@@ -173,8 +251,9 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
         else:
             outputs[port.name] = t
 
+    seq_cells = {"$dff", "$dffe", "$sdff", "$sdffe", "$_SDFF_PP0_", "$_SDFFE_PP0P_"}
     for cell in module.cells.values():
-        if cell.type not in {"$dff", "$dffe", "$sdff", "$sdffe"}:
+        if cell.type not in seq_cells:
             continue
         q_bits = cell.connections["Q"]
         d_bits = cell.connections["D"]
@@ -183,7 +262,7 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
         t = _port_type(q_bits)
         state[cell.name] = t
         if isinstance(t, BoolType):
-            if cell.type in {"$sdff", "$sdffe"}:
+            if cell.type in {"$sdff", "$sdffe", "$_SDFF_PP0_", "$_SDFFE_PP0P_"}:
                 v = _parse_param_int(cell.parameters.get("SRST_VALUE", "0"))
                 reset_state[cell.name] = BoolConst(value=bool(v & 1))
             else:
@@ -191,7 +270,7 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
             state_bits[q_bits[0]] = Var(name=cell.name)
         else:
             assert isinstance(t, BitVecType)
-            if cell.type in {"$sdff", "$sdffe"}:
+            if cell.type in {"$sdff", "$sdffe", "$_SDFF_PP0_", "$_SDFFE_PP0P_"}:
                 v = _parse_param_int(cell.parameters.get("SRST_VALUE", "0"))
                 reset_state[cell.name] = BitVecConst(width=t.width, value=v)
             else:
@@ -201,7 +280,7 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
 
     bit_drivers: dict[int, tuple[str, str, int]] = {}
     for cell_name, cell in module.cells.items():
-        if cell.type in {"$dff", "$dffe", "$sdff", "$sdffe"}:
+        if cell.type in seq_cells:
             continue
         for port_name, direction in cell.port_directions.items():
             if direction != "output":
@@ -589,6 +668,36 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
                 raise ExtractionError("memrd missing matching meminit_v2")
             addr = bus("ADDR")
             expr = Lut8(x=addr, table=table)
+        elif t == "$lut":
+            if out_port not in {"Y", "OUT"}:
+                raise ExtractionError("lut supports only Y/OUT output")
+            a_bits = cell.connections.get("A")
+            if a_bits is None:
+                raise ExtractionError("lut missing A port")
+            if y_width != 1:
+                raise ExtractionError("lut output must be 1 bit")
+            lut_param = cell.parameters.get("LUT")
+            if lut_param is None:
+                raise ExtractionError("lut missing LUT parameter")
+            n_inputs = len(a_bits)
+            lut_width = _parse_param_int(cell.parameters.get("WIDTH", str(n_inputs)))
+            if lut_width != n_inputs:
+                raise ExtractionError("lut WIDTH does not match A width")
+            if n_inputs < 1 or n_inputs > 3:
+                raise ExtractionError("lut supports only 1-3 inputs")
+            bits = _parse_lut_bits(lut_param, size=1 << n_inputs)
+            inputs = [expr_for_bit(b) for b in a_bits]
+            if n_inputs == 1:
+                expr = _lut1_expr(inputs[0], bits)
+            elif n_inputs == 2:
+                expr = _lut2_expr(inputs[0], inputs[1], bits)
+            else:
+                imm8 = 0
+                for i in range(8):
+                    if bits[i]:
+                        imm8 |= 1 << i
+                # Map A[2],A[1],A[0] -> (a,b,c) so imm8 index matches A LSB order.
+                expr = TernaryLut(a=inputs[2], b=inputs[1], c=inputs[0], imm8=imm8)
         else:
             raise ExtractionError(f"unsupported cell type: {t}")
 
@@ -602,18 +711,37 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
         output_exprs[port.name] = _bus_from_bits(port.bits, expr_for_bit, width_of_expr)
 
     for cell in module.cells.values():
-        if cell.type not in {"$dff", "$dffe", "$sdff", "$sdffe"}:
+        if cell.type not in seq_cells:
             continue
         d_bits = cell.connections["D"]
         d_bus = _bus_from_bits(d_bits, expr_for_bit, width_of_expr)
-        if cell.type in {"$dffe", "$sdffe"}:
-            en_bits = cell.connections.get("EN")
+        if cell.type in {"$dffe", "$sdffe", "$_SDFFE_PP0P_"}:
+            en_bits = cell.connections.get("EN") or cell.connections.get("E")
             if en_bits is None or len(en_bits) != 1:
                 raise ExtractionError("dffe enable must be 1 bit")
             en = expr_for_bit(en_bits[0])
-            next_state[cell.name] = Mux(cond=en, a=d_bus, b=Var(name=cell.name))
+            next_expr = Mux(cond=en, a=d_bus, b=Var(name=cell.name))
         else:
-            next_state[cell.name] = d_bus
+            next_expr = d_bus
+
+        if cell.type in {"$sdff", "$sdffe"}:
+            rst_bits = cell.connections.get("SRST")
+            if rst_bits is None or len(rst_bits) != 1:
+                raise ExtractionError("sdff reset must be 1 bit")
+            rst = expr_for_bit(rst_bits[0])
+            next_state[cell.name] = Mux(
+                cond=rst, a=reset_state[cell.name], b=next_expr
+            )
+        elif cell.type in {"$_SDFF_PP0_", "$_SDFFE_PP0P_"}:
+            rst_bits = cell.connections.get("R")
+            if rst_bits is None or len(rst_bits) != 1:
+                raise ExtractionError("sdff reset must be 1 bit")
+            rst = expr_for_bit(rst_bits[0])
+            next_state[cell.name] = Mux(
+                cond=rst, a=reset_state[cell.name], b=next_expr
+            )
+        else:
+            next_state[cell.name] = next_expr
 
     return TickIR(
         name=design.top,

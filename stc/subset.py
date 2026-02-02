@@ -53,6 +53,9 @@ SUPPORTED_CELL_TYPES = {
     "$_MUX_",
     "$_ANDNOT_",
     "$_ORNOT_",
+    "$_SDFF_PP0_",
+    "$_SDFFE_PP0P_",
+    "$lut",
 }
 
 

@@ -58,6 +58,8 @@ def run_pipeline(
     superopt_timeout_ms: int = 200,
     no_backend: bool = False,
     use_synth: bool = False,
+    use_abc_lut3: bool = False,
+    abc_lut3_depth: int | None = None,
     io_map: Path | None = None,
     avr_project: bool = False,
     backend: str = "generic",
@@ -84,7 +86,9 @@ def run_pipeline(
 ) -> None:
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if input_path.suffix == ".v":
+    if input_path.suffix == ".v" or input_path.is_dir():
+        if use_synth and use_abc_lut3:
+            raise ValueError("Cannot use both --use-synth and --abc-lut3")
         normalized_json = out_dir / "normalized.json"
         run_yosys(
             input_path,
@@ -92,6 +96,8 @@ def run_pipeline(
             top=top,
             output_script=out_dir / "normalized.ys",
             use_synth=use_synth,
+            use_abc_lut3=use_abc_lut3,
+            abc_lut3_depth=abc_lut3_depth,
         )
     else:
         normalized_json = input_path
@@ -318,6 +324,18 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         action="store_true",
         default=False,
         help="Use Yosys synth pass with ABC optimization (generates techmap cells)",
+    )
+    p.add_argument(
+        "--abc-lut3",
+        action="store_true",
+        default=False,
+        help="Use Yosys+ABC LUT3 mapping (targets lop3/vpternlog)",
+    )
+    p.add_argument(
+        "--abc-lut3-depth",
+        type=int,
+        default=None,
+        help="Depth target for ABC LUT3 mapping (depth-first then size recovery)",
     )
     p.add_argument("--io-map", type=Path, default=None)
     p.add_argument("--avr-project", action="store_true", default=False)
@@ -578,6 +596,8 @@ def main(argv: list[str] | None = None) -> int:
             superopt_timeout_ms=ns.superopt_timeout_ms,
             no_backend=ns.no_backend,
             use_synth=ns.use_synth,
+            use_abc_lut3=ns.abc_lut3,
+            abc_lut3_depth=ns.abc_lut3_depth,
             io_map=ns.io_map,
             avr_project=ns.avr_project,
             backend=ns.backend,
