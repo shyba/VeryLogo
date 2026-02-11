@@ -75,8 +75,9 @@ class TestSimdMaskedPredication(unittest.TestCase):
                 int(eval_expr(cand, types, env)),
             )
 
-    def test_tick_ir_json_roundtrip(self) -> None:
+    def test_tick_ir_bin_roundtrip(self) -> None:
         from stc.tick_ir import SimdAddMasked
+        from stc.tick_ir_bin2 import read_tick_ir_bin, write_tick_ir_bin
 
         t = SimdType(lane_width=32, lanes=16)
         mask = SimdUlt(a=Var("x"), b=Var("y"))
@@ -92,5 +93,6 @@ class TestSimdMaskedPredication(unittest.TestCase):
             },
         )
         validate_tick_ir(ir)
-        rt = TickIR.from_dict(ir.to_dict())
+        write_tick_ir_bin(ir, "out/test_tick_ir.bin")
+        rt = read_tick_ir_bin("out/test_tick_ir.bin")
         self.assertEqual(rt.to_dict(), ir.to_dict())

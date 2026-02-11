@@ -140,7 +140,9 @@ class LinearScanAllocator:
                 )
 
                 if spill_target is not None:
-                    reg_assignment[current.node] = reg + reg_offset
+                    # `_spill_at_interval` returns the absolute register id of the
+                    # evicted interval. Reusing it must not re-apply `reg_offset`.
+                    reg_assignment[current.node] = reg
                     active.append(current)
                     active.sort(key=lambda r: r.end)
                 else:

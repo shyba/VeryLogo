@@ -1,4 +1,3 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -120,21 +119,24 @@ class TestRegionDiagnostics(unittest.TestCase):
             output_dir = Path(tmpdir)
             write_region_diagnostics(diagnostics, output_dir)
 
-            regions_path = output_dir / "regions.json"
-            stats_path = output_dir / "regions_stats.json"
+            regions_path = output_dir / "regions.bin"
+            stats_path = output_dir / "regions_stats.bin"
 
             self.assertTrue(regions_path.exists())
             self.assertTrue(stats_path.exists())
 
-            with open(regions_path) as f:
-                regions_data = json.load(f)
-                self.assertEqual(regions_data["total_regions"], 1)
-                self.assertEqual(regions_data["ordering"], "topological")
+            from stc.region_diagnostics_bin import (
+                read_regions_bin,
+                read_regions_stats_bin,
+            )
 
-            with open(stats_path) as f:
-                stats_data = json.load(f)
-                self.assertEqual(stats_data["total_gates"], 2)
-                self.assertIn("gates_per_region", stats_data)
+            regions_data = read_regions_bin(regions_path)
+            self.assertEqual(regions_data["total_regions"], 1)
+            self.assertEqual(regions_data["ordering"], "topological")
+
+            stats_data = read_regions_stats_bin(stats_path)
+            self.assertEqual(stats_data["total_gates"], 2)
+            self.assertIn("gates_per_region", stats_data)
 
     def test_generate_dot(self):
         circuit = PackedCircuitState(

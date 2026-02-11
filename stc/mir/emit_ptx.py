@@ -49,15 +49,15 @@ def emit_ptx(
     num_input_regs = len(mir.input_regs)
     max_reg = max(num_input_regs - 1, num_physical_regs - 1)
 
-    for r in range(max_reg + 1):
-        lines.append(f"    .reg .b32 %r{r};")
+    if max_reg >= 0:
+        lines.append(f"    .reg .b32 %r<{max_reg + 1}>;")
 
     lines.append("    .reg .u64 %in_addr;")
     lines.append("    .reg .u64 %out_addr;")
 
     num_spills = len(allocation.spills)
-    for slot in range(num_spills):
-        lines.append(f"    .reg .b32 %stack{slot};")
+    if num_spills > 0:
+        lines.append(f"    .reg .b32 %stack<{num_spills}>;")
 
     lines.append("")
     lines.append("    ld.param.u64 %in_addr, [in_ptr];")
@@ -123,10 +123,10 @@ def _emit_inst_ptx(
         elif inst.op == "xor":
             lines.append(f"xor.b32 {dst}, {a}, {b};")
         elif inst.op == "andn":
-            lines.append(f"not.b32 {dst}, {a};")
-            lines.append(f"and.b32 {dst}, {dst}, {b};")
+            # andn(a, b) == (~a) & b; encode as a single ternary op.
+            lines.append(f"lop3.b32 {dst}, {a}, {b}, {a}, 12;")
         else:
-            lines.append(f"mov.b32 {dst}, 0;")
+            raise ValueError(f"Unsupported PTX binary op: {inst.op}")
 
     elif isinstance(inst, Unary):
         dst = _reg_name_ptx(inst.dst, vreg_to_preg)
@@ -134,7 +134,7 @@ def _emit_inst_ptx(
         if inst.op == "not":
             lines.append(f"not.b32 {dst}, {a};")
         else:
-            lines.append(f"mov.b32 {dst}, {a};")
+            raise ValueError(f"Unsupported PTX unary op: {inst.op}")
 
     elif isinstance(inst, Ternary):
         dst = _reg_name_ptx(inst.dst, vreg_to_preg)
@@ -153,7 +153,8 @@ def _emit_inst_ptx(
     elif isinstance(inst, Copy):
         dst = _reg_name_ptx(inst.dst, vreg_to_preg)
         src = _reg_name_ptx(inst.src, vreg_to_preg)
-        lines.append(f"mov.b32 {dst}, {src};")
+        if dst != src:
+            lines.append(f"mov.b32 {dst}, {src};")
 
     elif isinstance(inst, Const):
         dst = _reg_name_ptx(inst.dst, vreg_to_preg)

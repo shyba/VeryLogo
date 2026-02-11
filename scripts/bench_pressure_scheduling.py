@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Benchmark pressure-aware scheduling on Keccak."""
-import json
 import subprocess
 import tempfile
 from pathlib import Path
 
+from stc.schedule_stats_bin import read_schedule_stats_bin
 
 def run_with_pressure(pressure_limit: int | None, out_dir: Path, flat_json: Path):
     """Compile Keccak with given pressure limit."""
@@ -28,9 +28,9 @@ def run_with_pressure(pressure_limit: int | None, out_dir: Path, flat_json: Path
 
     subprocess.run(cmd, check=True, env={"PYTHONPATH": "."})
 
-    stats_path = out_dir / "schedule_stats.json"
+    stats_path = out_dir / "schedule_stats.bin"
     if stats_path.exists():
-        return json.loads(stats_path.read_text())
+        return read_schedule_stats_bin(stats_path)
     return None
 
 

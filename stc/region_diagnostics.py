@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import statistics
 from dataclasses import dataclass
 from pathlib import Path
@@ -168,14 +167,15 @@ def generate_region_diagnostics(
 
 def write_region_diagnostics(diagnostics: RegionDiagnostics, output_dir: Path) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    from stc.region_diagnostics_bin import (
+        write_regions_bin,
+        write_regions_stats_bin,
+    )
 
-    regions_path = output_dir / "regions.json"
-    with open(regions_path, "w") as f:
-        json.dump(diagnostics.regions_data, f, indent=2)
-
-    stats_path = output_dir / "regions_stats.json"
-    with open(stats_path, "w") as f:
-        json.dump(diagnostics.regions_stats, f, indent=2)
+    regions_path = output_dir / "regions.bin"
+    write_regions_bin(diagnostics, regions_path)
+    stats_path = output_dir / "regions_stats.bin"
+    write_regions_stats_bin(diagnostics, stats_path)
 
 
 def generate_region_dot(regions: list[Region], graph: DepGraph) -> str:

@@ -38,11 +38,20 @@ def _mask(width: int) -> int:
 
 
 def classify_arithmetic_expr(
-    expr: Expr, types: dict[str, BoolType | BitVecType | FloatType | SimdType]
+    expr: Expr,
+    types: dict[str, BoolType | BitVecType | FloatType | SimdType],
+    memo: dict[int, Expr] | None = None,
 ) -> Expr:
     from stc.tick_ir import FloatConst, SimdConst
 
+    if memo is None:
+        memo = {}
+    key = id(expr)
+    if key in memo:
+        return memo[key]
+
     if isinstance(expr, (BoolConst, BitVecConst, FloatConst, SimdConst, Var)):
+        memo[key] = expr
         return expr
 
     from stc.tick_ir import (

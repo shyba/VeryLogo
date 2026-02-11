@@ -29,54 +29,140 @@ def _key_value(v: object) -> tuple[Any, ...]:
     raise TypeError("unsupported key value")
 
 
+_FIELDS_CACHE: dict[type, tuple] = {}
+
+
+def _get_fields(cls: type) -> tuple:
+    cached = _FIELDS_CACHE.get(cls)
+    if cached is not None:
+        return cached
+    cached = tuple(fields(cls))
+    _FIELDS_CACHE[cls] = cached
+    return cached
+
+
 def _key_expr(expr: Expr) -> tuple[Any, ...]:
     if not is_dataclass(expr):
         raise TypeError("expr must be dataclass")
     items: list[tuple[Any, ...]] = []
-    for f in fields(expr):
+    for f in _get_fields(expr.__class__):
         items.append((f.name, _key_value(getattr(expr, f.name))))
     return (expr.__class__.__name__, tuple(items))
 
 
-def hashcons_expr(expr: Expr, memo: dict[tuple[Any, ...], Expr]) -> Expr:
-    if isinstance(expr, (BoolType, BitVecType, SimdType)):
-        raise TypeError("expected expression")
-    if not is_dataclass(expr):
-        raise TypeError("expr must be dataclass")
-
-    kwargs: dict[str, object] = {}
-    for f in fields(expr):
+def _iter_child_exprs(expr: Expr) -> list[Expr]:
+    children: list[Expr] = []
+    for f in _get_fields(expr.__class__):
         v = getattr(expr, f.name)
         if isinstance(v, EXPR_CLASSES):
-            kwargs[f.name] = hashcons_expr(v, memo)
-        elif isinstance(v, list):
+            children.append(v)
+        elif isinstance(v, (list, tuple)):
+            for item in v:
+                if isinstance(item, EXPR_CLASSES):
+                    children.append(item)
+    return children
+
+
+def _postorder_exprs(roots: list[Expr]) -> list[Expr]:
+    order: list[Expr] = []
+    seen: set[int] = set()
+    done: set[int] = set()
+    stack: list[tuple[Expr, bool]] = [(r, False) for r in roots]
+    while stack:
+        expr, expanded = stack.pop()
+        eid = id(expr)
+        if eid in done:
+            continue
+        if not expanded:
+            if eid in seen:
+                continue
+            seen.add(eid)
+            stack.append((expr, True))
+            for child in _iter_child_exprs(expr):
+                stack.append((child, False))
+        else:
+            done.add(eid)
+            order.append(expr)
+    return order
+
+
+def _key_value_fast(v: object, id_map: dict[int, int]) -> tuple[Any, ...]:
+    if v is None:
+        return ("none",)
+    if isinstance(v, (bool, int, str)):
+        return ("val", v)
+    if isinstance(v, (BoolType, BitVecType, SimdType)):
+        return ("type",) + _key_type(v)
+    if isinstance(v, EXPR_CLASSES):
+        return ("expr", id_map[id(v)])
+    if isinstance(v, (list, tuple)):
+        out: list[Any] = []
+        for item in v:
+            if isinstance(item, EXPR_CLASSES):
+                out.append(("expr", id_map[id(item)]))
+            else:
+                out.append(_key_value_fast(item, id_map))
+        return ("seq", tuple(out))
+    raise TypeError("unsupported key value")
+
+
+def _key_expr_fast(expr: Expr, id_map: dict[int, int]) -> tuple[Any, ...]:
+    if not is_dataclass(expr):
+        raise TypeError("expr must be dataclass")
+    items: list[tuple[Any, ...]] = []
+    for f in _get_fields(expr.__class__):
+        items.append((f.name, _key_value_fast(getattr(expr, f.name), id_map)))
+    return (expr.__class__.__name__, tuple(items))
+
+
+def _rebuild_expr(expr: Expr, canon_map: dict[int, Expr]) -> Expr:
+    kwargs: dict[str, object] = {}
+    for f in _get_fields(expr.__class__):
+        v = getattr(expr, f.name)
+        if isinstance(v, EXPR_CLASSES):
+            kwargs[f.name] = canon_map[id(v)]
+        elif isinstance(v, (list, tuple)):
             out: list[object] = []
             for item in v:
                 if isinstance(item, EXPR_CLASSES):
-                    out.append(hashcons_expr(item, memo))
+                    out.append(canon_map[id(item)])
                 else:
                     out.append(item)
             kwargs[f.name] = out
         else:
             kwargs[f.name] = v
-
-    rebuilt = expr.__class__(**kwargs)
-    k = _key_expr(rebuilt)
-    prev = memo.get(k)
-    if prev is not None:
-        return prev
-    memo[k] = rebuilt
-    return rebuilt
+    return expr.__class__(**kwargs)
 
 
 def hashcons_tick_ir(ir: TickIR) -> TickIR:
     memo: dict[tuple[Any, ...], Expr] = {}
+    roots: list[Expr] = list(ir.reset_state.values()) + list(ir.next_state.values()) + list(
+        ir.output_exprs.values()
+    )
+    order = _postorder_exprs(roots)
+    id_map = {id(expr): idx for idx, expr in enumerate(order)}
+    canon_map: dict[int, Expr] = {}
+    for expr in order:
+        key = _key_expr_fast(expr, id_map)
+        prev = memo.get(key)
+        if prev is not None:
+            canon = prev
+        else:
+            canon = _rebuild_expr(expr, canon_map)
+            memo[key] = canon
+        canon_map[id(expr)] = canon
     return TickIR(
         name=ir.name,
         inputs=dict(ir.inputs),
         outputs=dict(ir.outputs),
         state=dict(ir.state),
-        reset_state={k: hashcons_expr(v, memo) for k, v in ir.reset_state.items()},
-        next_state={k: hashcons_expr(v, memo) for k, v in ir.next_state.items()},
-        output_exprs={k: hashcons_expr(v, memo) for k, v in ir.output_exprs.items()},
+        reset_state={
+            k: canon_map[id(v)] for k, v in ir.reset_state.items()
+        },
+        next_state={
+            k: canon_map[id(v)] for k, v in ir.next_state.items()
+        },
+        output_exprs={
+            k: canon_map[id(v)] for k, v in ir.output_exprs.items()
+        },
     )

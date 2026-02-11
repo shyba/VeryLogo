@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import time
 from pathlib import Path
 
@@ -14,13 +13,13 @@ from stc.testing.native_x86_runner import (
     have_avx512,
     run_avx512_steps_shared,
 )
-from stc.tick_ir import TickIR
+from stc.tick_ir_bin2 import read_tick_ir_bin
 from stc.tick_ir_to_packed_circuit_state import lower_tick_ir_to_packed_circuit_state
 
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--tick-ir", type=Path, default=Path("out/reduced_tick_ir.json"))
+    ap.add_argument("--tick-ir", type=Path, default=Path("out/reduced_tick_ir.bin"))
     ap.add_argument("--out", type=Path, default=Path("out/packed_bench"))
     ap.add_argument("--steps", type=int, default=1024)
     ap.add_argument("--iters", type=int, default=200)
@@ -32,7 +31,7 @@ def main() -> int:
     if not have_avx512():
         raise SystemExit("requires avx512f")
 
-    ir = TickIR.from_dict(json.loads(ns.tick_ir.read_text(encoding="utf-8")))
+    ir = read_tick_ir_bin(str(ns.tick_ir))
     circuit, layout = lower_tick_ir_to_packed_circuit_state(ir)
 
     code = emit_avx512_u64_regions(

@@ -4,6 +4,7 @@ import unittest
 from pathlib import Path
 
 from stc.cli import run_pipeline
+from stc.tick_ir_bin2 import read_tick_ir_bin
 from stc.tooling import ToolMissing
 
 
@@ -30,13 +31,13 @@ class TestCliPipeline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             base = Path(d)
             normalized = base / "normalized.json"
-            normalized.write_text(json.dumps(design), encoding="utf-8")
+            normalized.write_text(__import__("json").dumps(design), encoding="utf-8")
             out_dir = base / "out"
 
             run_pipeline(normalized, out_dir, bound=2)
 
-            self.assertTrue((out_dir / "tick_ir.json").exists())
-            self.assertTrue((out_dir / "reduced_tick_ir.json").exists())
+            self.assertTrue((out_dir / "tick_ir.bin").exists())
+            self.assertTrue((out_dir / "reduced_tick_ir.bin").exists())
             self.assertTrue((out_dir / "avr.c").exists())
 
     def test_pipeline_fuse_ticks_replicate_inputs(self) -> None:
@@ -61,7 +62,7 @@ class TestCliPipeline(unittest.TestCase):
         with tempfile.TemporaryDirectory() as d:
             base = Path(d)
             normalized = base / "normalized.json"
-            normalized.write_text(json.dumps(design), encoding="utf-8")
+            normalized.write_text(__import__("json").dumps(design), encoding="utf-8")
             out_dir = base / "out"
 
             run_pipeline(
@@ -73,16 +74,48 @@ class TestCliPipeline(unittest.TestCase):
                 fuse_input_policy="replicate",
             )
 
-            reduced = json.loads(
-                (out_dir / "reduced_tick_ir.json").read_text(encoding="utf-8")
-            )
-            self.assertIn("a__t2", reduced["inputs"])
-            # Output at final fused tick should depend on the final replicated input.
-            self.assertIn("y", reduced["output_exprs"])
-            y = reduced["output_exprs"]["y"]
-            self.assertEqual(y["kind"], "not")
-            self.assertEqual(y["x"]["kind"], "var")
-            self.assertEqual(y["x"]["name"], "a__t2")
+            reduced = read_tick_ir_bin(out_dir / "reduced_tick_ir.bin")
+            self.assertIn("a__t2", reduced.inputs)
+            self.assertIn("y", reduced.output_exprs)
+            y = reduced.output_exprs["y"]
+            from stc.tick_ir import Not, Var
+
+            self.assertIsInstance(y, Not)
+            self.assertIsInstance(y.x, Var)
+            self.assertEqual(y.x.name, "a__t2")
+
+    def test_pipeline_ptx_backend_emits_ptx(self) -> None:
+        design = {
+            "modules": {
+                "top": {
+                    "ports": {
+                        "a": {"direction": "input", "bits": [2]},
+                        "y": {"direction": "output", "bits": [3]},
+                    },
+                    "cells": {
+                        "$not$0": {
+                            "type": "$not",
+                            "port_directions": {"A": "input", "Y": "output"},
+                            "connections": {"A": [2], "Y": [3]},
+                        }
+                    },
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            normalized = base / "normalized.json"
+            normalized.write_text(__import__("json").dumps(design), encoding="utf-8")
+            out_dir = base / "out"
+
+            run_pipeline(normalized, out_dir, bound=2, backend="ptx")
+
+            out_path = out_dir / "circuit_ptx.ptx"
+            self.assertTrue(out_path.exists())
+            self.assertFalse((out_dir / "avr.c").exists())
+            code = out_path.read_text(encoding="utf-8")
+            self.assertIn(".visible .entry", code)
 
     def test_pipeline_requires_yosys_for_verilog(self) -> None:
         import shutil
@@ -150,20 +183,18 @@ class TestCliPipeline(unittest.TestCase):
             )
 
             self.assertTrue((out_dir / "circuit_avx512_u64_regions.c").exists())
-            self.assertTrue((out_dir / "regions.json").exists())
-            self.assertTrue((out_dir / "regions_stats.json").exists())
+            self.assertTrue((out_dir / "regions.bin").exists())
+            self.assertTrue((out_dir / "regions_stats.bin").exists())
             self.assertTrue((out_dir / "regions.dot").exists())
 
-            regions_data = json.loads(
-                (out_dir / "regions.json").read_text(encoding="utf-8")
-            )
+            from stc.region_diagnostics_bin import read_regions_bin, read_regions_stats_bin
+
+            regions_data = read_regions_bin(out_dir / "regions.bin")
             self.assertIn("regions", regions_data)
             self.assertIn("total_regions", regions_data)
             self.assertEqual(regions_data["ordering"], "topological")
 
-            stats_data = json.loads(
-                (out_dir / "regions_stats.json").read_text(encoding="utf-8")
-            )
+            stats_data = read_regions_stats_bin(out_dir / "regions_stats.bin")
             self.assertIn("total_regions", stats_data)
             self.assertIn("total_gates", stats_data)
             self.assertIn("gates_per_region", stats_data)

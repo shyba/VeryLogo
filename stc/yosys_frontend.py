@@ -24,12 +24,25 @@ def run_yosys(
     use_synth: bool = False,
     use_abc_lut3: bool = False,
     abc_lut3_depth: int | None = None,
+    abc_script: Path | None = None,
 ) -> None:
     yosys = require_tool("yosys")
     top_arg = f"; hierarchy -check -top {top}" if top else "; hierarchy -check"
     input_arg = f"{input_v}/*.v" if input_v.is_dir() else f"{input_v}"
 
-    if use_abc_lut3:
+    if abc_script is not None:
+        script = (
+            f"read_verilog -sv {input_arg}"
+            f"{top_arg}"
+            "; proc"
+            "; flatten"
+            "; opt"
+            "; techmap"
+            f"; abc -script {abc_script}"
+            "; opt"
+            f"; write_json {output_json}"
+        )
+    elif use_abc_lut3:
         if abc_lut3_depth is not None and abc_lut3_depth <= 0:
             raise ValueError("abc_lut3_depth must be positive")
         # LUT3 mapping via synth -lut 3 (ABC depth-driven + area recovery).

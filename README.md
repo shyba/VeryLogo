@@ -64,8 +64,8 @@ Example (replicated per-tick inputs):
 
 ### AVR artifacts
 
-- `io_map.json` is emitted for non-SIMD designs and defines the PORTB bit layout used by the AVR backend.
-- `--io-map path/to/io_map.json` overrides the default packing.
+- `io_map.bin` is emitted for non-SIMD designs and defines the PORTB bit layout used by the AVR backend.
+- `--io-map path/to/io_map.bin` overrides the default packing.
 - `--avr-project` also emits `main.c` and `Makefile` (expects `avr.c` in the same folder).
 
 ### Host simulation (no AVR toolchain)

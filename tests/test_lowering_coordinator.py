@@ -1,4 +1,3 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
@@ -8,6 +7,7 @@ from stc.lowering_coordinator import (
     coordinate_lowering,
     write_lowering_choice_report,
 )
+from stc.lowering_choice_bin import read_lowering_choice_bin
 from stc.packed_circuit import PackedCircuitState
 from stc.tick_ir_to_packed_circuit_state import lower_tick_ir_to_packed_circuit_state
 from stc.tick_ir import (
@@ -82,19 +82,18 @@ class TestLoweringCoordinator(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as tmpdir:
             out_dir = Path(tmpdir)
-            write_lowering_choice_report(choice, out_dir)
+            write_lowering_choice_report(choice, out_dir, write_bin=True)
 
-            report_path = out_dir / "lowering_choice.json"
+            report_path = out_dir / "lowering_choice.bin"
             self.assertTrue(report_path.exists())
 
-            with open(report_path, encoding="utf-8") as f:
-                data = json.load(f)
+            data = read_lowering_choice_bin(report_path)
 
-            self.assertEqual(data["path"], "packed")
-            self.assertEqual(data["reason"], "Test reason")
-            self.assertEqual(data["unsupported"], [])
-            self.assertEqual(data["stats"]["input_bits"], 128)
-            self.assertEqual(data["stats"]["gates"], 100)
+            self.assertEqual(data.path, "packed")
+            self.assertEqual(data.reason, "Test reason")
+            self.assertEqual(data.unsupported, [])
+            self.assertEqual(data.stats["input_bits"], 128)
+            self.assertEqual(data.stats["gates"], 100)
 
     def test_lowering_choice_to_dict(self) -> None:
         choice = LoweringChoice(

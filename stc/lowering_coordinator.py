@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -7,7 +8,11 @@ from stc.circuit_synth import CircuitState
 from stc.metrics import compute_metrics
 from stc.packed_circuit import PackedCircuitState
 from stc.tick_ir import TickIR
-from stc.tick_ir_to_circuit_state import PackedLayout, lower_tick_ir_to_circuit_state
+from stc.tick_ir_to_circuit_state import (
+    PackedLayout,
+    lower_tick_ir_to_circuit_state,
+    rust_lower_tick_ir_to_circuit_state,
+)
 from stc.tick_ir_to_packed_circuit_state import (
     PackedLoweringError,
     PackedWordLayout,
@@ -75,10 +80,41 @@ def coordinate_lowering(
         "expr_depth": metrics.expr_depth_max,
     }
 
+    packed_max_expr_nodes = int(
+        os.environ.get("STC_PACKED_MAX_EXPR_NODES", "1000000")
+    )
+    packed_max_ops = int(os.environ.get("STC_PACKED_MAX_OPS", "1000000"))
+
     if prefer_packed:
+        if not force_choice and (
+            metrics.expr_nodes_total > packed_max_expr_nodes
+            or metrics.ops_total > packed_max_ops
+        ):
+            rust_result = rust_lower_tick_ir_to_circuit_state(ir)
+            if rust_result is None:
+                circuit, layout = lower_tick_ir_to_circuit_state(ir)
+            else:
+                circuit, layout = rust_result
+            reason = (
+                "Packed lowering skipped due to size thresholds "
+                f"(expr_nodes={metrics.expr_nodes_total} > {packed_max_expr_nodes} "
+                f"or ops={metrics.ops_total} > {packed_max_ops})."
+            )
+            choice = LoweringChoice(
+                path="bit",
+                reason=reason,
+                unsupported=[],
+                stats=stats,
+                gate_comparison=None,
+            )
+            return (circuit, layout, choice)
         try:
             packed, layout = lower_tick_ir_to_packed_circuit_state(ir)
-            circuit, bit_layout = lower_tick_ir_to_circuit_state(ir)
+            rust_result = rust_lower_tick_ir_to_circuit_state(ir)
+            if rust_result is None:
+                circuit, bit_layout = lower_tick_ir_to_circuit_state(ir)
+            else:
+                circuit, bit_layout = rust_result
             packed_gates = len(packed.gates)
             bit_gates = len(circuit.gates)
             ratio = packed_gates / bit_gates if bit_gates > 0 else 0.0
@@ -123,7 +159,11 @@ def coordinate_lowering(
             if e.subexpression_context:
                 reason_parts.append(f"Context: {e.subexpression_context}")
 
-            circuit, layout = lower_tick_ir_to_circuit_state(ir)
+            rust_result = rust_lower_tick_ir_to_circuit_state(ir)
+            if rust_result is None:
+                circuit, layout = lower_tick_ir_to_circuit_state(ir)
+            else:
+                circuit, layout = rust_result
             choice = LoweringChoice(
                 path="bit",
                 reason=" ".join(reason_parts),
@@ -133,7 +173,11 @@ def coordinate_lowering(
             )
             return (circuit, layout, choice)
 
-    circuit, layout = lower_tick_ir_to_circuit_state(ir)
+    rust_result = rust_lower_tick_ir_to_circuit_state(ir)
+    if rust_result is None:
+        circuit, layout = lower_tick_ir_to_circuit_state(ir)
+    else:
+        circuit, layout = rust_result
     choice = LoweringChoice(
         path="bit",
         reason="Bit-level lowering selected (prefer_packed disabled).",
@@ -157,13 +201,12 @@ def _width_bits(t) -> int:
     return 0
 
 
-def write_lowering_choice_report(choice: LoweringChoice, out_dir: Path) -> None:
-    """Write lowering choice report to out_dir/lowering_choice.json."""
-    import json
-
+def write_lowering_choice_report(
+    choice: LoweringChoice, out_dir: Path, write_bin: bool = False
+) -> None:
+    """Write lowering choice report to out_dir/lowering_choice.bin."""
     out_dir.mkdir(parents=True, exist_ok=True)
-    report_path = out_dir / "lowering_choice.json"
-    report_path.write_text(
-        json.dumps(choice.to_dict(), indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
+    if write_bin:
+        from stc.lowering_choice_bin import write_lowering_choice_bin
+
+        write_lowering_choice_bin(choice, out_dir / "lowering_choice.bin")

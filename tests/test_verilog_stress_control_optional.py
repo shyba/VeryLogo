@@ -1,4 +1,3 @@
-import json
 import random
 import shutil
 import subprocess
@@ -9,8 +8,10 @@ from typing import Any
 
 from stc.backend_sched import generate_scheduled_code
 from stc.extract import extract_tick_ir
+from stc.layout_bin import write_packed_word_layout_bin
 from stc.lowering_coordinator import coordinate_lowering
 from stc.packed_circuit import PackedCircuitState, eval_packed_circuit_words
+from stc.packed_circuit_bin import write_packed_circuit_bin
 from stc.reduce import optimize_tick_ir
 from stc.testing.native_x86_runner import have_avx512
 from stc.tick_ir_validate import validate_tick_ir
@@ -31,27 +32,26 @@ def _dump_debug_artifacts(
     debug_dir = out_dir / "debug_artifacts"
     debug_dir.mkdir(exist_ok=True)
 
-    with open(debug_dir / "packed_circuit_state.json", "w") as f:
-        json.dump(circuit.to_dict(), f, indent=2)
-
-    with open(debug_dir / "packed_word_layout.json", "w") as f:
-        json.dump(layout, f, indent=2)
+    write_packed_circuit_bin(circuit, debug_dir / "packed_circuit_state.bin")
+    write_packed_word_layout_bin(layout, debug_dir / "packed_word_layout.bin")
 
     with open(debug_dir / "impl.c", "w") as f:
         f.write(c_code)
 
-    with open(debug_dir / "inputs.json", "w") as f:
-        json.dump([hex(x) for x in inputs], f, indent=2)
-
-    with open(debug_dir / "expected.json", "w") as f:
-        json.dump([hex(x) for x in expected], f, indent=2)
-
-    with open(debug_dir / "packed_eval.json", "w") as f:
-        json.dump([hex(x) for x in packed_eval], f, indent=2)
+    (debug_dir / "inputs.txt").write_text(
+        "\n".join(hex(x) for x in inputs) + "\n", encoding="utf-8"
+    )
+    (debug_dir / "expected.txt").write_text(
+        "\n".join(hex(x) for x in expected) + "\n", encoding="utf-8"
+    )
+    (debug_dir / "packed_eval.txt").write_text(
+        "\n".join(hex(x) for x in packed_eval) + "\n", encoding="utf-8"
+    )
 
     if native_output is not None:
-        with open(debug_dir / "native_output.json", "w") as f:
-            json.dump([hex(x) for x in native_output], f, indent=2)
+        (debug_dir / "native_output.txt").write_text(
+            "\n".join(hex(x) for x in native_output) + "\n", encoding="utf-8"
+        )
 
     print(f"Debug artifacts saved to: {debug_dir}")
 

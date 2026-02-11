@@ -54,6 +54,24 @@ def main() -> int:
     p.add_argument("--ticks", type=int, default=11)
     p.add_argument("--reps", type=int, default=20)
     p.add_argument("--mode", choices=["baseline", "fused"], default="fused")
+    p.add_argument(
+        "--runtime-loop",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Emit a true PTX loop for multi-step fused mode instead of compile-time "
+            "step unrolling."
+        ),
+    )
+    p.add_argument(
+        "--assume-reset-state",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help=(
+            "Enable const-state specialization for fused mode. "
+            "Disable if specialization triggers type mismatch on a design."
+        ),
+    )
     p.add_argument("--pt", type=str, default="00112233445566778899aabbccddeeff")
     args = p.parse_args()
 
@@ -76,7 +94,14 @@ def main() -> int:
     if args.mode == "baseline":
         ptx = emit_ptx_steps(ir, sm=sm, steps=1)
     else:
-        ptx = emit_ptx_steps(ir, sm=sm, steps=int(args.ticks), assume_reset_state=True)
+        assume_reset = bool(args.assume_reset_state and not args.runtime_loop)
+        ptx = emit_ptx_steps(
+            ir,
+            sm=sm,
+            steps=int(args.ticks),
+            assume_reset_state=assume_reset,
+            runtime_step_loop=bool(args.runtime_loop),
+        )
 
     input_order = sorted(ir.inputs.keys())
     output_order = sorted(ir.outputs.keys())

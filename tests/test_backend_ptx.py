@@ -1,6 +1,6 @@
 import unittest
 
-from stc.backend_ptx import emit_ptx
+from stc.backend_ptx import emit_ptx, emit_ptx_steps
 from stc.tick_ir import (
     Add,
     BitVecConst,
@@ -227,3 +227,19 @@ class TestBackendPtx(unittest.TestCase):
         ptx = emit_ptx(ir)
         self.assertIn("shl.b32", ptx)
         self.assertIn("or.b32", ptx)
+
+    def test_runtime_step_loop_emits_branch_loop(self) -> None:
+        t = BitVecType(width=8)
+        ir = TickIR(
+            name="t_loop",
+            inputs={"a": t},
+            outputs={"o": t},
+            state={"q": t},
+            reset_state={"q": BitVecConst(width=8, value=0)},
+            next_state={"q": Add(a=Var("q"), b=Var("a"))},
+            output_exprs={"o": Var("q")},
+        )
+        ptx = emit_ptx_steps(ir, steps=4, runtime_step_loop=True)
+        self.assertIn("STEP_LOOP_", ptx)
+        self.assertIn("setp.ge.u32", ptx)
+        self.assertIn("bra STEP_DONE_", ptx)

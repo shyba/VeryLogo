@@ -1,9 +1,9 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from stc.io_map import IoMap, default_io_map, load_io_map, validate_io_map
+from stc.io_map_bin import write_io_map_bin
 from stc.tick_ir import BitVecType, BoolType, TickIR
 
 
@@ -30,8 +30,8 @@ class TestIoMap(unittest.TestCase):
             outputs={"y": {"lsb": 1, "width": 1}},
         )
         with tempfile.TemporaryDirectory() as d:
-            p = Path(d) / "io_map.json"
-            p.write_text(json.dumps(m.to_dict()), encoding="utf-8")
+            p = Path(d) / "io_map.bin"
+            write_io_map_bin(m, p)
             m2 = load_io_map(p)
         self.assertEqual(m2, m)
 

@@ -68,18 +68,22 @@ class PTXEmitter(BaseEmitter):
 
         for cycle in range(total_cycles):
             if cycle in stores_by_cycle:
-                for node, reg, _ in stores_by_cycle[cycle]:
+                for node, reg, _ in sorted(
+                    stores_by_cycle[cycle], key=lambda x: (x[0], x[1])
+                ):
                     slot = self._get_spill_slot(node, allocation)
                     src_reg = allocation.reg_assignment.get(node, reg)
                     lines.append(f"    st.local.b32 [stack+{slot * 4}], %r{src_reg};")
 
             if cycle in loads_by_cycle:
-                for node, reg, _ in loads_by_cycle[cycle]:
+                for node, reg, _ in sorted(
+                    loads_by_cycle[cycle], key=lambda x: (x[0], x[1])
+                ):
                     slot = self._get_spill_slot(node, allocation)
                     lines.append(f"    ld.local.b32 %r{reg}, [stack+{slot * 4}];")
 
             if cycle in gates_by_cycle:
-                for g_idx in gates_by_cycle[cycle]:
+                for g_idx in sorted(gates_by_cycle[cycle]):
                     node_idx = input_bits + g_idx
                     allocated_reg = allocation.reg_assignment.get(node_idx, -1)
                     if allocated_reg < 0:
@@ -183,6 +187,8 @@ class PTXEmitter(BaseEmitter):
             return f"and.b32 %r{dst_reg}, %r{left_reg}, %r{right_reg};"
         elif op == "or":
             return f"or.b32 %r{dst_reg}, %r{left_reg}, %r{right_reg};"
+        elif op in {"andn", "andnot"}:
+            return f"lop3.b32 %r{dst_reg}, %r{left_reg}, %r{right_reg}, %r{left_reg}, 12;"
         elif op == "not":
             return f"not.b32 %r{dst_reg}, %r{left_reg};"
         elif op == "const":

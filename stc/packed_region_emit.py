@@ -55,12 +55,7 @@ def emit_avx512_u64_regions(
         write_region_diagnostics(diagnostics, config.diagnostics_dir)
         write_region_dot(regions, graph, config.diagnostics_dir)
 
-    input_io_words = sum(
-        (int(v["width_bits"]) + 63) // 64 for v in layout.inputs.values()
-    )
-    output_io_words = sum(
-        (int(v["width_bits"]) + 63) // 64 for v in layout.outputs.values()
-    )
+    input_io_words, output_io_words = layout.io_words()
     state_words = layout.input_words - input_io_words
 
     # Boundary nodes: region outputs that are not primary outputs / next_state.
@@ -114,18 +109,28 @@ def emit_avx512_u64_regions(
         if op == "not":
             a = get(int(g[1]))
             return f"{dst} = _mm512_xor_si512({a}, ones);"
-        if op in ("xor", "and", "or", "add", "sub"):
+        if op in ("xor", "and", "andnot", "or", "add", "sub"):
             a = get(int(g[1]))
             b = get(int(g[2]))
             if op == "xor":
                 return f"{dst} = _mm512_xor_si512({a}, {b});"
             if op == "and":
                 return f"{dst} = _mm512_and_si512({a}, {b});"
+            if op == "andnot":
+                return f"{dst} = _mm512_andnot_si512({a}, {b});"
             if op == "or":
                 return f"{dst} = _mm512_or_si512({a}, {b});"
             if op == "add":
                 return f"{dst} = _mm512_add_epi64({a}, {b});"
             return f"{dst} = _mm512_sub_epi64({a}, {b});"
+        if op == "ternary":
+            a = get(int(g[1]))
+            b = get(int(g[2]))
+            c = get(int(g[3]))
+            imm8 = int(g[4]) & 0xFF
+            return (
+                f"{dst} = _mm512_ternarylogic_epi64({a}, {b}, {c}, {imm8});"
+            )
         if op in ("shl", "lshr"):
             a = get(int(g[1]))
             imm = int(g[2])

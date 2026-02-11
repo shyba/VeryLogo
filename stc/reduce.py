@@ -1,6 +1,11 @@
 from __future__ import annotations
 
 from collections import Counter
+import os
+import subprocess
+import tempfile
+from pathlib import Path
+import time
 
 from stc.interp import infer_type
 from stc.tick_ir import (
@@ -634,6 +639,83 @@ def reduce_tick_ir(ir: TickIR) -> TickIR:
     )
 
 
+def _find_rust_reduce_bin() -> Path | None:
+    env = os.environ.get("STC_RUST_REDUCE_BIN")
+    if env:
+        p = Path(env)
+        return p if p.exists() else None
+    for candidate in [
+        Path("rust/tick_reduce_rs/target/release/tick_reduce_rs"),
+        Path("rust/tick_reduce_rs/target/debug/tick_reduce_rs"),
+    ]:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def rust_reduce_tick_ir(ir: TickIR) -> TickIR | None:
+    if os.environ.get("STC_RUST_REDUCE", "1").lower() in {"0", "false", "no"}:
+        return None
+    bin_path = _find_rust_reduce_bin()
+    if bin_path is None:
+        return None
+    fmt_env = os.environ.get("STC_RUST_REDUCE_FORMAT")
+    fmt = fmt_env.lower() if fmt_env else "bin"
+    if fmt != "bin":
+        return None
+    try:
+        from stc.tick_ir_bin2 import write_tick_ir_bin
+    except Exception:
+        return None
+    timing_enabled = os.environ.get("STC_TIMING", "0").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+    def _log(label: str, start: float) -> None:
+        if timing_enabled:
+            elapsed = time.perf_counter() - start
+            print(f"[timing] rust_reduce:{label}: {elapsed:.3f}s", flush=True)
+    with tempfile.TemporaryDirectory(prefix="stc_rust_reduce_") as td:
+        td_path = Path(td)
+        in_path = td_path / "in.bin"
+        out_path = td_path / "out.bin"
+        if timing_enabled:
+            print("[timing] rust_reduce:start", flush=True)
+        t0 = time.perf_counter()
+        write_tick_ir_bin(ir, str(in_path))
+        _log("write_input_bin", t0)
+        try:
+            t0 = time.perf_counter()
+            subprocess.run(
+                [
+                    str(bin_path),
+                    "--input",
+                    str(in_path),
+                    "--output",
+                    str(out_path),
+                    "--format",
+                    fmt,
+                ],
+                check=True,
+                capture_output=not timing_enabled,
+                text=True,
+            )
+            _log("subprocess", t0)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return None
+        try:
+            t0 = time.perf_counter()
+            from stc.tick_ir_bin2 import read_tick_ir_bin
+
+            reduced = read_tick_ir_bin(str(out_path))
+            _log("read_output_bin", t0)
+            return reduced
+        except Exception:
+            return None
+    return None
+
+
 def optimize_tick_ir(
     ir: TickIR,
     *,
@@ -659,12 +741,28 @@ def optimize_tick_ir(
     from stc.tech import get_technology
     from stc.mapping.ternary import TernaryMappingPass
     from stc.passmgr import PassContext
+    timing_enabled = os.environ.get("STC_TIMING", "0").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
 
+    def _log_timing(label: str, start: float) -> None:
+        if timing_enabled:
+            elapsed = time.perf_counter() - start
+            print(f"[timing] optimize_tick_ir:{label}: {elapsed:.3f}s")
+
+    t0 = time.perf_counter()
     ir = lower_delays(ir)
-    ir = reduce_tick_ir(ir)
+    _log_timing("lower_delays", t0)
+    t0 = time.perf_counter()
+    rust_reduced = rust_reduce_tick_ir(ir)
+    ir = rust_reduced if rust_reduced is not None else reduce_tick_ir(ir)
+    _log_timing("reduce_tick_ir", t0)
     if fuse_ticks is not None and fuse_ticks > 1:
         from stc.fuse_ticks import FuseBudget, fuse_ticks as _fuse_ticks
 
+        t0 = time.perf_counter()
         ir = _fuse_ticks(
             ir,
             fuse_ticks,
@@ -677,7 +775,11 @@ def optimize_tick_ir(
                 max_step_ms=fuse_budget_max_step_ms,
             ),
         )
-        ir = reduce_tick_ir(ir)
+        _log_timing("fuse_ticks", t0)
+        t0 = time.perf_counter()
+        rust_reduced = rust_reduce_tick_ir(ir)
+        ir = rust_reduced if rust_reduced is not None else reduce_tick_ir(ir)
+        _log_timing("reduce_tick_ir_post_fuse", t0)
 
     tech = get_technology(backend)
     ctx = PassContext(
@@ -691,14 +793,19 @@ def optimize_tick_ir(
         ternary_mapping if ternary_mapping is not None else ternary_pass.should_run(ctx)
     )
     if should_run_ternary:
+        t0 = time.perf_counter()
         ir, _ = ternary_pass.run(ir, ctx)
+        _log_timing("ternary_mapping", t0)
     if autovec:
         from stc.autovec_pass import autovectorize_tick_ir
 
+        t0 = time.perf_counter()
         ir = autovectorize_tick_ir(ir, timeout_ms=autovec_timeout_ms)
+        _log_timing("autovec", t0)
     if superopt:
         from stc.superopt import SuperoptError, superopt_expr
 
+        t0 = time.perf_counter()
         types = {**ir.inputs, **ir.state}
 
         def go(e: Expr) -> Expr:
@@ -721,24 +828,50 @@ def optimize_tick_ir(
             next_state={k: go(v) for k, v in ir.next_state.items()},
             output_exprs={k: go(v) for k, v in ir.output_exprs.items()},
         )
+        _log_timing("superopt", t0)
 
     arith_report = None
-    if arith_classify:
+    if arith_classify and os.environ.get("STC_ARITH_CLASSIFY", "1") not in {
+        "0",
+        "false",
+        "no",
+    }:
         from stc.tick_ir_classify_arith import classify_arithmetic
 
+        t0 = time.perf_counter()
         ir, arith_report = classify_arithmetic(ir)
+        _log_timing("arith_classify", t0)
 
     if not bounded_state_opt:
-        return hashcons_tick_ir(ir), arith_report
+        if os.environ.get("STC_SKIP_HASHCONS", "0") not in {"0", "false", "no"}:
+            return ir, arith_report
+        t0 = time.perf_counter()
+        ir = hashcons_tick_ir(ir)
+        _log_timing("hashcons_tick_ir", t0)
+        return ir, arith_report
 
+    t0 = time.perf_counter()
     ir = remove_dead_state(ir, bound)
+    _log_timing("remove_dead_state", t0)
+    t0 = time.perf_counter()
     try:
         consts = constant_state_within_bound(ir, bound)
     except ReachabilityError:
-        return hashcons_tick_ir(ir), arith_report
+        if os.environ.get("STC_SKIP_HASHCONS", "0") not in {"0", "false", "no"}:
+            return ir, arith_report
+        t1 = time.perf_counter()
+        ir = hashcons_tick_ir(ir)
+        _log_timing("hashcons_tick_ir", t1)
+        return ir, arith_report
+    _log_timing("constant_state_within_bound", t0)
 
     if not consts:
-        return hashcons_tick_ir(ir), arith_report
+        if os.environ.get("STC_SKIP_HASHCONS", "0") not in {"0", "false", "no"}:
+            return ir, arith_report
+        t0 = time.perf_counter()
+        ir = hashcons_tick_ir(ir)
+        _log_timing("hashcons_tick_ir", t0)
+        return ir, arith_report
 
     repl: dict[str, Expr] = {}
     for name, value in consts.items():
@@ -773,7 +906,12 @@ def optimize_tick_ir(
         output_exprs=new_output_exprs,
     )
 
-    return hashcons_tick_ir(ir), arith_report
+    if os.environ.get("STC_SKIP_HASHCONS", "0") not in {"0", "false", "no"}:
+        return ir, arith_report
+    t0 = time.perf_counter()
+    ir = hashcons_tick_ir(ir)
+    _log_timing("hashcons_tick_ir", t0)
+    return ir, arith_report
 
 
 def fold_constants(ir: TickIR) -> tuple[TickIR, bool]:

@@ -2,13 +2,13 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-import json
 import os
 import subprocess
 import tempfile
 import time
 from pathlib import Path
 
+from stc.layout_bin import read_packed_layout_bin
 
 def _have_avx512() -> bool:
     try:
@@ -321,10 +321,10 @@ def main() -> int:
 
         c_path = out_dir / "circuit_avx512.c"
         so_path = out_dir / "circuit_avx512.so"
-        layout_path = out_dir / "io_layout.json"
+        layout_path = out_dir / "io_layout.bin"
         _build_shared(c_path, so_path)
 
-        layout = json.loads(layout_path.read_text(encoding="utf-8"))
+        layout = read_packed_layout_bin(layout_path).to_dict()
         lib = ctypes.CDLL(str(so_path))
 
         got = simulate_keccak_512_once_steps(

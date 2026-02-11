@@ -1,4 +1,3 @@
-import json
 import os
 import shutil
 import subprocess
@@ -75,19 +74,20 @@ class TestKeccakPackedLimitation(unittest.TestCase):
             if result.returncode != 0:
                 self.skipTest(f"Packed compilation failed: {result.stderr}")
 
-            bit_circuit = bitsliced_dir / "circuit_state.json"
-            packed_circuit = packed_dir / "packed_circuit_state.json"
+            bit_circuit = bitsliced_dir / "circuit_state.bin"
+            packed_circuit = packed_dir / "packed_circuit_state.bin"
 
             if not bit_circuit.exists() or not packed_circuit.exists():
                 self.skipTest("Output circuits not generated")
 
-            with open(bit_circuit) as f:
-                bit_data = json.load(f)
-            with open(packed_circuit) as f:
-                packed_data = json.load(f)
+            from stc.circuit_state_bin import read_circuit_state_bin
+            from stc.packed_circuit_bin import read_packed_circuit_bin
 
-            bit_gates = len(bit_data.get("gates", []))
-            packed_gates = len(packed_data.get("gates", []))
+            bit_data = read_circuit_state_bin(bit_circuit)
+            packed_data = read_packed_circuit_bin(packed_circuit)
+
+            bit_gates = bit_data.gate_count
+            packed_gates = packed_data.gate_count
 
             ratio = packed_gates / bit_gates if bit_gates > 0 else 0
 

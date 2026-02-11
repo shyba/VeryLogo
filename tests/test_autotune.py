@@ -1,7 +1,6 @@
 import unittest
 from pathlib import Path
 import tempfile
-import json
 
 from stc.autotune import (
     AutotuneConfig,
@@ -11,6 +10,7 @@ from stc.autotune import (
     autotune_configuration,
     write_autotune_results,
 )
+from stc.autotune_bin import read_autotune_choice_bin, read_autotune_results_bin
 from stc.circuit_synth import CircuitState
 from stc.packed_circuit import PackedCircuitState
 
@@ -109,22 +109,21 @@ class TestAutotune(unittest.TestCase):
             out_dir = Path(tmpdir)
             write_autotune_results(results, choice, out_dir)
 
-            results_path = out_dir / "autotune_results.json"
-            choice_path = out_dir / "autotune_choice.json"
+            results_path = out_dir / "autotune_results.bin"
+            choice_path = out_dir / "autotune_choice.bin"
 
             self.assertTrue(results_path.exists())
             self.assertTrue(choice_path.exists())
 
-            results_data = json.loads(results_path.read_text())
-            self.assertIn("candidates", results_data)
-            self.assertIn("seed", results_data)
-            self.assertEqual(results_data["seed"], 42)
+            results_data = read_autotune_results_bin(results_path)
+            self.assertTrue(results_data.candidates)
+            self.assertEqual(results_data.seed, 42)
 
-            choice_data = json.loads(choice_path.read_text())
-            self.assertIn("selected_id", choice_data)
-            self.assertIn("config", choice_data)
-            self.assertIn("reason", choice_data)
-            self.assertIn("scores", choice_data)
+            choice_data = read_autotune_choice_bin(choice_path)
+            self.assertIsInstance(choice_data.selected_id, int)
+            self.assertIsNotNone(choice_data.config)
+            self.assertIsInstance(choice_data.reason, str)
+            self.assertIsNotNone(choice_data.scores)
 
     def test_autotune_respects_budget(self) -> None:
         circuit = CircuitState(

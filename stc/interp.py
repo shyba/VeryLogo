@@ -178,8 +178,25 @@ def _canonicalize_nan_bits(width: int, bits: int) -> int:
         return _canonical_nan_bits(width)
     return int(bits)
 
+_INFER_TYPE_CACHE: dict[int, dict[int, Type]] = {}
+
 
 def infer_type(expr: Expr, ctx: dict[str, Type]) -> Type:
+    ctx_key = id(ctx)
+    cache = _INFER_TYPE_CACHE.get(ctx_key)
+    if cache is None:
+        cache = {}
+        _INFER_TYPE_CACHE[ctx_key] = cache
+    cache_key = id(expr)
+    cached = cache.get(cache_key)
+    if cached is not None:
+        return cached
+    t = _infer_type_no_cache(expr, ctx)
+    cache[cache_key] = t
+    return t
+
+
+def _infer_type_no_cache(expr: Expr, ctx: dict[str, Type]) -> Type:
     if isinstance(expr, BoolConst):
         return BoolType()
     if isinstance(expr, BitVecConst):

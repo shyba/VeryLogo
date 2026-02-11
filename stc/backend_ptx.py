@@ -98,7 +98,12 @@ def emit_ptx(ir: TickIR, *, sm: str = "sm_61") -> str:
 
 
 def emit_ptx_steps(
-    ir: TickIR, *, sm: str = "sm_61", steps: int = 1, assume_reset_state: bool = False
+    ir: TickIR,
+    *,
+    sm: str = "sm_61",
+    steps: int = 1,
+    assume_reset_state: bool = False,
+    runtime_step_loop: bool = False,
 ) -> str:
     validate_tick_ir(ir)
     if int(steps) < 1:
@@ -274,6 +279,27 @@ def emit_ptx_steps(
         for i in range(n):
             addr = emit_addr(base_rd, idx_r, stride_words, off_words + i)
             emit_store_u32(addr, v.words[i])
+
+    def emit_copy_value(dst: _V, src: _V, t: Type) -> None:
+        """Copy src into dst registers in-place (for runtime state loops)."""
+        if isinstance(t, BoolType):
+            if dst.kind != "pred" or dst.pred is None:
+                raise CodegenError("bool state destination must be pred")
+            if src.kind != "pred" or src.pred is None:
+                raise CodegenError("bool state source must be pred")
+            body.append(f"  mov.pred {dst.pred}, {src.pred};")
+            return
+
+        assert isinstance(t, BitVecType)
+        if dst.kind != "bits" or dst.words is None or dst.width != t.width:
+            raise CodegenError("bitvec state destination mismatch")
+        if src.kind == "pred" and src.pred is not None:
+            src = emit_bool_to_bits(src.pred, t.width)
+        if src.kind != "bits" or src.words is None or src.width != t.width:
+            raise CodegenError("bitvec state source mismatch")
+        src = emit_mask_value(src)
+        for dw, sw in zip(dst.words, src.words):
+            body.append(f"  mov.b32 {dw}, {sw};")
 
     env: dict[str, _V] = {}
 
@@ -1004,27 +1030,60 @@ def emit_ptx_steps(
                     ir.state[name], r_idx, rd_state_in, st_stride, st_offs[name]
                 )
 
+    use_runtime_loop = (
+        bool(runtime_step_loop)
+        and int(steps) > 1
+        and bool(ir.state)
+        and schedule is None
+    )
+
     last_outputs: dict[str, _V] = {}
-    for step_index in range(int(steps)):
+    if use_runtime_loop:
+        r_step = new_r()
+        p_done = new_p()
+        loop_head = new_lbl("STEP_LOOP")
+        loop_done = new_lbl("STEP_DONE")
+        body.append(f"  mov.u32 {r_step}, 0;")
+        body.append(f"{loop_head}:")
+        body.append(f"  setp.ge.u32 {p_done}, {r_step}, {int(steps)};")
+        body.append(f"  @{p_done} bra {loop_done};")
+
         memo = {}
-        repl = (
-            const_state_repl_for_step(ir, schedule, step_index=step_index)
-            if schedule is not None and const_state_steps
-            else {}
-        )
         step_outputs: dict[str, _V] = {}
         for name in output_order:
-            expr = specialize_expr(ir.output_exprs[name], ctx_types, repl)
-            step_outputs[name] = emit_expr(expr)
+            step_outputs[name] = emit_expr(ir.output_exprs[name])
         last_outputs = step_outputs
 
-        if ir.state:
-            next_env: dict[str, _V] = {}
-            for name in runtime_state_order:
-                expr = specialize_expr(ir.next_state[name], ctx_types, repl)
-                next_env[name] = emit_expr(expr)
-            for name in runtime_state_order:
-                env[name] = next_env[name]
+        next_env: dict[str, _V] = {}
+        for name in runtime_state_order:
+            next_env[name] = emit_expr(ir.next_state[name])
+        for name in runtime_state_order:
+            emit_copy_value(env[name], next_env[name], ir.state[name])
+
+        body.append(f"  add.u32 {r_step}, {r_step}, 1;")
+        body.append(f"  bra {loop_head};")
+        body.append(f"{loop_done}:")
+    else:
+        for step_index in range(int(steps)):
+            memo = {}
+            repl = (
+                const_state_repl_for_step(ir, schedule, step_index=step_index)
+                if schedule is not None and const_state_steps
+                else {}
+            )
+            step_outputs: dict[str, _V] = {}
+            for name in output_order:
+                expr = specialize_expr(ir.output_exprs[name], ctx_types, repl)
+                step_outputs[name] = emit_expr(expr)
+            last_outputs = step_outputs
+
+            if ir.state:
+                next_env: dict[str, _V] = {}
+                for name in runtime_state_order:
+                    expr = specialize_expr(ir.next_state[name], ctx_types, repl)
+                    next_env[name] = emit_expr(expr)
+                for name in runtime_state_order:
+                    env[name] = next_env[name]
 
     for name in output_order:
         v = last_outputs[name]

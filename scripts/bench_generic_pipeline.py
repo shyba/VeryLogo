@@ -2,13 +2,16 @@ from __future__ import annotations
 
 import argparse
 import ctypes
-import json
 import os
+import pprint
 import subprocess
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+from stc.layout_bin import read_packed_layout_bin, read_packed_word_layout_bin
+from stc.metrics_bin import read_metrics_bin
 
 
 def _run(
@@ -193,6 +196,13 @@ def _get_backend_cflags(backend: str) -> tuple[list[str], str]:
         raise ValueError(f"Unsupported backend: {backend}")
 
 
+def _find_rust_bin(candidates: list[str]) -> str:
+    for candidate in candidates:
+        if Path(candidate).exists():
+            return candidate
+    raise SystemExit(f"Missing required binary: {candidates[0]}")
+
+
 def _parse_circuit_offsets(c_path: Path) -> tuple[int, int]:
     content = c_path.read_text(encoding="utf-8")
     import re
@@ -208,10 +218,10 @@ def _parse_circuit_offsets(c_path: Path) -> tuple[int, int]:
     return input_io_words, output_io_words
 
 
-def _get_metrics_from_json(metrics_path: Path) -> dict:
+def _get_metrics_from_bin(metrics_path: Path) -> dict:
     if not metrics_path.exists():
         return {}
-    data = json.loads(metrics_path.read_text(encoding="utf-8"))
+    data = read_metrics_bin(metrics_path)
     return {
         "gates": data.get("gates", 0),
         "depth": data.get("depth", 0),
@@ -342,7 +352,37 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
         "--bound", type=int, default=8, help="Bound for equivalence checking"
     )
     ap.add_argument(
+        "--abc-lut3-aggressive",
+        action="store_true",
+        default=False,
+        help="Use aggressive ABC LUT3 script during Yosys normalization",
+    )
+    ap.add_argument(
+        "--scheduler",
+        choices=["list", "pipelined", "serial"],
+        default=None,
+        help="Scheduling algorithm for CPU backends (default: list)",
+    )
+    ap.add_argument(
+        "--max-live-pressure",
+        type=int,
+        default=None,
+        help="Cap register pressure for list scheduler (CPU backends)",
+    )
+    ap.add_argument(
         "--no-compile", action="store_true", help="Skip compilation, only benchmark"
+    )
+    ap.add_argument(
+        "--rust-only",
+        action="store_true",
+        default=False,
+        help="Use Rust lower + sched emit (skip Python coordinate_lowering)",
+    )
+    ap.add_argument(
+        "--packed-bitslice",
+        action="store_true",
+        default=False,
+        help="Use packed bitslice lowering (bit-level -> packed u64)",
     )
     return ap.parse_args(argv)
 
@@ -363,7 +403,7 @@ def main() -> int:
         design_name = args.case
         out_dir = Path(f"out/{args.case}")
         out_dir.mkdir(parents=True, exist_ok=True)
-        output_json = out_dir / "bench.json"
+        output_report = out_dir / "bench.txt"
         cleanup = False
     else:
         input_path = args.input
@@ -374,7 +414,7 @@ def main() -> int:
         work_dir = Path(tempfile.mkdtemp(prefix="stc_bench_"))
         out_dir = work_dir / "out"
         out_dir.mkdir(exist_ok=True)
-        output_json = None
+        output_report = None
         cleanup = True
 
     python = os.environ.get("PYTHON", ".venv/bin/python")
@@ -385,22 +425,78 @@ def main() -> int:
         if not args.no_compile:
             compile_start = time.perf_counter()
 
-            _run(
-                [
-                    python,
-                    "-m",
-                    "stc",
-                    str(input_path),
-                    "--out",
-                    str(out_dir),
-                    "--backend",
-                    args.backend,
-                    "--bound",
-                    str(args.bound),
+            stc_cmd = [
+                python,
+                "-m",
+                "stc",
+                str(input_path),
+                "--out",
+                str(out_dir),
+                "--backend",
+                args.backend,
+                "--bound",
+                str(args.bound),
+            ]
+            if top_module:
+                stc_cmd += ["--top", top_module]
+            if args.abc_lut3_aggressive:
+                stc_cmd += ["--abc-lut3-aggressive"]
+            if args.packed_bitslice:
+                stc_cmd += ["--packed-bitslice"]
+            if args.scheduler:
+                stc_cmd += ["--scheduler", args.scheduler]
+            if args.max_live_pressure is not None:
+                stc_cmd += ["--max-live-pressure", str(args.max_live_pressure)]
+            if args.rust_only:
+                stc_cmd += ["--no-backend"]
+
+            _run(stc_cmd, env={**os.environ, "PYTHONPATH": "."})
+
+            if args.rust_only and args.backend in {"x86-avx2", "x86-avx512"}:
+                rust_lower = _find_rust_bin(
+                    [
+                        "rust/tick_lower_rs/target/release/tick_lower_rs",
+                        "rust/tick_lower_rs/target/debug/tick_lower_rs",
+                    ]
+                )
+                sched_emit = _find_rust_bin(
+                    [
+                        "rust/sched_emit_rs/target/release/sched_emit_rs",
+                        "rust/sched_emit_rs/target/debug/sched_emit_rs",
+                    ]
+                )
+                tick_ir_path = out_dir / "reduced_tick_ir.bin"
+                circuit_bin = out_dir / "circuit_state.bin"
+                _run(
+                    [
+                        rust_lower,
+                        "--input",
+                        str(tick_ir_path),
+                        "--output",
+                        str(circuit_bin),
+                        "--format",
+                        "bin",
+                        "--output-format",
+                        "bin",
+                    ]
+                )
+                out_c = out_dir / f"circuit_{target}.c"
+                sched_cmd = [
+                    sched_emit,
+                    "--input",
+                    str(circuit_bin),
+                    "--output",
+                    str(out_c),
+                    "--target",
+                    target,
+                    "--scheduler",
+                    args.scheduler or "list",
+                    "--format",
+                    "bin",
                 ]
-                + (["--top", top_module] if top_module else []),
-                env={**os.environ, "PYTHONPATH": "."},
-            )
+                if args.max_live_pressure is not None:
+                    sched_cmd += ["--max-live-pressure", str(args.max_live_pressure)]
+                _run(sched_cmd)
 
             compile_end = time.perf_counter()
             compile_time = compile_end - compile_start
@@ -417,9 +513,9 @@ def main() -> int:
             def _words_for_width(w: int) -> int:
                 return (w + 31) // 32
 
-            io_layout_path = out_dir / "io_layout.json"
+            io_layout_path = out_dir / "io_layout.bin"
             if io_layout_path.exists():
-                layout = json.loads(io_layout_path.read_text(encoding="utf-8"))
+                layout = read_packed_layout_bin(io_layout_path).to_dict()
                 input_io_bits = sum(int(v["width"]) for v in layout["inputs"].values())
                 state_bits = sum(int(v["width"]) for v in layout["state"].values())
                 output_io_bits = sum(
@@ -465,7 +561,7 @@ def main() -> int:
             print(f"  Min time: {bench_results['min_time_s']:.6f}s")
             print(f"  Avg time: {bench_results['avg_time_s']:.6f}s")
 
-            reduced_metrics = _get_metrics_from_json(out_dir / "reduced_metrics.json")
+            reduced_metrics = _get_metrics_from_bin(out_dir / "reduced_metrics.bin")
             code_size = ptx_path.stat().st_size if ptx_path.exists() else 0
 
             output_data = {
@@ -494,18 +590,20 @@ def main() -> int:
 
             if c_path_packed.exists():
                 c_path = c_path_packed
-                layout_path = out_dir / "packed_word_layout.json"
-                layout = json.loads(layout_path.read_text(encoding="utf-8"))
+                layout_path = out_dir / "packed_word_layout.bin"
+                layout = read_packed_word_layout_bin(layout_path)
                 input_io_words, output_io_words = _parse_circuit_offsets(c_path)
-                total_input_words = int(layout["input_words"])
-                total_output_words = int(layout["output_words"])
+                total_input_words = int(layout.input_words)
+                total_output_words = int(layout.output_words)
                 input_io_bits = input_io_words
                 state_bits = total_input_words - input_io_words
                 output_io_bits = output_io_words
             elif c_path_bitsliced.exists():
                 c_path = c_path_bitsliced
-                layout_path = out_dir / "io_layout.json"
-                layout = json.loads(layout_path.read_text(encoding="utf-8"))
+                layout_path = out_dir / "io_layout.bin"
+                if args.rust_only and not layout_path.exists():
+                    layout_path = out_dir / "circuit_state_layout.bin"
+                layout = read_packed_layout_bin(layout_path).to_dict()
                 input_io_bits = sum(int(v["width"]) for v in layout["inputs"].values())
                 state_bits = sum(int(v["width"]) for v in layout["state"].values())
                 output_io_bits = sum(
@@ -548,7 +646,7 @@ def main() -> int:
             print(f"  Min time: {bench_results['min_time_s']:.6f}s")
             print(f"  Avg time: {bench_results['avg_time_s']:.6f}s")
 
-            reduced_metrics = _get_metrics_from_json(out_dir / "reduced_metrics.json")
+            reduced_metrics = _get_metrics_from_bin(out_dir / "reduced_metrics.bin")
             code_size = c_path.stat().st_size if c_path.exists() else 0
 
             output_data = {
@@ -571,13 +669,13 @@ def main() -> int:
                 },
             }
 
-        if output_json:
-            output_json.parent.mkdir(parents=True, exist_ok=True)
-            output_json.write_text(
-                json.dumps(output_data, indent=2, sort_keys=True) + "\n",
+        if output_report:
+            output_report.parent.mkdir(parents=True, exist_ok=True)
+            output_report.write_text(
+                pprint.pformat(output_data, sort_dicts=True) + "\n",
                 encoding="utf-8",
             )
-            print(f"\nResults written to: {output_json}")
+            print(f"\nResults written to: {output_report}")
 
     finally:
         if cleanup:

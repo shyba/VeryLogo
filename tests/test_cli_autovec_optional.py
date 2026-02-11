@@ -1,4 +1,3 @@
-import json
 import shutil
 import tempfile
 import unittest
@@ -6,6 +5,7 @@ from pathlib import Path
 
 from stc.cli import run_pipeline
 from stc.tick_ir import SimdAdd, SimdType, TickIR
+from stc.tick_ir_bin2 import read_tick_ir_bin
 
 
 @unittest.skipUnless(shutil.which("yosys"), "requires yosys")
@@ -25,10 +25,6 @@ class TestCliAutovecOptional(unittest.TestCase):
                 no_backend=True,
             )
             self.assertTrue((out_dir / "normalized.ys").exists())
-            reduced = TickIR.from_dict(
-                json.loads(
-                    (out_dir / "reduced_tick_ir.json").read_text(encoding="utf-8")
-                )
-            )
+            reduced = read_tick_ir_bin(out_dir / "reduced_tick_ir.bin")
             self.assertEqual(reduced.outputs["o"], SimdType(lane_width=4, lanes=2))
             self.assertIsInstance(reduced.output_exprs["o"], SimdAdd)

@@ -32,6 +32,11 @@ from stc.tick_ir import (
     Xor,
 )
 from stc.tick_ir_validate import validate_tick_ir
+import os
+import subprocess
+import tempfile
+import time
+from pathlib import Path
 
 
 @dataclass(frozen=True)
@@ -520,3 +525,92 @@ def lower_tick_ir_to_circuit_state(ir: TickIR) -> tuple[CircuitState, PackedLayo
         gate_count=len(gates),
     )
     return circuit, layout
+
+
+def _find_rust_lower_bin() -> Path | None:
+    env = os.environ.get("STC_RUST_LOWER_BIN")
+    if env:
+        p = Path(env)
+        return p if p.exists() else None
+    for candidate in [
+        Path("rust/tick_lower_rs/target/release/tick_lower_rs"),
+        Path("rust/tick_lower_rs/target/debug/tick_lower_rs"),
+    ]:
+        if candidate.exists():
+            return candidate
+    return None
+
+
+def rust_lower_tick_ir_to_circuit_state(
+    ir: TickIR,
+) -> tuple[CircuitState, PackedLayout] | None:
+    if os.environ.get("STC_RUST_LOWER", "1").lower() in {"0", "false", "no"}:
+        return None
+    bin_path = _find_rust_lower_bin()
+    if bin_path is None:
+        return None
+    fmt = os.environ.get("STC_RUST_LOWER_FORMAT", "bin").lower()
+    if fmt != "bin":
+        return None
+    try:
+        from stc.tick_ir_bin2 import write_tick_ir_bin
+    except Exception:
+        return None
+    timing_enabled = os.environ.get("STC_TIMING", "0").lower() not in {
+        "0",
+        "false",
+        "no",
+    }
+
+    def _log(label: str, start: float) -> None:
+        if timing_enabled:
+            elapsed = time.perf_counter() - start
+            print(f"[timing] rust_lower:{label}: {elapsed:.3f}s", flush=True)
+
+    output_fmt = os.environ.get("STC_RUST_LOWER_OUTPUT", "bin").lower()
+    if output_fmt != "bin":
+        return None
+    with tempfile.TemporaryDirectory(prefix="stc_rust_lower_") as td:
+        td_path = Path(td)
+        in_path = td_path / "in.bin"
+        out_path = td_path / "circuit_state.bin"
+        if timing_enabled:
+            print("[timing] rust_lower:start", flush=True)
+        t0 = time.perf_counter()
+        write_tick_ir_bin(ir, str(in_path))
+        _log("write_input_bin", t0)
+        try:
+            t0 = time.perf_counter()
+            subprocess.run(
+                [
+                    str(bin_path),
+                    "--input",
+                    str(in_path),
+                    "--output",
+                    str(out_path),
+                    "--format",
+                    fmt,
+                    "--output-format",
+                    output_fmt,
+                ],
+                check=True,
+                capture_output=not timing_enabled,
+                text=True,
+            )
+            _log("subprocess", t0)
+        except (subprocess.CalledProcessError, FileNotFoundError):
+            return None
+        try:
+            t0 = time.perf_counter()
+            from stc.circuit_state_bin import read_circuit_state_bin
+            from stc.layout_bin import read_packed_layout_bin
+
+            circuit = read_circuit_state_bin(out_path)
+            _log("read_output_bin", t0)
+            t0 = time.perf_counter()
+            layout_path = out_path.with_name(out_path.stem + "_layout.bin")
+            layout = read_packed_layout_bin(layout_path)
+            _log("read_layout_bin", t0)
+            return circuit, layout
+        except Exception:
+            return None

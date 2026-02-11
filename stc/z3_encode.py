@@ -1210,7 +1210,9 @@ def encode_expr(
             assert isinstance(src_t, SimdType)
             total = src_t.total_width
         if expr.offset + expr.width > total:
-            raise Z3EncodeError("slice out of bounds")
+            raise Z3EncodeError(
+                f"slice out of bounds: offset={expr.offset} width={expr.width} total={total} src_t={src_t}"
+            )
         if not isinstance(x, z3.BitVecRef):
             raise Z3EncodeError("slice source must be bitvector")
         hi = expr.offset + expr.width - 1
@@ -1231,6 +1233,8 @@ def encode_expr(
                     else z
                 )
             else:
+                if isinstance(z, z3.BoolRef):
+                    z = z3.If(z, z3.BitVecVal(1, 1), z3.BitVecVal(0, 1))
                 if not isinstance(z, z3.BitVecRef):
                     raise Z3EncodeError("concat bitvector part expected")
                 parts.append(z)

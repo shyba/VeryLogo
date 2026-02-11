@@ -5,6 +5,63 @@ from dataclasses import dataclass
 from stc.circuit_synth import CircuitState
 
 
+def const_value(
+    state: CircuitState, signal_idx: int, cache: dict[int, int | None]
+) -> int | None:
+    if signal_idx in cache:
+        return cache[signal_idx]
+    if signal_idx < state.input_bits:
+        cache[signal_idx] = None
+        return None
+    gate_idx = signal_idx - state.input_bits
+    if gate_idx < 0 or gate_idx >= len(state.gates):
+        cache[signal_idx] = None
+        return None
+
+    gate = state.gates[gate_idx]
+    if len(gate) == 5:
+        cache[signal_idx] = None
+        return None
+
+    op, left, right = gate
+    if op == "const":
+        value = left & 1
+        cache[signal_idx] = value
+        return value
+    if op == "not":
+        v = const_value(state, left, cache)
+        value = None if v is None else (v ^ 1)
+        cache[signal_idx] = value
+        return value
+    if op == "xor":
+        a = const_value(state, left, cache)
+        b = const_value(state, right, cache)
+        value = None if a is None or b is None else (a ^ b)
+        cache[signal_idx] = value
+        return value
+    if op == "and":
+        a = const_value(state, left, cache)
+        b = const_value(state, right, cache)
+        if a is None or b is None:
+            cache[signal_idx] = None
+            return None
+        value = a & b
+        cache[signal_idx] = value
+        return value
+    if op == "or":
+        a = const_value(state, left, cache)
+        b = const_value(state, right, cache)
+        if a is None or b is None:
+            cache[signal_idx] = None
+            return None
+        value = a | b
+        cache[signal_idx] = value
+        return value
+
+    cache[signal_idx] = None
+    return None
+
+
 def hamming_distance(a: int, b: int) -> int:
     return bin(a ^ b).count("1")
 
@@ -100,8 +157,13 @@ class LinearCone:
         cone_inputs_set: set[int] = set()
         output_dependencies: list[set[int]] = []
 
+        const_cache: dict[int, int | None] = {}
+        memo: dict[int, set[int]] = {}
+
         for out_idx in output_indices:
-            deps = cls._collect_linear_deps(state, out_idx, stop_at, cone_inputs_set)
+            deps = cls._collect_linear_deps(
+                state, out_idx, stop_at, cone_inputs_set, const_cache, memo
+            )
             output_dependencies.append(deps)
 
         actual_inputs: set[int] = set()
@@ -128,37 +190,85 @@ class LinearCone:
         signal_idx: int,
         stop_at: set[int],
         cone_inputs: set[int],
+        const_cache: dict[int, int | None],
+        memo: dict[int, set[int]],
     ) -> set[int]:
         """Recursively collect linear (XOR) dependencies for a signal.
 
         Returns a set of signal indices that are XORed together to produce
         the given signal.
         """
+        if signal_idx in memo:
+            cone_inputs.update(memo[signal_idx])
+            return memo[signal_idx]
+
         if signal_idx in stop_at:
             cone_inputs.add(signal_idx)
-            return {signal_idx}
+            memo[signal_idx] = {signal_idx}
+            return memo[signal_idx]
 
         if signal_idx < state.input_bits:
             cone_inputs.add(signal_idx)
-            return {signal_idx}
+            memo[signal_idx] = {signal_idx}
+            return memo[signal_idx]
 
         gate_idx = signal_idx - state.input_bits
         if gate_idx < 0 or gate_idx >= len(state.gates):
             cone_inputs.add(signal_idx)
-            return {signal_idx}
+            memo[signal_idx] = {signal_idx}
+            return memo[signal_idx]
 
-        op, left, right = state.gates[gate_idx]
+        gate = state.gates[gate_idx]
+        if len(gate) == 5:
+            cone_inputs.add(signal_idx)
+            memo[signal_idx] = {signal_idx}
+            return memo[signal_idx]
+
+        op, left, right = gate
 
         if op == "xor":
-            left_deps = cls._collect_linear_deps(state, left, stop_at, cone_inputs)
-            right_deps = cls._collect_linear_deps(state, right, stop_at, cone_inputs)
-            return left_deps.symmetric_difference(right_deps)
+            left_deps = cls._collect_linear_deps(
+                state, left, stop_at, cone_inputs, const_cache, memo
+            )
+            right_deps = cls._collect_linear_deps(
+                state, right, stop_at, cone_inputs, const_cache, memo
+            )
+            result = left_deps.symmetric_difference(right_deps)
+            memo[signal_idx] = result
+            return result
 
         if op == "not":
-            return cls._collect_linear_deps(state, left, stop_at, cone_inputs)
+            result = cls._collect_linear_deps(
+                state, left, stop_at, cone_inputs, const_cache, memo
+            )
+            memo[signal_idx] = result
+            return result
+
+        if op == "and":
+            left_const = const_value(state, left, const_cache)
+            right_const = const_value(state, right, const_cache)
+            if left_const is not None and right_const is not None:
+                memo[signal_idx] = set()
+                return memo[signal_idx]
+            if left_const == 0 or right_const == 0:
+                memo[signal_idx] = set()
+                return memo[signal_idx]
+            if left_const == 1:
+                result = cls._collect_linear_deps(
+                    state, right, stop_at, cone_inputs, const_cache, memo
+                )
+                memo[signal_idx] = result
+                return result
+            if right_const == 1:
+                result = cls._collect_linear_deps(
+                    state, left, stop_at, cone_inputs, const_cache, memo
+                )
+                memo[signal_idx] = result
+                return result
 
         cone_inputs.add(signal_idx)
-        return {signal_idx}
+        memo[signal_idx] = {signal_idx}
+        return memo[signal_idx]
 
     def to_xor_circuit(self) -> list[tuple[str, int, int]]:
         """Convert matrix back to XOR gates (naive version).

@@ -187,7 +187,9 @@ def main() -> int:
     ).eliminate_dead_code()
 
     func_name = "sbox_bp128_lop3"
-    ptx_func = generate_scheduled_code(mapped, target="ptx", function_name=func_name)
+    ptx_func = generate_scheduled_code(
+        mapped, target="ptx_legacy", function_name=func_name
+    )
     lop3_count = len(re.findall(r"\blop3\.b32\b", ptx_func))
     print(f"lop3.b32 count in function: {lop3_count}")
 

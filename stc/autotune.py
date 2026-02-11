@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import random
 import time
 from dataclasses import asdict, dataclass
@@ -312,12 +311,7 @@ def write_autotune_results(
     """Write autotune results and choice to output directory."""
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    results_path = out_dir / "autotune_results.json"
-    results_path.write_text(
-        json.dumps(results.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    from stc.autotune_bin import write_autotune_choice_bin, write_autotune_results_bin
 
-    choice_path = out_dir / "autotune_choice.json"
-    choice_path.write_text(
-        json.dumps(choice.to_dict(), indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
+    write_autotune_results_bin(results, out_dir / "autotune_results.bin")
+    write_autotune_choice_bin(choice, out_dir / "autotune_choice.bin")

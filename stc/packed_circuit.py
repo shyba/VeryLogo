@@ -4,7 +4,11 @@ from dataclasses import dataclass
 from typing import Any
 
 
-PackedGate = tuple[str, int, int] | tuple[str, int, int, int]
+PackedGate = (
+    tuple[str, int, int]
+    | tuple[str, int, int, int]
+    | tuple[str, int, int, int, int]
+)
 """
 Packed gate encoding (word-level).
 
@@ -13,11 +17,12 @@ Node indices:
 - Each gate produces one output node at index input_words + gate_index
 
 Gate forms:
-- (op, a, b): binary ops ("xor","and","or","add","sub")
-- (op, a, imm): unary ops with immediate ("shl","lshr") where imm in [0,63]
-- ("not", a, 0): unary not encoded as 3-tuple for simplicity
-- ("const", imm, 0): constant word node; imm is a 64-bit value
-- ("ult", a, b): unsigned compare; returns 1 if a<b else 0 (boolean-in-word form)
+    - (op, a, b): binary ops ("xor","and","or","add","sub","andnot")
+    - (op, a, imm): unary ops with immediate ("shl","lshr") where imm in [0,63]
+    - ("not", a, 0): unary not encoded as 3-tuple for simplicity
+    - ("const", imm, 0): constant word node; imm is a 64-bit value
+    - ("ult", a, b): unsigned compare; returns 1 if a<b else 0 (boolean-in-word form)
+    - ("ternary", a, b, c, imm8): 3-input boolean op per bit (vpternlog/lop3)
 """
 
 
@@ -100,7 +105,35 @@ def eval_packed_circuit_words(
     nodes: list[int] = [x & mask for x in inputs]
 
     for g in circuit.gates:
-        if len(g) == 3:
+        if len(g) == 5:
+            op, a, b, c, imm8 = g
+            if op != "ternary":
+                raise ValueError(f"unsupported packed gate op: {op}")
+            aa = nodes[a] & mask
+            bb = nodes[b] & mask
+            cc = nodes[c] & mask
+            na = (~aa) & mask
+            nb = (~bb) & mask
+            nc = (~cc) & mask
+            out = 0
+            if imm8 & 0x01:
+                out |= na & nb & nc
+            if imm8 & 0x02:
+                out |= na & nb & cc
+            if imm8 & 0x04:
+                out |= na & bb & nc
+            if imm8 & 0x08:
+                out |= na & bb & cc
+            if imm8 & 0x10:
+                out |= aa & nb & nc
+            if imm8 & 0x20:
+                out |= aa & nb & cc
+            if imm8 & 0x40:
+                out |= aa & bb & nc
+            if imm8 & 0x80:
+                out |= aa & bb & cc
+            v = out & mask
+        elif len(g) == 3:
             op, a, b = g
             if op == "xor":
                 v = nodes[a] ^ nodes[b]
@@ -112,6 +145,8 @@ def eval_packed_circuit_words(
                 v = (nodes[a] + nodes[b]) & mask
             elif op == "sub":
                 v = (nodes[a] - nodes[b]) & mask
+            elif op == "andnot":
+                v = (~nodes[a]) & nodes[b]
             elif op == "ult":
                 v = 1 if (nodes[a] & mask) < (nodes[b] & mask) else 0
             elif op == "not":

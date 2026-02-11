@@ -5,6 +5,7 @@ import tempfile
 import time
 from pathlib import Path
 
+from stc.circuit_state_bin import read_circuit_state_bin
 
 def compile_keccak(out_dir: Path, flat_json: Path, fuse_ticks: int):
     """Compile Keccak with given fusion level."""
@@ -69,12 +70,10 @@ def main():
             compile_time = compile_keccak(out_dir, flat_json, fuse)
 
             # Count gates in generated circuit
-            import json
-
-            circuit_path = out_dir / "circuit_state.json"
+            circuit_path = out_dir / "circuit_state.bin"
             if circuit_path.exists():
-                circuit = json.loads(circuit_path.read_text())
-                gate_count = len(circuit.get("gates", []))
+                circuit = read_circuit_state_bin(circuit_path)
+                gate_count = circuit.gate_count
             else:
                 gate_count = "N/A"
 

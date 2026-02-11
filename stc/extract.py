@@ -251,7 +251,15 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
         else:
             outputs[port.name] = t
 
-    seq_cells = {"$dff", "$dffe", "$sdff", "$sdffe", "$_SDFF_PP0_", "$_SDFFE_PP0P_"}
+    seq_cells = {
+        "$dff",
+        "$dffe",
+        "$sdff",
+        "$sdffe",
+        "$_SDFF_PP0_",
+        "$_SDFFE_PP0P_",
+        "$_SDFFE_PP0N_",
+    }
     for cell in module.cells.values():
         if cell.type not in seq_cells:
             continue
@@ -262,7 +270,13 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
         t = _port_type(q_bits)
         state[cell.name] = t
         if isinstance(t, BoolType):
-            if cell.type in {"$sdff", "$sdffe", "$_SDFF_PP0_", "$_SDFFE_PP0P_"}:
+            if cell.type in {
+                "$sdff",
+                "$sdffe",
+                "$_SDFF_PP0_",
+                "$_SDFFE_PP0P_",
+                "$_SDFFE_PP0N_",
+            }:
                 v = _parse_param_int(cell.parameters.get("SRST_VALUE", "0"))
                 reset_state[cell.name] = BoolConst(value=bool(v & 1))
             else:
@@ -270,7 +284,13 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
             state_bits[q_bits[0]] = Var(name=cell.name)
         else:
             assert isinstance(t, BitVecType)
-            if cell.type in {"$sdff", "$sdffe", "$_SDFF_PP0_", "$_SDFFE_PP0P_"}:
+            if cell.type in {
+                "$sdff",
+                "$sdffe",
+                "$_SDFF_PP0_",
+                "$_SDFFE_PP0P_",
+                "$_SDFFE_PP0N_",
+            }:
                 v = _parse_param_int(cell.parameters.get("SRST_VALUE", "0"))
                 reset_state[cell.name] = BitVecConst(width=t.width, value=v)
             else:
@@ -715,11 +735,13 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
             continue
         d_bits = cell.connections["D"]
         d_bus = _bus_from_bits(d_bits, expr_for_bit, width_of_expr)
-        if cell.type in {"$dffe", "$sdffe", "$_SDFFE_PP0P_"}:
+        if cell.type in {"$dffe", "$sdffe", "$_SDFFE_PP0P_", "$_SDFFE_PP0N_"}:
             en_bits = cell.connections.get("EN") or cell.connections.get("E")
             if en_bits is None or len(en_bits) != 1:
                 raise ExtractionError("dffe enable must be 1 bit")
             en = expr_for_bit(en_bits[0])
+            if cell.type == "$_SDFFE_PP0N_":
+                en = Not(en)
             next_expr = Mux(cond=en, a=d_bus, b=Var(name=cell.name))
         else:
             next_expr = d_bus
@@ -732,7 +754,7 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
             next_state[cell.name] = Mux(
                 cond=rst, a=reset_state[cell.name], b=next_expr
             )
-        elif cell.type in {"$_SDFF_PP0_", "$_SDFFE_PP0P_"}:
+        elif cell.type in {"$_SDFF_PP0_", "$_SDFFE_PP0P_", "$_SDFFE_PP0N_"}:
             rst_bits = cell.connections.get("R")
             if rst_bits is None or len(rst_bits) != 1:
                 raise ExtractionError("sdff reset must be 1 bit")

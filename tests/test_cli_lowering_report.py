@@ -1,9 +1,9 @@
-import json
 import tempfile
 import unittest
 from pathlib import Path
 
 from stc.lowering_coordinator import coordinate_lowering, write_lowering_choice_report
+from stc.lowering_choice_bin import read_lowering_choice_bin
 from stc.tick_ir import BitVecConst, BitVecType, TickIR, Var, Xor
 
 
@@ -24,27 +24,20 @@ class TestCliLoweringReport(unittest.TestCase):
             out_dir = Path(tmpdir) / "out"
 
             _circuit, _layout, choice = coordinate_lowering(ir, prefer_packed=True)
-            write_lowering_choice_report(choice, out_dir)
+            write_lowering_choice_report(choice, out_dir, write_bin=True)
 
-            report_path = out_dir / "lowering_choice.json"
+            report_path = out_dir / "lowering_choice.bin"
             self.assertTrue(
                 report_path.exists(),
-                "lowering_choice.json should be generated for AVX-512 backend",
+                "lowering_choice.bin should be generated for AVX-512 backend",
             )
 
-            with open(report_path, encoding="utf-8") as f:
-                report = json.load(f)
+            report = read_lowering_choice_bin(report_path)
+            self.assertEqual(report.path, "packed")
+            self.assertIsInstance(report.unsupported, list)
+            self.assertEqual(len(report.unsupported), 0)
 
-            self.assertIn("path", report)
-            self.assertIn("reason", report)
-            self.assertIn("unsupported", report)
-            self.assertIn("stats", report)
-
-            self.assertEqual(report["path"], "packed")
-            self.assertIsInstance(report["unsupported"], list)
-            self.assertEqual(len(report["unsupported"]), 0)
-
-            stats = report["stats"]
+            stats = report.stats
             self.assertIn("input_bits", stats)
             self.assertIn("state_bits", stats)
             self.assertIn("output_bits", stats)
@@ -69,22 +62,23 @@ class TestCliLoweringReport(unittest.TestCase):
             out_dir = Path(tmpdir) / "out"
 
             _circuit, _layout, choice = coordinate_lowering(ir, prefer_packed=True)
-            write_lowering_choice_report(choice, out_dir)
+            write_lowering_choice_report(choice, out_dir, write_bin=True)
 
-            report_path = out_dir / "lowering_choice.json"
+            report_path = out_dir / "lowering_choice.bin"
             self.assertTrue(report_path.exists())
 
-            with open(report_path, encoding="utf-8") as f:
-                report = json.load(f)
+            report = read_lowering_choice_bin(report_path)
 
             required_fields = ["path", "reason", "unsupported", "stats"]
             for field in required_fields:
-                self.assertIn(field, report, f"Missing required field: {field}")
+                self.assertTrue(
+                    hasattr(report, field), f"Missing required field: {field}"
+                )
 
-            self.assertIn(report["path"], ["packed", "bit"])
-            self.assertIsInstance(report["reason"], str)
-            self.assertIsInstance(report["unsupported"], list)
-            self.assertIsInstance(report["stats"], dict)
+            self.assertIn(report.path, ["packed", "bit"])
+            self.assertIsInstance(report.reason, str)
+            self.assertIsInstance(report.unsupported, list)
+            self.assertIsInstance(report.stats, dict)
 
             required_stats = [
                 "input_bits",
@@ -95,7 +89,7 @@ class TestCliLoweringReport(unittest.TestCase):
                 "expr_depth",
             ]
             for stat in required_stats:
-                self.assertIn(stat, report["stats"], f"Missing stat field: {stat}")
+                self.assertIn(stat, report.stats, f"Missing stat field: {stat}")
 
 
 if __name__ == "__main__":

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,37 +32,11 @@ class IoMap:
 
 
 def load_io_map(path: Path) -> IoMap:
-    data = json.loads(path.read_text(encoding="utf-8"))
-    if int(data.get("schema_version", 0)) != SCHEMA_VERSION:
-        raise ValueError("unsupported io_map schema_version")
-    port = data.get("port")
-    inputs = data.get("inputs")
-    outputs = data.get("outputs")
-    if not isinstance(port, str) or not port:
-        raise ValueError("invalid port")
-    if not isinstance(inputs, dict) or not isinstance(outputs, dict):
-        raise ValueError("invalid inputs/outputs")
-    for m in (inputs, outputs):
-        for name, spec in m.items():
-            if not isinstance(name, str) or not name:
-                raise ValueError("invalid signal name")
-            if not isinstance(spec, dict):
-                raise ValueError("invalid mapping spec")
-            if not isinstance(spec.get("lsb"), int) or not isinstance(
-                spec.get("width"), int
-            ):
-                raise ValueError("invalid mapping fields")
-    return IoMap(
-        port=port,
-        inputs={
-            str(k): {"lsb": int(v["lsb"]), "width": int(v["width"])}
-            for k, v in inputs.items()
-        },
-        outputs={
-            str(k): {"lsb": int(v["lsb"]), "width": int(v["width"])}
-            for k, v in outputs.items()
-        },
-    )
+    if path.suffix != ".bin":
+        raise ValueError("io_map must be a .bin file")
+    from stc.io_map_bin import read_io_map_bin
+
+    return read_io_map_bin(path)
 
 
 def validate_io_map(ir: TickIR, m: IoMap) -> None:

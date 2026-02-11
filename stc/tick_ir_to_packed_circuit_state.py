@@ -31,6 +31,7 @@ from stc.tick_ir import (
     Slice,
     Sub,
     TickIR,
+    TernaryLut,
     Type,
     Var,
     Xor,
@@ -74,6 +75,7 @@ class PackedWordLayout:
     next_state: dict[str, dict[str, int]]
     input_words: int
     output_words: int
+    mode: str = "packed"
 
     def to_dict(self) -> dict:
         return {
@@ -83,7 +85,26 @@ class PackedWordLayout:
             "next_state": self.next_state,
             "input_words": self.input_words,
             "output_words": self.output_words,
+            "mode": self.mode,
         }
+
+    def __post_init__(self) -> None:
+        if self.mode not in {"packed", "bitslice"}:
+            raise ValueError(f"invalid PackedWordLayout mode: {self.mode}")
+
+    def io_words(self) -> tuple[int, int]:
+        """Return (input_io_words, output_io_words) for emission."""
+        if self.mode == "bitslice":
+            input_io_words = sum(int(v["width_bits"]) for v in self.inputs.values())
+            output_io_words = sum(int(v["width_bits"]) for v in self.outputs.values())
+            return input_io_words, output_io_words
+        input_io_words = sum(
+            (int(v["width_bits"]) + 63) // 64 for v in self.inputs.values()
+        )
+        output_io_words = sum(
+            (int(v["width_bits"]) + 63) // 64 for v in self.outputs.values()
+        )
+        return input_io_words, output_io_words
 
 
 WORD_BITS = 64
@@ -251,6 +272,10 @@ def lower_tick_ir_to_packed_circuit_state(
         gates.append((op, a, int(imm), 0))
         return input_words + (len(gates) - 1)
 
+    def emit_ternary(a: int, b: int, c: int, imm8: int) -> int:
+        gates.append(("ternary", a, b, c, int(imm8) & 0xFF))
+        return input_words + (len(gates) - 1)
+
     def get_var_words(e: Var) -> tuple[list[int], int]:
         name = e.name
         if name not in var_words:
@@ -325,6 +350,20 @@ def lower_tick_ir_to_packed_circuit_state(
             ws, w = lower_expr_to_words(e.x)
             out = [emit_unary("not", wi) for wi in ws]
             res = _truncate(out, w)
+            memo[ekey] = (list(res[0]), int(res[1]))
+            return _track_and_return(res)
+        if isinstance(e, TernaryLut):
+            wa, aw = lower_expr_to_words(e.a)
+            wb, bw = lower_expr_to_words(e.b)
+            wc, cw = lower_expr_to_words(e.c)
+            if aw != bw or aw != cw:
+                raise PackedLoweringError(
+                    message=f"width mismatch in ternary lut: {aw}, {bw}, {cw}",
+                    expression_type="TernaryLut",
+                    subexpression_context="ternary lut",
+                )
+            out = [emit_ternary(wa[i], wb[i], wc[i], e.imm8) for i in range(len(wa))]
+            res = _truncate(out, aw)
             memo[ekey] = (list(res[0]), int(res[1]))
             return _track_and_return(res)
         if isinstance(e, (And, Or, Xor)):

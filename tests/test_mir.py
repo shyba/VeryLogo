@@ -3,7 +3,7 @@
 import unittest
 
 from stc.circuit_synth import CircuitState
-from stc.mir import Binary, Const, MIRFunction, Ternary, Unary, VReg
+from stc.mir import Binary, Const, Load, MIRFunction, Store, Ternary, Unary, VReg
 from stc.mir.emit_avx512 import emit_avx512
 from stc.mir.emit_ptx import emit_ptx
 from stc.mir.lower import circuit_to_mir
@@ -126,6 +126,49 @@ class TestMIRLowering(unittest.TestCase):
         self.assertIsInstance(mir.instructions[0], Binary)
         self.assertIsInstance(mir.instructions[1], Unary)
 
+    def test_not_and_is_canonicalized_to_andn(self):
+        """Lower not+and pattern to ANDN MIR op."""
+        circuit = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[
+                ("not", 0),
+                ("and", 2, 1),
+            ],
+            outputs=[(3, False)],
+            gate_count=2,
+        )
+
+        schedule = Schedule(gate_cycle={0: 0, 1: 1})
+        allocation = RegAllocation(reg_assignment={2: 2, 3: 3})
+
+        mir = circuit_to_mir(circuit, schedule, allocation)
+        self.assertEqual(len(mir.instructions), 1)
+        inst = mir.instructions[0]
+        self.assertIsInstance(inst, Binary)
+        self.assertEqual(inst.op, "andn")
+        self.assertEqual(inst.a, VReg(0))
+        self.assertEqual(inst.b, VReg(1))
+
+    def test_andn_gate(self):
+        """Lower an ANDN gate to MIR binary op."""
+        circuit = CircuitState(
+            input_bits=2,
+            output_bits=1,
+            gates=[("andn", 0, 1)],
+            outputs=[(2, False)],
+            gate_count=1,
+        )
+
+        schedule = Schedule(gate_cycle={0: 0})
+        allocation = RegAllocation(reg_assignment={2: 2})
+        mir = circuit_to_mir(circuit, schedule, allocation)
+
+        self.assertEqual(len(mir.instructions), 1)
+        inst = mir.instructions[0]
+        self.assertIsInstance(inst, Binary)
+        self.assertEqual(inst.op, "andn")
+
 
 class TestAVX512Emission(unittest.TestCase):
     """Test AVX-512 code emission from MIR."""
@@ -192,6 +235,23 @@ class TestAVX512Emission(unittest.TestCase):
 
         self.assertIn("r0 = _mm512_setzero_si512();", code)
 
+    def test_emit_spill_load_store(self):
+        """Emit AVX-512 spill Load/Store operations."""
+        mir = MIRFunction(
+            input_regs=[VReg(0)],
+            output_regs=[VReg(1)],
+            instructions=[
+                Store(src=VReg(0), slot=0, dst=None),
+                Load(dst=VReg(1), slot=0),
+            ],
+            num_virtual_regs=2,
+        )
+        allocation = RegAllocation(reg_assignment={1: 1}, spills=[1])
+        code = emit_avx512(mir, allocation)
+        self.assertIn("__m512i stack0;", code)
+        self.assertIn("stack0 = r0;", code)
+        self.assertIn("r1 = stack0;", code)
+
 
 class TestPTXEmission(unittest.TestCase):
     """Test PTX code emission from MIR."""
@@ -243,6 +303,36 @@ class TestPTXEmission(unittest.TestCase):
         code = emit_ptx(mir, allocation)
 
         self.assertIn("not.b32 %r1, %r0;", code)
+
+    def test_emit_spill_load_store(self):
+        """Emit PTX spill Load/Store operations."""
+        mir = MIRFunction(
+            input_regs=[VReg(0)],
+            output_regs=[VReg(1)],
+            instructions=[
+                Store(src=VReg(0), slot=0, dst=None),
+                Load(dst=VReg(1), slot=0),
+            ],
+            num_virtual_regs=2,
+        )
+        allocation = RegAllocation(reg_assignment={1: 1}, spills=[1])
+        code = emit_ptx(mir, allocation)
+        self.assertIn(".reg .b32 %stack<1>;", code)
+        self.assertIn("mov.b32 %stack0, %r0;", code)
+        self.assertIn("mov.b32 %r1, %stack0;", code)
+
+    def test_emit_andn(self):
+        """Emit PTX code for ANDN operation."""
+        mir = MIRFunction(
+            input_regs=[VReg(0), VReg(1)],
+            output_regs=[VReg(2)],
+            instructions=[Binary(dst=VReg(2), op="andn", a=VReg(0), b=VReg(1))],
+            num_virtual_regs=3,
+        )
+
+        allocation = RegAllocation(reg_assignment={2: 2})
+        code = emit_ptx(mir, allocation)
+        self.assertIn("lop3.b32 %r2, %r0, %r1, %r0, 12;", code)
 
 
 if __name__ == "__main__":

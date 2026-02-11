@@ -78,7 +78,9 @@ DONE:
 
 
 def emit_lop3_kernel(circuit: CircuitState, *, sm: str, func_name: str) -> PtxKernel:
-    ptx_func = generate_scheduled_code(circuit, target="ptx", function_name=func_name)
+    ptx_func = generate_scheduled_code(
+        circuit, target="ptx_legacy", function_name=func_name
+    )
     return _wrap_func_as_kernel(ptx_func, func_name, sm)
 
 

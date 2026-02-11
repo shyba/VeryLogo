@@ -1,4 +1,3 @@
-import json
 import shutil
 import subprocess
 import tempfile
@@ -8,6 +7,8 @@ from pathlib import Path
 from stc.cli import run_pipeline
 from stc.interp import reset_state, tick
 from stc.tick_ir import TickIR
+from stc.io_map_bin import read_io_map_bin
+from stc.tick_ir_bin2 import read_tick_ir_bin
 
 
 @unittest.skipUnless(
@@ -22,15 +23,11 @@ class TestEndToEndAvrHostOptional(unittest.TestCase):
             out_dir = Path(d) / "out"
             run_pipeline(src, out_dir, top="top", bound=2)
 
-            iom = json.loads((out_dir / "io_map.json").read_text(encoding="utf-8"))
-            in_lsb = int(iom["inputs"]["i"]["lsb"])
-            out_lsb = int(iom["outputs"]["o"]["lsb"])
+            iom = read_io_map_bin(out_dir / "io_map.bin")
+            in_lsb = int(iom.inputs["i"]["lsb"])
+            out_lsb = int(iom.outputs["o"]["lsb"])
 
-            reduced = TickIR.from_dict(
-                json.loads(
-                    (out_dir / "reduced_tick_ir.json").read_text(encoding="utf-8")
-                )
-            )
+            reduced = read_tick_ir_bin(out_dir / "reduced_tick_ir.bin")
             st = reset_state(reduced)
 
             seq = [0, 1, 1, 0, 1, 0, 0, 1]

@@ -402,6 +402,26 @@ class TestAllocateRegisters(unittest.TestCase):
                 if node_range:
                     self.assertGreaterEqual(load_cycle, node_range.start)
 
+    def test_spill_register_ids_stay_within_budget(self):
+        gates, input_bits, outputs = make_fan_out(12)
+        schedule = list_schedule(gates, input_bits, outputs, AVX2)
+        ranges = compute_live_ranges(schedule, gates, input_bits, outputs)
+        num_registers = 4
+
+        allocation = allocate_registers(
+            ranges,
+            schedule,
+            num_registers,
+            gates=gates,
+            input_bits=input_bits,
+            outputs=outputs,
+        )
+        if not allocation.reg_assignment:
+            return
+
+        max_allowed = input_bits + num_registers - 1
+        self.assertLessEqual(max(allocation.reg_assignment.values()), max_allowed)
+
 
 class TestBPCircuitAllocation(unittest.TestCase):
     def test_bp_circuit_avx2(self):
@@ -420,7 +440,7 @@ class TestBPCircuitAllocation(unittest.TestCase):
 
         for node, reg in allocation.reg_assignment.items():
             self.assertGreaterEqual(reg, 0)
-            self.assertLess(reg, AVX2.registers)
+            self.assertLess(reg, input_bits + AVX2.registers)
 
     def test_bp_circuit_sse2(self):
         gates, input_bits, outputs = make_bp_circuit()
@@ -438,7 +458,7 @@ class TestBPCircuitAllocation(unittest.TestCase):
 
         for node, reg in allocation.reg_assignment.items():
             self.assertGreaterEqual(reg, 0)
-            self.assertLess(reg, SSE2.registers)
+            self.assertLess(reg, input_bits + SSE2.registers)
 
     def test_bp_circuit_allocation_valid(self):
         gates, input_bits, outputs = make_bp_circuit()

@@ -281,7 +281,7 @@ class AVX512U64Emitter(BaseEmitter):
         if op == "not":
             a = int(gate[1])
             return f"r{dst} = _mm512_xor_si512({_src(a)}, ones);"
-        if op in ("xor", "and", "or", "add", "sub", "ult"):
+        if op in ("xor", "and", "andnot", "or", "add", "sub", "ult"):
             a = int(gate[1])
             b = int(gate[2])
             if op == "xor":
@@ -299,6 +299,15 @@ class AVX512U64Emitter(BaseEmitter):
             return (
                 f"r{dst} = _mm512_maskz_set1_epi64("
                 f"_mm512_cmp_epu64_mask({_src(a)}, {_src(b)}, _MM_CMPINT_LT), 1LL);"
+            )
+        if op == "ternary":
+            a = int(gate[1])
+            b = int(gate[2])
+            c = int(gate[3])
+            imm8 = int(gate[4]) & 0xFF
+            return (
+                f"r{dst} = _mm512_ternarylogic_epi64("
+                f"{_src(a)}, {_src(b)}, {_src(c)}, {imm8});"
             )
         if op in ("shl", "lshr"):
             a = int(gate[1])
@@ -345,6 +354,18 @@ class AVX512U64Emitter(BaseEmitter):
             return (
                 f"r{dst_reg} = _mm512_maskz_set1_epi64("
                 f"_mm512_cmp_epu64_mask({a_expr}, {b_expr}, _MM_CMPINT_LT), 1LL);"
+            )
+        if op == "ternary":
+            a = int(gate[1])
+            b = int(gate[2])
+            c = int(gate[3])
+            imm8 = int(gate[4]) & 0xFF
+            a_expr = self._node_expr(a, allocation, node_in_reg)
+            b_expr = self._node_expr(b, allocation, node_in_reg)
+            c_expr = self._node_expr(c, allocation, node_in_reg)
+            return (
+                f"r{dst_reg} = _mm512_ternarylogic_epi64("
+                f"{a_expr}, {b_expr}, {c_expr}, {imm8});"
             )
         if op in ("shl", "lshr"):
             a = int(gate[1])
