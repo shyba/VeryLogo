@@ -40,6 +40,268 @@ ROUND_KEYS_HEX = [
     "13111d7fe3944a17f307a78b4d2b30c5",
 ]
 
+ROUND_KEY_BYTES_PER_THREAD = 11 * 16
+MASTER_KEY_BYTES_PER_THREAD = 16
+
+AES_SBOX_BYTES = [
+    0x63,
+    0x7C,
+    0x77,
+    0x7B,
+    0xF2,
+    0x6B,
+    0x6F,
+    0xC5,
+    0x30,
+    0x01,
+    0x67,
+    0x2B,
+    0xFE,
+    0xD7,
+    0xAB,
+    0x76,
+    0xCA,
+    0x82,
+    0xC9,
+    0x7D,
+    0xFA,
+    0x59,
+    0x47,
+    0xF0,
+    0xAD,
+    0xD4,
+    0xA2,
+    0xAF,
+    0x9C,
+    0xA4,
+    0x72,
+    0xC0,
+    0xB7,
+    0xFD,
+    0x93,
+    0x26,
+    0x36,
+    0x3F,
+    0xF7,
+    0xCC,
+    0x34,
+    0xA5,
+    0xE5,
+    0xF1,
+    0x71,
+    0xD8,
+    0x31,
+    0x15,
+    0x04,
+    0xC7,
+    0x23,
+    0xC3,
+    0x18,
+    0x96,
+    0x05,
+    0x9A,
+    0x07,
+    0x12,
+    0x80,
+    0xE2,
+    0xEB,
+    0x27,
+    0xB2,
+    0x75,
+    0x09,
+    0x83,
+    0x2C,
+    0x1A,
+    0x1B,
+    0x6E,
+    0x5A,
+    0xA0,
+    0x52,
+    0x3B,
+    0xD6,
+    0xB3,
+    0x29,
+    0xE3,
+    0x2F,
+    0x84,
+    0x53,
+    0xD1,
+    0x00,
+    0xED,
+    0x20,
+    0xFC,
+    0xB1,
+    0x5B,
+    0x6A,
+    0xCB,
+    0xBE,
+    0x39,
+    0x4A,
+    0x4C,
+    0x58,
+    0xCF,
+    0xD0,
+    0xEF,
+    0xAA,
+    0xFB,
+    0x43,
+    0x4D,
+    0x33,
+    0x85,
+    0x45,
+    0xF9,
+    0x02,
+    0x7F,
+    0x50,
+    0x3C,
+    0x9F,
+    0xA8,
+    0x51,
+    0xA3,
+    0x40,
+    0x8F,
+    0x92,
+    0x9D,
+    0x38,
+    0xF5,
+    0xBC,
+    0xB6,
+    0xDA,
+    0x21,
+    0x10,
+    0xFF,
+    0xF3,
+    0xD2,
+    0xCD,
+    0x0C,
+    0x13,
+    0xEC,
+    0x5F,
+    0x97,
+    0x44,
+    0x17,
+    0xC4,
+    0xA7,
+    0x7E,
+    0x3D,
+    0x64,
+    0x5D,
+    0x19,
+    0x73,
+    0x60,
+    0x81,
+    0x4F,
+    0xDC,
+    0x22,
+    0x2A,
+    0x90,
+    0x88,
+    0x46,
+    0xEE,
+    0xB8,
+    0x14,
+    0xDE,
+    0x5E,
+    0x0B,
+    0xDB,
+    0xE0,
+    0x32,
+    0x3A,
+    0x0A,
+    0x49,
+    0x06,
+    0x24,
+    0x5C,
+    0xC2,
+    0xD3,
+    0xAC,
+    0x62,
+    0x91,
+    0x95,
+    0xE4,
+    0x79,
+    0xE7,
+    0xC8,
+    0x37,
+    0x6D,
+    0x8D,
+    0xD5,
+    0x4E,
+    0xA9,
+    0x6C,
+    0x56,
+    0xF4,
+    0xEA,
+    0x65,
+    0x7A,
+    0xAE,
+    0x08,
+    0xBA,
+    0x78,
+    0x25,
+    0x2E,
+    0x1C,
+    0xA6,
+    0xB4,
+    0xC6,
+    0xE8,
+    0xDD,
+    0x74,
+    0x1F,
+    0x4B,
+    0xBD,
+    0x8B,
+    0x8A,
+    0x70,
+    0x3E,
+    0xB5,
+    0x66,
+    0x48,
+    0x03,
+    0xF6,
+    0x0E,
+    0x61,
+    0x35,
+    0x57,
+    0xB9,
+    0x86,
+    0xC1,
+    0x1D,
+    0x9E,
+    0xE1,
+    0xF8,
+    0x98,
+    0x11,
+    0x69,
+    0xD9,
+    0x8E,
+    0x94,
+    0x9B,
+    0x1E,
+    0x87,
+    0xE9,
+    0xCE,
+    0x55,
+    0x28,
+    0xDF,
+    0x8C,
+    0xA1,
+    0x89,
+    0x0D,
+    0xBF,
+    0xE6,
+    0x42,
+    0x68,
+    0x41,
+    0x99,
+    0x2D,
+    0x0F,
+    0xB0,
+    0x54,
+    0xBB,
+    0x16,
+]
+
 
 def _rk_bits_c_initializer() -> str:
     rows: list[str] = []
@@ -62,6 +324,84 @@ def _rk_bytes_c_initializer() -> str:
         elems = ", ".join(f"0x{b:02x}" for b in rk)
         rows.append("  { " + elems + " }")
     return ",\n".join(rows)
+
+
+def _aes_sbox_c_initializer() -> str:
+    rows: list[str] = []
+    for i in range(0, len(AES_SBOX_BYTES), 16):
+        chunk = ", ".join(f"0x{b:02x}" for b in AES_SBOX_BYTES[i : i + 16])
+        rows.append("  " + chunk)
+    return ",\n".join(rows)
+
+
+def pack_rk_soa_packed_shared_key(rk_bytes_11x16: bytes, threads: int) -> bytes:
+    if threads <= 0:
+        raise ValueError("threads must be > 0")
+    if len(rk_bytes_11x16) != ROUND_KEY_BYTES_PER_THREAD:
+        raise ValueError(
+            f"rk_bytes_11x16 must be {ROUND_KEY_BYTES_PER_THREAD} bytes "
+            f"(got {len(rk_bytes_11x16)})"
+        )
+    out = bytearray(ROUND_KEY_BYTES_PER_THREAD * threads)
+    for key_idx, key_byte in enumerate(rk_bytes_11x16):
+        base = key_idx * threads
+        out[base : base + threads] = bytes([key_byte]) * threads
+    return bytes(out)
+
+
+def pack_rk_soa_packed_thread_keys(rk_bytes_per_thread: bytes, threads: int) -> bytes:
+    if threads <= 0:
+        raise ValueError("threads must be > 0")
+    expected = ROUND_KEY_BYTES_PER_THREAD * threads
+    if len(rk_bytes_per_thread) != expected:
+        raise ValueError(
+            f"rk_bytes_per_thread must be {expected} bytes "
+            f"(got {len(rk_bytes_per_thread)})"
+        )
+    out = bytearray(expected)
+    src = memoryview(rk_bytes_per_thread)
+    for key_idx in range(ROUND_KEY_BYTES_PER_THREAD):
+        dst_base = key_idx * threads
+        src_off = key_idx
+        for tid in range(threads):
+            out[dst_base + tid] = src[tid * ROUND_KEY_BYTES_PER_THREAD + src_off]
+    return bytes(out)
+
+
+def pack_masterkey_soa_shared_key(master_key_16: bytes, threads: int) -> bytes:
+    if threads <= 0:
+        raise ValueError("threads must be > 0")
+    if len(master_key_16) != MASTER_KEY_BYTES_PER_THREAD:
+        raise ValueError(
+            f"master_key_16 must be {MASTER_KEY_BYTES_PER_THREAD} bytes "
+            f"(got {len(master_key_16)})"
+        )
+    out = bytearray(MASTER_KEY_BYTES_PER_THREAD * threads)
+    for key_idx, key_byte in enumerate(master_key_16):
+        base = key_idx * threads
+        out[base : base + threads] = bytes([key_byte]) * threads
+    return bytes(out)
+
+
+def pack_masterkey_soa_thread_keys(
+    master_keys_per_thread: bytes, threads: int
+) -> bytes:
+    if threads <= 0:
+        raise ValueError("threads must be > 0")
+    expected = MASTER_KEY_BYTES_PER_THREAD * threads
+    if len(master_keys_per_thread) != expected:
+        raise ValueError(
+            f"master_keys_per_thread must be {expected} bytes "
+            f"(got {len(master_keys_per_thread)})"
+        )
+    out = bytearray(expected)
+    src = memoryview(master_keys_per_thread)
+    for key_idx in range(MASTER_KEY_BYTES_PER_THREAD):
+        dst_base = key_idx * threads
+        src_off = key_idx
+        for tid in range(threads):
+            out[dst_base + tid] = src[tid * MASTER_KEY_BYTES_PER_THREAD + src_off]
+    return bytes(out)
 
 
 def _build_bp128_mapped(
@@ -1624,29 +1964,276 @@ def _kernel_cu_source_replacement_coalesced4_paramrk_soa(
     return src
 
 
+def _kernel_cu_source_replacement_coalesced4_paramrk_soa_packed(
+    sbox_inline_cuda: str,
+) -> str:
+    src = _kernel_cu_source_replacement_coalesced4_paramrk(sbox_inline_cuda)
+    src = src.replace(
+        "const uint32_t* __restrict__ rk_bits",
+        "const uint8_t* __restrict__ rk_bytes",
+    )
+    src = src.replace(
+        "    #define RK_AT(r,b,bit) rk_bits[(((size_t)(r) * 16u + (size_t)(b)) * 8u + (size_t)(bit))]\n",
+        "    #define RK_BYTE_AT(r,b) rk_bytes[((((size_t)(r) * 16u + (size_t)(b)) * threads) + t)]\n"
+        "    #define RK_AT(r,b,bit) ((((uint32_t)(RK_BYTE_AT((r),(b))) >> (bit)) & 1u) ? 0xffffffffu : 0u)\n",
+    )
+    src = src.replace(
+        "    #undef RK_AT\n",
+        "    #undef RK_AT\n    #undef RK_BYTE_AT\n",
+    )
+    return src
+
+
+def _kernel_cu_source_replacement_coalesced4_masterkey_soa(
+    sbox_inline_cuda: str,
+) -> str:
+    return f"""
+#include <stdint.h>
+
+{sbox_inline_cuda}
+
+__device__ __constant__ uint8_t AES_SBOX_KS[256] = {{
+{_aes_sbox_c_initializer()}
+}};
+
+__device__ __forceinline__ uint8_t aes_xtime_u8(uint8_t x) {{
+    uint8_t hi = (uint8_t)(x >> 7);
+    return (uint8_t)(((uint8_t)(x << 1)) ^ (hi ? 0x1bu : 0x00u));
+}}
+
+__device__ __forceinline__ void aes128_expand_round_key_u8(
+    uint8_t rk[16], uint8_t rcon
+) {{
+    uint8_t t0 = AES_SBOX_KS[rk[13]];
+    uint8_t t1 = AES_SBOX_KS[rk[14]];
+    uint8_t t2 = AES_SBOX_KS[rk[15]];
+    uint8_t t3 = AES_SBOX_KS[rk[12]];
+    t0 ^= rcon;
+    rk[0] ^= t0;
+    rk[1] ^= t1;
+    rk[2] ^= t2;
+    rk[3] ^= t3;
+    #pragma unroll
+    for (int i = 4; i < 16; i++) {{
+        rk[i] ^= rk[i - 4];
+    }}
+}}
+
+__device__ __forceinline__ void xor8(
+    const uint32_t a[8], const uint32_t b[8], uint32_t o[8]
+) {{
+    #pragma unroll
+    for (int i = 0; i < 8; i++) o[i] = a[i] ^ b[i];
+}}
+
+__device__ __forceinline__ void xtime8(const uint32_t a[8], uint32_t o[8]) {{
+    const uint32_t b7 = a[7];
+    o[7] = a[6];
+    o[6] = a[5];
+    o[5] = a[4];
+    o[4] = a[3] ^ b7;
+    o[3] = a[2] ^ b7;
+    o[2] = a[1];
+    o[1] = a[0] ^ b7;
+    o[0] = b7;
+}}
+
+extern "C" __global__ void aes10_bp128_kernel(
+    const uint32_t* __restrict__ in_ptr,
+    uint32_t* __restrict__ out_ptr,
+    const uint8_t* __restrict__ key_bytes,
+    uint32_t n_threads
+) {{
+    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_threads) return;
+
+    uint32_t st[16][8];
+    uint32_t sb[16][8];
+    uint32_t sr[16][8];
+    uint32_t mc[16][8];
+    uint8_t rk[16];
+    const size_t threads = (size_t)n_threads;
+    const size_t t = (size_t)tid;
+    const uint4* in4 = (const uint4*)in_ptr;
+    uint4* out4 = (uint4*)out_ptr;
+    #define RK_MASK(k,bit) ((((uint32_t)(k) >> (bit)) & 1u) ? 0xffffffffu : 0u)
+
+    #pragma unroll
+    for (int b = 0; b < 16; b++) {{
+        rk[b] = key_bytes[(size_t)b * threads + t];
+    }}
+
+    #pragma unroll
+    for (int b = 0; b < 16; b++) {{
+        size_t idx0 = ((size_t)b * 2u + 0u) * threads + t;
+        size_t idx1 = ((size_t)b * 2u + 1u) * threads + t;
+        uint4 v0 = in4[idx0];
+        uint4 v1 = in4[idx1];
+        uint8_t rk0 = rk[b];
+        st[b][0] = v0.x ^ RK_MASK(rk0,0);
+        st[b][1] = v0.y ^ RK_MASK(rk0,1);
+        st[b][2] = v0.z ^ RK_MASK(rk0,2);
+        st[b][3] = v0.w ^ RK_MASK(rk0,3);
+        st[b][4] = v1.x ^ RK_MASK(rk0,4);
+        st[b][5] = v1.y ^ RK_MASK(rk0,5);
+        st[b][6] = v1.z ^ RK_MASK(rk0,6);
+        st[b][7] = v1.w ^ RK_MASK(rk0,7);
+    }}
+
+    uint8_t rcon = 0x01u;
+    for (int round = 1; round <= 9; round++) {{
+        #pragma unroll
+        for (int b = 0; b < 16; b++) {{
+            sbox_bp128_lop3_inline(st[b], sb[b]);
+        }}
+
+        #pragma unroll
+        for (int bit = 0; bit < 8; bit++) {{
+            sr[0][bit]  = sb[0][bit];
+            sr[1][bit]  = sb[5][bit];
+            sr[2][bit]  = sb[10][bit];
+            sr[3][bit]  = sb[15][bit];
+            sr[4][bit]  = sb[4][bit];
+            sr[5][bit]  = sb[9][bit];
+            sr[6][bit]  = sb[14][bit];
+            sr[7][bit]  = sb[3][bit];
+            sr[8][bit]  = sb[8][bit];
+            sr[9][bit]  = sb[13][bit];
+            sr[10][bit] = sb[2][bit];
+            sr[11][bit] = sb[7][bit];
+            sr[12][bit] = sb[12][bit];
+            sr[13][bit] = sb[1][bit];
+            sr[14][bit] = sb[6][bit];
+            sr[15][bit] = sb[11][bit];
+        }}
+
+        #pragma unroll
+        for (int c = 0; c < 4; c++) {{
+            int i0 = c * 4 + 0;
+            int i1 = c * 4 + 1;
+            int i2 = c * 4 + 2;
+            int i3 = c * 4 + 3;
+            uint32_t t8[8], u[8], x01[8], x12[8], x23[8], x30[8], xt[8];
+
+            #pragma unroll
+            for (int i = 0; i < 8; i++) {{
+                t8[i] = sr[i0][i] ^ sr[i1][i] ^ sr[i2][i] ^ sr[i3][i];
+                u[i] = sr[i0][i];
+            }}
+            xor8(sr[i0], sr[i1], x01);
+            xor8(sr[i1], sr[i2], x12);
+            xor8(sr[i2], sr[i3], x23);
+            xor8(sr[i3], u, x30);
+
+            xtime8(x01, xt);
+            #pragma unroll
+            for (int i = 0; i < 8; i++) mc[i0][i] = sr[i0][i] ^ t8[i] ^ xt[i];
+
+            xtime8(x12, xt);
+            #pragma unroll
+            for (int i = 0; i < 8; i++) mc[i1][i] = sr[i1][i] ^ t8[i] ^ xt[i];
+
+            xtime8(x23, xt);
+            #pragma unroll
+            for (int i = 0; i < 8; i++) mc[i2][i] = sr[i2][i] ^ t8[i] ^ xt[i];
+
+            xtime8(x30, xt);
+            #pragma unroll
+            for (int i = 0; i < 8; i++) mc[i3][i] = sr[i3][i] ^ t8[i] ^ xt[i];
+        }}
+
+        aes128_expand_round_key_u8(rk, rcon);
+        rcon = aes_xtime_u8(rcon);
+
+        #pragma unroll
+        for (int b = 0; b < 16; b++) {{
+            uint8_t rkb = rk[b];
+            st[b][0] = mc[b][0] ^ RK_MASK(rkb,0);
+            st[b][1] = mc[b][1] ^ RK_MASK(rkb,1);
+            st[b][2] = mc[b][2] ^ RK_MASK(rkb,2);
+            st[b][3] = mc[b][3] ^ RK_MASK(rkb,3);
+            st[b][4] = mc[b][4] ^ RK_MASK(rkb,4);
+            st[b][5] = mc[b][5] ^ RK_MASK(rkb,5);
+            st[b][6] = mc[b][6] ^ RK_MASK(rkb,6);
+            st[b][7] = mc[b][7] ^ RK_MASK(rkb,7);
+        }}
+    }}
+
+    #pragma unroll
+    for (int b = 0; b < 16; b++) {{
+        sbox_bp128_lop3_inline(st[b], sb[b]);
+    }}
+    #pragma unroll
+    for (int bit = 0; bit < 8; bit++) {{
+        sr[0][bit]  = sb[0][bit];
+        sr[1][bit]  = sb[5][bit];
+        sr[2][bit]  = sb[10][bit];
+        sr[3][bit]  = sb[15][bit];
+        sr[4][bit]  = sb[4][bit];
+        sr[5][bit]  = sb[9][bit];
+        sr[6][bit]  = sb[14][bit];
+        sr[7][bit]  = sb[3][bit];
+        sr[8][bit]  = sb[8][bit];
+        sr[9][bit]  = sb[13][bit];
+        sr[10][bit] = sb[2][bit];
+        sr[11][bit] = sb[7][bit];
+        sr[12][bit] = sb[12][bit];
+        sr[13][bit] = sb[1][bit];
+        sr[14][bit] = sb[6][bit];
+        sr[15][bit] = sb[11][bit];
+    }}
+
+    aes128_expand_round_key_u8(rk, rcon);
+
+    #pragma unroll
+    for (int b = 0; b < 16; b++) {{
+        size_t idx0 = ((size_t)b * 2u + 0u) * threads + t;
+        size_t idx1 = ((size_t)b * 2u + 1u) * threads + t;
+        uint4 o0;
+        uint4 o1;
+        uint8_t rkb = rk[b];
+        o0.x = sr[b][0] ^ RK_MASK(rkb,0);
+        o0.y = sr[b][1] ^ RK_MASK(rkb,1);
+        o0.z = sr[b][2] ^ RK_MASK(rkb,2);
+        o0.w = sr[b][3] ^ RK_MASK(rkb,3);
+        o1.x = sr[b][4] ^ RK_MASK(rkb,4);
+        o1.y = sr[b][5] ^ RK_MASK(rkb,5);
+        o1.z = sr[b][6] ^ RK_MASK(rkb,6);
+        o1.w = sr[b][7] ^ RK_MASK(rkb,7);
+        out4[idx0] = o0;
+        out4[idx1] = o1;
+    }}
+
+    #undef RK_MASK
+}}
+"""
+
+
 def _host_bench_cu_source_replacement_paramrk(layout: str = "plane-major4") -> str:
     if layout != "plane-major4":
-        raise ValueError("paramrk host path currently supports plane-major4 layout only")
+        raise ValueError(
+            "paramrk host path currently supports plane-major4 layout only"
+        )
 
     src = _host_bench_cu_source_replacement(layout=layout)
     old_rk_block = (
         "  CUdeviceptr d_rk = 0;\n"
         "  size_t rk_nbytes = 0;\n"
-        "  ck(cuModuleGetGlobal(&d_rk, &rk_nbytes, mod, \"RK_BITS\"), \"cuModuleGetGlobal(RK_BITS)\");\n"
+        '  ck(cuModuleGetGlobal(&d_rk, &rk_nbytes, mod, "RK_BITS"), "cuModuleGetGlobal(RK_BITS)");\n'
         "  uint32_t h_rk_bits[11][16][8];\n"
         "  build_rk_bits(h_rk_bits);\n"
         "  if (rk_nbytes < sizeof(h_rk_bits)) {\n"
-        "    fprintf(stderr, \"RK_BITS symbol too small: %zu < %zu\\n\", rk_nbytes, sizeof(h_rk_bits));\n"
+        '    fprintf(stderr, "RK_BITS symbol too small: %zu < %zu\\n", rk_nbytes, sizeof(h_rk_bits));\n'
         "    return 2;\n"
         "  }\n"
-        "  ck(cuMemcpyHtoD(d_rk, h_rk_bits, sizeof(h_rk_bits)), \"cuMemcpyHtoD(RK_BITS)\");\n"
+        '  ck(cuMemcpyHtoD(d_rk, h_rk_bits, sizeof(h_rk_bits)), "cuMemcpyHtoD(RK_BITS)");\n'
     )
     new_rk_block = (
         "  uint32_t h_rk_bits[11][16][8];\n"
         "  build_rk_bits(h_rk_bits);\n"
         "  CUdeviceptr d_rk = 0;\n"
-        "  ck(cuMemAlloc(&d_rk, sizeof(h_rk_bits)), \"cuMemAlloc(rk_bits)\");\n"
-        "  ck(cuMemcpyHtoD(d_rk, h_rk_bits, sizeof(h_rk_bits)), \"cuMemcpyHtoD(rk_bits)\");\n"
+        '  ck(cuMemAlloc(&d_rk, sizeof(h_rk_bits)), "cuMemAlloc(rk_bits)");\n'
+        '  ck(cuMemcpyHtoD(d_rk, h_rk_bits, sizeof(h_rk_bits)), "cuMemcpyHtoD(rk_bits)");\n'
     )
     src = src.replace(old_rk_block, new_rk_block)
     src = src.replace(
@@ -1660,7 +2247,9 @@ def _host_bench_cu_source_replacement_paramrk(layout: str = "plane-major4") -> s
     return src
 
 
-def _host_bench_cu_source_replacement_paramrk_shared(layout: str = "plane-major4") -> str:
+def _host_bench_cu_source_replacement_paramrk_shared(
+    layout: str = "plane-major4",
+) -> str:
     src = _host_bench_cu_source_replacement_paramrk(layout=layout)
     src = src.replace(
         "  int grid = (threads + block - 1) / block;\n"
@@ -1678,20 +2267,22 @@ def _host_bench_cu_source_replacement_paramrk_shared(layout: str = "plane-major4
 
 def _host_bench_cu_source_replacement_paramrk_soa(layout: str = "plane-major4") -> str:
     if layout != "plane-major4":
-        raise ValueError("paramrk_soa host path currently supports plane-major4 layout only")
+        raise ValueError(
+            "paramrk_soa host path currently supports plane-major4 layout only"
+        )
 
     src = _host_bench_cu_source_replacement(layout=layout)
     old_rk_block = (
         "  CUdeviceptr d_rk = 0;\n"
         "  size_t rk_nbytes = 0;\n"
-        "  ck(cuModuleGetGlobal(&d_rk, &rk_nbytes, mod, \"RK_BITS\"), \"cuModuleGetGlobal(RK_BITS)\");\n"
+        '  ck(cuModuleGetGlobal(&d_rk, &rk_nbytes, mod, "RK_BITS"), "cuModuleGetGlobal(RK_BITS)");\n'
         "  uint32_t h_rk_bits[11][16][8];\n"
         "  build_rk_bits(h_rk_bits);\n"
         "  if (rk_nbytes < sizeof(h_rk_bits)) {\n"
-        "    fprintf(stderr, \"RK_BITS symbol too small: %zu < %zu\\n\", rk_nbytes, sizeof(h_rk_bits));\n"
+        '    fprintf(stderr, "RK_BITS symbol too small: %zu < %zu\\n", rk_nbytes, sizeof(h_rk_bits));\n'
         "    return 2;\n"
         "  }\n"
-        "  ck(cuMemcpyHtoD(d_rk, h_rk_bits, sizeof(h_rk_bits)), \"cuMemcpyHtoD(RK_BITS)\");\n"
+        '  ck(cuMemcpyHtoD(d_rk, h_rk_bits, sizeof(h_rk_bits)), "cuMemcpyHtoD(RK_BITS)");\n'
     )
     new_rk_block = (
         "  uint32_t h_rk_bits[11][16][8];\n"
@@ -1701,7 +2292,7 @@ def _host_bench_cu_source_replacement_paramrk_soa(layout: str = "plane-major4") 
         "  const size_t rk_bytes = rk_words * sizeof(uint32_t);\n"
         "  uint32_t* h_rk_soa = (uint32_t*)malloc(rk_bytes);\n"
         "  if (!h_rk_soa) {\n"
-        "    fprintf(stderr, \"malloc failed for h_rk_soa\\n\");\n"
+        '    fprintf(stderr, "malloc failed for h_rk_soa\\n");\n'
         "    return 2;\n"
         "  }\n"
         "  for (int r = 0; r < 11; r++) {\n"
@@ -1717,8 +2308,8 @@ def _host_bench_cu_source_replacement_paramrk_soa(layout: str = "plane-major4") 
         "    }\n"
         "  }\n"
         "  CUdeviceptr d_rk = 0;\n"
-        "  ck(cuMemAlloc(&d_rk, rk_bytes), \"cuMemAlloc(rk_bits_soa)\");\n"
-        "  ck(cuMemcpyHtoD(d_rk, h_rk_soa, rk_bytes), \"cuMemcpyHtoD(rk_bits_soa)\");\n"
+        '  ck(cuMemAlloc(&d_rk, rk_bytes), "cuMemAlloc(rk_bits_soa)");\n'
+        '  ck(cuMemcpyHtoD(d_rk, h_rk_soa, rk_bytes), "cuMemcpyHtoD(rk_bits_soa)");\n'
     )
     src = src.replace(old_rk_block, new_rk_block)
     src = src.replace(
@@ -1728,6 +2319,123 @@ def _host_bench_cu_source_replacement_paramrk_soa(layout: str = "plane-major4") 
     src = src.replace(
         "  free(h_in);\n  cuMemFree(d_in);\n",
         "  free(h_in);\n  free(h_rk_soa);\n  cuMemFree(d_rk);\n  cuMemFree(d_in);\n",
+    )
+    return src
+
+
+def _host_bench_cu_source_replacement_paramrk_soa_packed(
+    layout: str = "plane-major4",
+) -> str:
+    if layout != "plane-major4":
+        raise ValueError(
+            "paramrk_soa_packed host path currently supports plane-major4 layout only"
+        )
+
+    src = _host_bench_cu_source_replacement(layout=layout)
+    old_rk_block = (
+        "  CUdeviceptr d_rk = 0;\n"
+        "  size_t rk_nbytes = 0;\n"
+        '  ck(cuModuleGetGlobal(&d_rk, &rk_nbytes, mod, "RK_BITS"), "cuModuleGetGlobal(RK_BITS)");\n'
+        "  uint32_t h_rk_bits[11][16][8];\n"
+        "  build_rk_bits(h_rk_bits);\n"
+        "  if (rk_nbytes < sizeof(h_rk_bits)) {\n"
+        '    fprintf(stderr, "RK_BITS symbol too small: %zu < %zu\\n", rk_nbytes, sizeof(h_rk_bits));\n'
+        "    return 2;\n"
+        "  }\n"
+        '  ck(cuMemcpyHtoD(d_rk, h_rk_bits, sizeof(h_rk_bits)), "cuMemcpyHtoD(RK_BITS)");\n'
+    )
+    new_rk_block = (
+        "  static const uint8_t rk_bytes[11][16] = {\n"
+        + _rk_bytes_c_initializer()
+        + "\n"
+        "  };\n"
+        "  const size_t rk_planes = (size_t)11u * 16u;\n"
+        "  const size_t rk_words = rk_planes * (size_t)threads;\n"
+        "  const size_t rk_bytes_len = rk_words * sizeof(uint8_t);\n"
+        "  uint8_t* h_rk_soa_packed = (uint8_t*)malloc(rk_bytes_len);\n"
+        "  if (!h_rk_soa_packed) {\n"
+        '    fprintf(stderr, "malloc failed for h_rk_soa_packed\\n");\n'
+        "    return 2;\n"
+        "  }\n"
+        "  for (int r = 0; r < 11; r++) {\n"
+        "    for (int b = 0; b < 16; b++) {\n"
+        "      uint8_t kv = rk_bytes[r][b];\n"
+        "      size_t plane = (size_t)r * 16u + (size_t)b;\n"
+        "      size_t base = plane * (size_t)threads;\n"
+        "      for (int tid = 0; tid < threads; tid++) {\n"
+        "        h_rk_soa_packed[base + (size_t)tid] = kv;\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "  CUdeviceptr d_rk = 0;\n"
+        '  ck(cuMemAlloc(&d_rk, rk_bytes_len), "cuMemAlloc(rk_bytes_soa)");\n'
+        '  ck(cuMemcpyHtoD(d_rk, h_rk_soa_packed, rk_bytes_len), "cuMemcpyHtoD(rk_bytes_soa)");\n'
+    )
+    src = src.replace(old_rk_block, new_rk_block)
+    src = src.replace(
+        "  void* params[] = { &d_in, &d_out, &threads };\n",
+        "  void* params[] = { &d_in, &d_out, &d_rk, &threads };\n",
+    )
+    src = src.replace(
+        "  free(h_in);\n  cuMemFree(d_in);\n",
+        "  free(h_in);\n  free(h_rk_soa_packed);\n  cuMemFree(d_rk);\n  cuMemFree(d_in);\n",
+    )
+    return src
+
+
+def _host_bench_cu_source_replacement_masterkey_soa(
+    layout: str = "plane-major4",
+) -> str:
+    if layout != "plane-major4":
+        raise ValueError(
+            "masterkey_soa host path currently supports plane-major4 layout only"
+        )
+
+    src = _host_bench_cu_source_replacement(layout=layout)
+    old_rk_block = (
+        "  CUdeviceptr d_rk = 0;\n"
+        "  size_t rk_nbytes = 0;\n"
+        '  ck(cuModuleGetGlobal(&d_rk, &rk_nbytes, mod, "RK_BITS"), "cuModuleGetGlobal(RK_BITS)");\n'
+        "  uint32_t h_rk_bits[11][16][8];\n"
+        "  build_rk_bits(h_rk_bits);\n"
+        "  if (rk_nbytes < sizeof(h_rk_bits)) {\n"
+        '    fprintf(stderr, "RK_BITS symbol too small: %zu < %zu\\n", rk_nbytes, sizeof(h_rk_bits));\n'
+        "    return 2;\n"
+        "  }\n"
+        '  ck(cuMemcpyHtoD(d_rk, h_rk_bits, sizeof(h_rk_bits)), "cuMemcpyHtoD(RK_BITS)");\n'
+    )
+    new_rk_block = (
+        "  static const uint8_t key_bytes_ref[16] = {\n"
+        "    0x00,0x01,0x02,0x03,0x04,0x05,0x06,0x07,\n"
+        "    0x08,0x09,0x0a,0x0b,0x0c,0x0d,0x0e,0x0f\n"
+        "  };\n"
+        "  const size_t key_planes = (size_t)16u;\n"
+        "  const size_t key_words = key_planes * (size_t)threads;\n"
+        "  const size_t key_bytes_len = key_words * sizeof(uint8_t);\n"
+        "  uint8_t* h_key_soa = (uint8_t*)malloc(key_bytes_len);\n"
+        "  if (!h_key_soa) {\n"
+        '    fprintf(stderr, "malloc failed for h_key_soa\\n");\n'
+        "    return 2;\n"
+        "  }\n"
+        "  for (int b = 0; b < 16; b++) {\n"
+        "    uint8_t kv = key_bytes_ref[b];\n"
+        "    size_t base = (size_t)b * (size_t)threads;\n"
+        "    for (int tid = 0; tid < threads; tid++) {\n"
+        "      h_key_soa[base + (size_t)tid] = kv;\n"
+        "    }\n"
+        "  }\n"
+        "  CUdeviceptr d_key = 0;\n"
+        '  ck(cuMemAlloc(&d_key, key_bytes_len), "cuMemAlloc(key_bytes_soa)");\n'
+        '  ck(cuMemcpyHtoD(d_key, h_key_soa, key_bytes_len), "cuMemcpyHtoD(key_bytes_soa)");\n'
+    )
+    src = src.replace(old_rk_block, new_rk_block)
+    src = src.replace(
+        "  void* params[] = { &d_in, &d_out, &threads };\n",
+        "  void* params[] = { &d_in, &d_out, &d_key, &threads };\n",
+    )
+    src = src.replace(
+        "  free(h_in);\n  cuMemFree(d_in);\n",
+        "  free(h_in);\n  free(h_key_soa);\n  cuMemFree(d_key);\n  cuMemFree(d_in);\n",
     )
     return src
 
@@ -1786,6 +2494,10 @@ def main() -> int:
             "replacement_coalesced4_paramrk_shared_tuned",
             "replacement_coalesced4_paramrk_soa",
             "replacement_coalesced4_paramrk_soa_tuned",
+            "replacement_coalesced4_paramrk_soa_packed",
+            "replacement_coalesced4_paramrk_soa_packed_tuned",
+            "replacement_coalesced4_masterkey_soa",
+            "replacement_coalesced4_masterkey_soa_tuned",
             "replacement_streamed",
             "replacement_streamed_tuned",
         ),
@@ -1836,7 +2548,10 @@ def main() -> int:
         )
         kernel_src = _kernel_cu_source_replacement_coalesced4(sbox_cuda)
         host_src = _host_bench_cu_source_replacement(layout="plane-major4")
-    elif args.kernel_mode in {"replacement_coalesced4_paramrk", "replacement_coalesced4_paramrk_tuned"}:
+    elif args.kernel_mode in {
+        "replacement_coalesced4_paramrk",
+        "replacement_coalesced4_paramrk_tuned",
+    }:
         sbox_cuda = _emit_sbox_inline_cuda(
             mapped, func_name="sbox_bp128_lop3_inline", noinline=False
         )
@@ -1850,7 +2565,9 @@ def main() -> int:
             mapped, func_name="sbox_bp128_lop3_inline", noinline=False
         )
         kernel_src = _kernel_cu_source_replacement_coalesced4_paramrk_shared(sbox_cuda)
-        host_src = _host_bench_cu_source_replacement_paramrk_shared(layout="plane-major4")
+        host_src = _host_bench_cu_source_replacement_paramrk_shared(
+            layout="plane-major4"
+        )
     elif args.kernel_mode in {
         "replacement_coalesced4_paramrk_soa",
         "replacement_coalesced4_paramrk_soa_tuned",
@@ -1860,6 +2577,30 @@ def main() -> int:
         )
         kernel_src = _kernel_cu_source_replacement_coalesced4_paramrk_soa(sbox_cuda)
         host_src = _host_bench_cu_source_replacement_paramrk_soa(layout="plane-major4")
+    elif args.kernel_mode in {
+        "replacement_coalesced4_paramrk_soa_packed",
+        "replacement_coalesced4_paramrk_soa_packed_tuned",
+    }:
+        sbox_cuda = _emit_sbox_inline_cuda(
+            mapped, func_name="sbox_bp128_lop3_inline", noinline=False
+        )
+        kernel_src = _kernel_cu_source_replacement_coalesced4_paramrk_soa_packed(
+            sbox_cuda
+        )
+        host_src = _host_bench_cu_source_replacement_paramrk_soa_packed(
+            layout="plane-major4"
+        )
+    elif args.kernel_mode in {
+        "replacement_coalesced4_masterkey_soa",
+        "replacement_coalesced4_masterkey_soa_tuned",
+    }:
+        sbox_cuda = _emit_sbox_inline_cuda(
+            mapped, func_name="sbox_bp128_lop3_inline", noinline=False
+        )
+        kernel_src = _kernel_cu_source_replacement_coalesced4_masterkey_soa(sbox_cuda)
+        host_src = _host_bench_cu_source_replacement_masterkey_soa(
+            layout="plane-major4"
+        )
     else:
         sbox_cuda = _emit_sbox_inline_cuda(
             mapped, func_name="sbox_bp128_lop3_inline", noinline=False
@@ -1964,6 +2705,8 @@ def main() -> int:
             "replacement_coalesced4_paramrk_tuned",
             "replacement_coalesced4_paramrk_shared_tuned",
             "replacement_coalesced4_paramrk_soa_tuned",
+            "replacement_coalesced4_paramrk_soa_packed_tuned",
+            "replacement_coalesced4_masterkey_soa_tuned",
             "replacement_streamed_tuned",
         }:
             # Pascal-friendly defaults for this kernel shape.

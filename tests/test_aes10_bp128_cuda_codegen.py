@@ -67,7 +67,6 @@ class TestAes10Bp128CudaCodegen(unittest.TestCase):
         self.assertIn("plane * (size_t)threads + (size_t)tid", host_plane)
         self.assertIn("uint4* in4 = (uint4*)h_in;", host_plane4)
 
-
     def test_coalesced4_paramrk_kernel_signature(self) -> None:
         mapped = build_bp_sbox()
         sbox_src = aes10_cuda._emit_sbox_inline_cuda(mapped)
@@ -85,8 +84,9 @@ class TestAes10Bp128CudaCodegen(unittest.TestCase):
         self.assertIn("cuMemAlloc(&d_rk, sizeof(h_rk_bits))", host_src)
         self.assertIn("cuMemcpyHtoD(d_rk, h_rk_bits, sizeof(h_rk_bits))", host_src)
         self.assertIn("void* params[] = { &d_in, &d_out, &d_rk, &threads };", host_src)
-        self.assertNotIn('cuModuleGetGlobal(&d_rk, &rk_nbytes, mod, "RK_BITS")', host_src)
-
+        self.assertNotIn(
+            'cuModuleGetGlobal(&d_rk, &rk_nbytes, mod, "RK_BITS")', host_src
+        )
 
     def test_coalesced4_paramrk_shared_kernel_uses_shared_staging(self) -> None:
         mapped = build_bp_sbox()
@@ -96,7 +96,9 @@ class TestAes10Bp128CudaCodegen(unittest.TestCase):
         )
         self.assertIn("extern __shared__ uint4 rk4_shared[];", kernel_src)
         self.assertIn("__syncthreads();", kernel_src)
-        self.assertIn("const uint32_t* rk_shared = (const uint32_t*)rk4_shared;", kernel_src)
+        self.assertIn(
+            "const uint32_t* rk_shared = (const uint32_t*)rk4_shared;", kernel_src
+        )
 
     def test_paramrk_shared_host_sets_dynamic_shared_bytes(self) -> None:
         host_src = aes10_cuda._host_bench_cu_source_replacement_paramrk_shared(
@@ -110,7 +112,6 @@ class TestAes10Bp128CudaCodegen(unittest.TestCase):
             "cuLaunchKernel(fn, grid, 1, 1, block, 1, 1, rk_shared_bytes, 0, params, 0)",
             host_src,
         )
-
 
     def test_coalesced4_paramrk_soa_kernel_uses_thread_soa_index(self) -> None:
         mapped = build_bp_sbox()
@@ -128,6 +129,90 @@ class TestAes10Bp128CudaCodegen(unittest.TestCase):
         self.assertIn("uint32_t* h_rk_soa = (uint32_t*)malloc(rk_bytes);", host_src)
         self.assertIn("cuMemAlloc(&d_rk, rk_bytes)", host_src)
         self.assertIn("void* params[] = { &d_in, &d_out, &d_rk, &threads };", host_src)
+
+    def test_coalesced4_paramrk_soa_packed_kernel_uses_byte_keys(self) -> None:
+        mapped = build_bp_sbox()
+        sbox_src = aes10_cuda._emit_sbox_inline_cuda(mapped)
+        kernel_src = (
+            aes10_cuda._kernel_cu_source_replacement_coalesced4_paramrk_soa_packed(
+                sbox_src
+            )
+        )
+        self.assertIn("const uint8_t* __restrict__ rk_bytes", kernel_src)
+        self.assertIn("#define RK_BYTE_AT", kernel_src)
+        self.assertIn("#define RK_AT", kernel_src)
+
+    def test_paramrk_soa_packed_host_builds_packed_key_buffer(self) -> None:
+        host_src = aes10_cuda._host_bench_cu_source_replacement_paramrk_soa_packed(
+            layout="plane-major4"
+        )
+        self.assertIn("const size_t rk_planes = (size_t)11u * 16u;", host_src)
+        self.assertIn(
+            "uint8_t* h_rk_soa_packed = (uint8_t*)malloc(rk_bytes_len);", host_src
+        )
+        self.assertIn("cuMemAlloc(&d_rk, rk_bytes_len)", host_src)
+        self.assertIn("cuMemcpyHtoD(d_rk, h_rk_soa_packed, rk_bytes_len)", host_src)
+
+    def test_paramrk_soa_packed_host_uses_direct_rk_bytes(self) -> None:
+        host_src = aes10_cuda._host_bench_cu_source_replacement_paramrk_soa_packed(
+            layout="plane-major4"
+        )
+        self.assertIn("static const uint8_t rk_bytes[11][16]", host_src)
+        self.assertIn("uint8_t kv = rk_bytes[r][b];", host_src)
+        self.assertNotIn("build_rk_bits(h_rk_bits);", host_src)
+
+    def test_pack_rk_soa_packed_helpers(self) -> None:
+        rk_flat = b"".join(bytes.fromhex(x) for x in aes10_cuda.ROUND_KEYS_HEX)
+        shared = aes10_cuda.pack_rk_soa_packed_shared_key(rk_flat, threads=4)
+        self.assertEqual(len(shared), 11 * 16 * 4)
+        for key_idx in range(11 * 16):
+            row = shared[key_idx * 4 : (key_idx + 1) * 4]
+            self.assertEqual(row, bytes([rk_flat[key_idx]]) * 4)
+
+        thread0 = rk_flat
+        thread1 = bytes((b ^ 0x5A) & 0xFF for b in rk_flat)
+        packed = aes10_cuda.pack_rk_soa_packed_thread_keys(thread0 + thread1, threads=2)
+        self.assertEqual(len(packed), 11 * 16 * 2)
+        for key_idx in range(11 * 16):
+            self.assertEqual(packed[key_idx * 2 + 0], thread0[key_idx])
+            self.assertEqual(packed[key_idx * 2 + 1], thread1[key_idx])
+
+    def test_coalesced4_masterkey_soa_kernel_signature(self) -> None:
+        mapped = build_bp_sbox()
+        sbox_src = aes10_cuda._emit_sbox_inline_cuda(mapped)
+        kernel_src = aes10_cuda._kernel_cu_source_replacement_coalesced4_masterkey_soa(
+            sbox_src
+        )
+        self.assertIn("const uint8_t* __restrict__ key_bytes", kernel_src)
+        self.assertIn("__device__ __constant__ uint8_t AES_SBOX_KS[256]", kernel_src)
+        self.assertIn("aes128_expand_round_key_u8(", kernel_src)
+        self.assertIn("rk[b] = key_bytes[(size_t)b * threads + t];", kernel_src)
+
+    def test_masterkey_soa_host_builds_key_buffer(self) -> None:
+        host_src = aes10_cuda._host_bench_cu_source_replacement_masterkey_soa(
+            layout="plane-major4"
+        )
+        self.assertIn("static const uint8_t key_bytes_ref[16]", host_src)
+        self.assertIn("uint8_t* h_key_soa = (uint8_t*)malloc(key_bytes_len);", host_src)
+        self.assertIn("cuMemAlloc(&d_key, key_bytes_len)", host_src)
+        self.assertIn("cuMemcpyHtoD(d_key, h_key_soa, key_bytes_len)", host_src)
+        self.assertIn("void* params[] = { &d_in, &d_out, &d_key, &threads };", host_src)
+
+    def test_pack_masterkey_soa_helpers(self) -> None:
+        key = bytes(range(16))
+        shared = aes10_cuda.pack_masterkey_soa_shared_key(key, threads=4)
+        self.assertEqual(len(shared), 16 * 4)
+        for key_idx in range(16):
+            row = shared[key_idx * 4 : (key_idx + 1) * 4]
+            self.assertEqual(row, bytes([key[key_idx]]) * 4)
+
+        thread0 = key
+        thread1 = bytes((b ^ 0xA5) & 0xFF for b in key)
+        packed = aes10_cuda.pack_masterkey_soa_thread_keys(thread0 + thread1, threads=2)
+        self.assertEqual(len(packed), 16 * 2)
+        for key_idx in range(16):
+            self.assertEqual(packed[key_idx * 2 + 0], thread0[key_idx])
+            self.assertEqual(packed[key_idx * 2 + 1], thread1[key_idx])
 
 
 if __name__ == "__main__":
