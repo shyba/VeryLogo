@@ -6,12 +6,14 @@ Compiles Keccak with both bit-level and packed lowering with instrumentation.
 
 from __future__ import annotations
 
-import json
 import os
 import subprocess
 import tempfile
 from pathlib import Path
 
+from stc.circuit_state_bin import read_circuit_state_bin
+from stc.packed_circuit_bin import read_packed_circuit_bin
+from stc.tick_ir_bin2 import read_tick_ir_bin
 
 def run(cmd: list[str], *, env: dict[str, str] | None = None, capture: bool = False):
     """Run command, optionally capturing output."""
@@ -88,9 +90,9 @@ def compile_keccak(
     run(cmd, env=env)
 
 
-def load_json(path: Path) -> dict:
-    """Load JSON file."""
-    return json.loads(path.read_text(encoding="utf-8"))
+def load_tick_ir_dict(path: Path) -> dict:
+    """Load TickIR binary and return dict."""
+    return read_tick_ir_bin(str(path)).to_dict()
 
 
 def analyze_tick_ir(tick_ir: dict) -> dict:
@@ -153,39 +155,41 @@ def analyze_tick_ir(tick_ir: dict) -> dict:
     }
 
 
-def analyze_circuit_state(circuit_state: dict) -> dict:
+def analyze_circuit_state(circuit_state) -> dict:
     """Analyze gate distribution in bit-level circuit state."""
     gate_counts: dict[str, int] = {}
 
-    for gate in circuit_state.get("gates", []):
+    for gate in circuit_state.gates:
         if isinstance(gate, list) and len(gate) > 0:
+            op = gate[0]
+        elif isinstance(gate, tuple) and len(gate) > 0:
             op = gate[0]
         else:
             op = "unknown"
         gate_counts[op] = gate_counts.get(op, 0) + 1
 
     return {
-        "total_gates": len(circuit_state.get("gates", [])),
+        "total_gates": circuit_state.gate_count,
         "gate_type_counts": gate_counts,
-        "num_state_bits": len(circuit_state.get("state_bits", [])),
+        "num_state_bits": None,
     }
 
 
-def analyze_packed_circuit_state(packed_state: dict) -> dict:
+def analyze_packed_circuit_state(packed_state) -> dict:
     """Analyze gate distribution in packed circuit state."""
     gate_counts: dict[str, int] = {}
 
-    for gate in packed_state.get("gates", []):
-        if isinstance(gate, dict):
-            op = gate.get("op", "unknown")
+    for gate in packed_state.gates:
+        if isinstance(gate, tuple) and len(gate) > 0:
+            op = gate[0]
         else:
             op = "unknown"
         gate_counts[op] = gate_counts.get(op, 0) + 1
 
     return {
-        "total_gates": len(packed_state.get("gates", [])),
+        "total_gates": packed_state.gate_count,
         "gate_type_counts": gate_counts,
-        "num_state_words": len(packed_state.get("state_words", [])),
+        "num_state_words": None,
     }
 
 
@@ -224,13 +228,13 @@ def main() -> int:
         env={**os.environ, "PYTHONPATH": "."},
     )
 
-    reduced_ir = ir_dir / "reduced_tick_ir.json"
+    reduced_ir = ir_dir / "reduced_tick_ir.bin"
     if not reduced_ir.exists():
         raise FileNotFoundError(f"Expected output not created: {reduced_ir}")
     print(f"  Written: {reduced_ir} ({reduced_ir.stat().st_size} bytes)")
 
     print("\n[3/5] Analyzing TickIR structure...")
-    tick_ir = load_json(reduced_ir)
+    tick_ir = load_tick_ir_dict(reduced_ir)
     ir_analysis = analyze_tick_ir(tick_ir)
     print(f"  State bits: {ir_analysis['num_state_bits']}")
     print(f"  Input bits: {ir_analysis['num_input_bits']}")
@@ -247,9 +251,9 @@ def main() -> int:
     bitsliced_dir.mkdir(exist_ok=True)
     compile_keccak(flat_json, bitsliced_dir, force_bitsliced=True)
 
-    circuit_state_path = bitsliced_dir / "circuit_state.json"
+    circuit_state_path = bitsliced_dir / "circuit_state.bin"
     if circuit_state_path.exists():
-        circuit_state = load_json(circuit_state_path)
+        circuit_state = read_circuit_state_bin(circuit_state_path)
         bit_analysis = analyze_circuit_state(circuit_state)
         print(f"  Total gates: {bit_analysis['total_gates']}")
         print(f"  Gate type distribution:")
@@ -265,9 +269,9 @@ def main() -> int:
     packed_dir.mkdir(exist_ok=True)
     compile_keccak(flat_json, packed_dir, force_packed=True)
 
-    packed_state_path = packed_dir / "packed_circuit_state.json"
+    packed_state_path = packed_dir / "packed_circuit_state.bin"
     if packed_state_path.exists():
-        packed_state = load_json(packed_state_path)
+        packed_state = read_packed_circuit_bin(packed_state_path)
         packed_analysis = analyze_packed_circuit_state(packed_state)
         print(f"  Total gates: {packed_analysis['total_gates']}")
         print(f"  Gate type distribution:")

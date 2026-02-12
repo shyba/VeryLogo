@@ -11,16 +11,16 @@ Fixed flow:
 
 input.v
  → normalized.json
- → tick_ir.json
- → reduced_tick_ir.json
+ → tick_ir.bin
+ → reduced_tick_ir.bin
  → avr.c
 
 Role of each stage:
 
 - `input.v`: HDL source of truth, within the MVP subset.
 - `normalized.json`: Yosys-produced normalized representation (elaboration + lowering), stable for downstream tooling.
-- `tick_ir.json`: project IR with explicit tick semantics (`S' = f(S,I)`, `O = g(S,I)`), with unambiguous simultaneous state updates.
-- `reduced_tick_ir.json`: Tick-IR after combinational reduction and dead-state removal, preserving functional equivalence.
+- `tick_ir.bin`: project IR with explicit tick semantics (`S' = f(S,I)`, `O = g(S,I)`), with unambiguous simultaneous state updates.
+- `reduced_tick_ir.bin`: Tick-IR after combinational reduction and dead-state removal, preserving functional equivalence.
 - `avr.c`: deterministic C code for ATtiny85 that executes one tick per loop iteration with simultaneous state commit.
 
 
@@ -125,7 +125,7 @@ Not implemented in the MVP:
 
 # 6. Reduction and Solvers
 
-The solver phase runs between `tick_ir.json` and `reduced_tick_ir.json`.
+The solver phase runs between `tick_ir.bin` and `reduced_tick_ir.bin`.
 
 Reductions allowed in the MVP:
 
@@ -173,7 +173,7 @@ Code generation rules:
 
 Functional simulation:
 
-- A Python Tick-IR interpreter simulates ticks from `tick_ir.json` and produces `S`/`O` traces.
+- A Python Tick-IR interpreter simulates ticks from `tick_ir.bin` and produces `S`/`O` traces.
 - The original Verilog module is simulated with Verilator to produce reference traces under the same input sequences.
 
 Golden model:
@@ -197,16 +197,16 @@ Objective criteria for “MVP validated”:
 Generated, versionable artifacts:
 
 - `normalized.json`: Yosys output.
-- `tick_ir.json`: extracted Tick-IR.
-- `reduced_tick_ir.json`: reduced Tick-IR.
+- `tick_ir.bin`: extracted Tick-IR.
+- `reduced_tick_ir.bin`: reduced Tick-IR.
 - `avr.c`: C backend output.
 - `compile.log`: pipeline log with hashes and counts.
-- `metrics.json`: minimal metrics (regs, state bits, ops per tick, estimated combinational depth, C size).
+- `metrics.bin`: minimal metrics (regs, state bits, ops per tick, estimated combinational depth, C size).
 
 Required manual inspectability:
 
 - Tick-IR is JSON and contains stable names for state, inputs, and outputs.
-- The diff between `tick_ir.json` and `reduced_tick_ir.json` is human-readable (explicit removals and simplifications).
+- The diff between `tick_ir.bin` and `reduced_tick_ir.bin` is human-readable (explicit removals and simplifications).
 
 Minimal logs and metrics:
 

@@ -79,7 +79,7 @@ Deliverables:
 
 Done criteria:
 
-- End-to-end test: `normalized.json` fixture → `tick_ir.json` equals expected IR.
+- End-to-end test: `normalized.json` fixture → `tick_ir.bin` equals expected IR.
 
 ## Phase 5 — Reduction + Metrics
 
@@ -89,7 +89,7 @@ Deliverables:
 
 - Combinational constant folding and basic boolean simplifications.
 - Dead-state removal within a bounded reachability framework.
-- `metrics.json` generation before/after reduction.
+- `metrics.bin` generation before/after reduction.
 
 Done criteria:
 

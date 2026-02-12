@@ -1547,6 +1547,191 @@ int main(int argc, char** argv) {
     )
 
 
+def _kernel_cu_source_replacement_coalesced4_paramrk(sbox_inline_cuda: str) -> str:
+    src = _kernel_cu_source_replacement_coalesced4(sbox_inline_cuda)
+    src = src.replace("__device__ __constant__ uint32_t RK_BITS[11][16][8];\n\n", "")
+    sig_old = (
+        'extern "C" __global__ void aes10_bp128_kernel(\n'
+        "    const uint32_t* __restrict__ in_ptr,\n"
+        "    uint32_t* __restrict__ out_ptr,\n"
+        "    uint32_t n_threads\n"
+        ") {"
+    )
+    sig_new = (
+        'extern "C" __global__ void aes10_bp128_kernel(\n'
+        "    const uint32_t* __restrict__ in_ptr,\n"
+        "    uint32_t* __restrict__ out_ptr,\n"
+        "    const uint32_t* __restrict__ rk_bits,\n"
+        "    uint32_t n_threads\n"
+        ") {"
+    )
+    src = src.replace(sig_old, sig_new)
+    src = src.replace(
+        "    const size_t threads = (size_t)n_threads;\n"
+        "    const size_t t = (size_t)tid;\n"
+        "    const uint4* in4 = (const uint4*)in_ptr;\n"
+        "    uint4* out4 = (uint4*)out_ptr;\n",
+        "    const size_t threads = (size_t)n_threads;\n"
+        "    const size_t t = (size_t)tid;\n"
+        "    const uint4* in4 = (const uint4*)in_ptr;\n"
+        "    uint4* out4 = (uint4*)out_ptr;\n"
+        "    #define RK_AT(r,b,bit) rk_bits[(((size_t)(r) * 16u + (size_t)(b)) * 8u + (size_t)(bit))]\n",
+    )
+    src = re.sub(
+        r"RK_BITS\[([^\]]+)\]\[([^\]]+)\]\[([^\]]+)\]",
+        r"RK_AT(\1,\2,\3)",
+        src,
+    )
+    src = src.replace('\n}}\n"""\n', '\n    #undef RK_AT\n}}\n"""\n')
+    return src
+
+
+def _kernel_cu_source_replacement_coalesced4_paramrk_shared(
+    sbox_inline_cuda: str,
+) -> str:
+    src = _kernel_cu_source_replacement_coalesced4_paramrk(sbox_inline_cuda)
+    src = src.replace(
+        "    const size_t threads = (size_t)n_threads;\n"
+        "    const size_t t = (size_t)tid;\n"
+        "    const uint4* in4 = (const uint4*)in_ptr;\n"
+        "    uint4* out4 = (uint4*)out_ptr;\n"
+        "    #define RK_AT(r,b,bit) rk_bits[(((size_t)(r) * 16u + (size_t)(b)) * 8u + (size_t)(bit))]\n",
+        "    const size_t threads = (size_t)n_threads;\n"
+        "    const size_t t = (size_t)tid;\n"
+        "    const uint4* in4 = (const uint4*)in_ptr;\n"
+        "    uint4* out4 = (uint4*)out_ptr;\n"
+        "    const uint4* rk4_global = (const uint4*)rk_bits;\n"
+        "    extern __shared__ uint4 rk4_shared[];\n"
+        "    const size_t rk4_words = (11u * 16u * 8u) / 4u;\n"
+        "    for (size_t i = (size_t)threadIdx.x; i < rk4_words; i += (size_t)blockDim.x) {\n"
+        "        rk4_shared[i] = rk4_global[i];\n"
+        "    }\n"
+        "    __syncthreads();\n"
+        "    const uint32_t* rk_shared = (const uint32_t*)rk4_shared;\n"
+        "    #define RK_AT(r,b,bit) rk_shared[(((size_t)(r) * 16u + (size_t)(b)) * 8u + (size_t)(bit))]\n",
+    )
+    return src
+
+
+def _kernel_cu_source_replacement_coalesced4_paramrk_soa(
+    sbox_inline_cuda: str,
+) -> str:
+    src = _kernel_cu_source_replacement_coalesced4_paramrk(sbox_inline_cuda)
+    src = src.replace(
+        "    #define RK_AT(r,b,bit) rk_bits[(((size_t)(r) * 16u + (size_t)(b)) * 8u + (size_t)(bit))]\n",
+        "    #define RK_AT(r,b,bit) rk_bits[(((((size_t)(r) * 16u + (size_t)(b)) * 8u + (size_t)(bit)) * threads) + t)]\n",
+    )
+    return src
+
+
+def _host_bench_cu_source_replacement_paramrk(layout: str = "plane-major4") -> str:
+    if layout != "plane-major4":
+        raise ValueError("paramrk host path currently supports plane-major4 layout only")
+
+    src = _host_bench_cu_source_replacement(layout=layout)
+    old_rk_block = (
+        "  CUdeviceptr d_rk = 0;\n"
+        "  size_t rk_nbytes = 0;\n"
+        "  ck(cuModuleGetGlobal(&d_rk, &rk_nbytes, mod, \"RK_BITS\"), \"cuModuleGetGlobal(RK_BITS)\");\n"
+        "  uint32_t h_rk_bits[11][16][8];\n"
+        "  build_rk_bits(h_rk_bits);\n"
+        "  if (rk_nbytes < sizeof(h_rk_bits)) {\n"
+        "    fprintf(stderr, \"RK_BITS symbol too small: %zu < %zu\\n\", rk_nbytes, sizeof(h_rk_bits));\n"
+        "    return 2;\n"
+        "  }\n"
+        "  ck(cuMemcpyHtoD(d_rk, h_rk_bits, sizeof(h_rk_bits)), \"cuMemcpyHtoD(RK_BITS)\");\n"
+    )
+    new_rk_block = (
+        "  uint32_t h_rk_bits[11][16][8];\n"
+        "  build_rk_bits(h_rk_bits);\n"
+        "  CUdeviceptr d_rk = 0;\n"
+        "  ck(cuMemAlloc(&d_rk, sizeof(h_rk_bits)), \"cuMemAlloc(rk_bits)\");\n"
+        "  ck(cuMemcpyHtoD(d_rk, h_rk_bits, sizeof(h_rk_bits)), \"cuMemcpyHtoD(rk_bits)\");\n"
+    )
+    src = src.replace(old_rk_block, new_rk_block)
+    src = src.replace(
+        "  void* params[] = { &d_in, &d_out, &threads };\n",
+        "  void* params[] = { &d_in, &d_out, &d_rk, &threads };\n",
+    )
+    src = src.replace(
+        "  free(h_in);\n  cuMemFree(d_in);\n",
+        "  free(h_in);\n  cuMemFree(d_rk);\n  cuMemFree(d_in);\n",
+    )
+    return src
+
+
+def _host_bench_cu_source_replacement_paramrk_shared(layout: str = "plane-major4") -> str:
+    src = _host_bench_cu_source_replacement_paramrk(layout=layout)
+    src = src.replace(
+        "  int grid = (threads + block - 1) / block;\n"
+        "  void* params[] = { &d_in, &d_out, &d_rk, &threads };\n",
+        "  int grid = (threads + block - 1) / block;\n"
+        "  const unsigned int rk_shared_bytes = (unsigned int)sizeof(h_rk_bits);\n"
+        "  void* params[] = { &d_in, &d_out, &d_rk, &threads };\n",
+    )
+    src = src.replace(
+        ", 0, 0, params, 0)",
+        ", rk_shared_bytes, 0, params, 0)",
+    )
+    return src
+
+
+def _host_bench_cu_source_replacement_paramrk_soa(layout: str = "plane-major4") -> str:
+    if layout != "plane-major4":
+        raise ValueError("paramrk_soa host path currently supports plane-major4 layout only")
+
+    src = _host_bench_cu_source_replacement(layout=layout)
+    old_rk_block = (
+        "  CUdeviceptr d_rk = 0;\n"
+        "  size_t rk_nbytes = 0;\n"
+        "  ck(cuModuleGetGlobal(&d_rk, &rk_nbytes, mod, \"RK_BITS\"), \"cuModuleGetGlobal(RK_BITS)\");\n"
+        "  uint32_t h_rk_bits[11][16][8];\n"
+        "  build_rk_bits(h_rk_bits);\n"
+        "  if (rk_nbytes < sizeof(h_rk_bits)) {\n"
+        "    fprintf(stderr, \"RK_BITS symbol too small: %zu < %zu\\n\", rk_nbytes, sizeof(h_rk_bits));\n"
+        "    return 2;\n"
+        "  }\n"
+        "  ck(cuMemcpyHtoD(d_rk, h_rk_bits, sizeof(h_rk_bits)), \"cuMemcpyHtoD(RK_BITS)\");\n"
+    )
+    new_rk_block = (
+        "  uint32_t h_rk_bits[11][16][8];\n"
+        "  build_rk_bits(h_rk_bits);\n"
+        "  const size_t rk_planes = (size_t)11u * 16u * 8u;\n"
+        "  const size_t rk_words = rk_planes * (size_t)threads;\n"
+        "  const size_t rk_bytes = rk_words * sizeof(uint32_t);\n"
+        "  uint32_t* h_rk_soa = (uint32_t*)malloc(rk_bytes);\n"
+        "  if (!h_rk_soa) {\n"
+        "    fprintf(stderr, \"malloc failed for h_rk_soa\\n\");\n"
+        "    return 2;\n"
+        "  }\n"
+        "  for (int r = 0; r < 11; r++) {\n"
+        "    for (int b = 0; b < 16; b++) {\n"
+        "      for (int bit = 0; bit < 8; bit++) {\n"
+        "        size_t plane = ((size_t)r * 16u + (size_t)b) * 8u + (size_t)bit;\n"
+        "        uint32_t v = h_rk_bits[r][b][bit];\n"
+        "        size_t base = plane * (size_t)threads;\n"
+        "        for (int tid = 0; tid < threads; tid++) {\n"
+        "          h_rk_soa[base + (size_t)tid] = v;\n"
+        "        }\n"
+        "      }\n"
+        "    }\n"
+        "  }\n"
+        "  CUdeviceptr d_rk = 0;\n"
+        "  ck(cuMemAlloc(&d_rk, rk_bytes), \"cuMemAlloc(rk_bits_soa)\");\n"
+        "  ck(cuMemcpyHtoD(d_rk, h_rk_soa, rk_bytes), \"cuMemcpyHtoD(rk_bits_soa)\");\n"
+    )
+    src = src.replace(old_rk_block, new_rk_block)
+    src = src.replace(
+        "  void* params[] = { &d_in, &d_out, &threads };\n",
+        "  void* params[] = { &d_in, &d_out, &d_rk, &threads };\n",
+    )
+    src = src.replace(
+        "  free(h_in);\n  cuMemFree(d_in);\n",
+        "  free(h_in);\n  free(h_rk_soa);\n  cuMemFree(d_rk);\n  cuMemFree(d_in);\n",
+    )
+    return src
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--sm", default="sm_61")
@@ -1595,6 +1780,12 @@ def main() -> int:
             "replacement_coalesced_tuned",
             "replacement_coalesced4",
             "replacement_coalesced4_tuned",
+            "replacement_coalesced4_paramrk",
+            "replacement_coalesced4_paramrk_tuned",
+            "replacement_coalesced4_paramrk_shared",
+            "replacement_coalesced4_paramrk_shared_tuned",
+            "replacement_coalesced4_paramrk_soa",
+            "replacement_coalesced4_paramrk_soa_tuned",
             "replacement_streamed",
             "replacement_streamed_tuned",
         ),
@@ -1645,6 +1836,30 @@ def main() -> int:
         )
         kernel_src = _kernel_cu_source_replacement_coalesced4(sbox_cuda)
         host_src = _host_bench_cu_source_replacement(layout="plane-major4")
+    elif args.kernel_mode in {"replacement_coalesced4_paramrk", "replacement_coalesced4_paramrk_tuned"}:
+        sbox_cuda = _emit_sbox_inline_cuda(
+            mapped, func_name="sbox_bp128_lop3_inline", noinline=False
+        )
+        kernel_src = _kernel_cu_source_replacement_coalesced4_paramrk(sbox_cuda)
+        host_src = _host_bench_cu_source_replacement_paramrk(layout="plane-major4")
+    elif args.kernel_mode in {
+        "replacement_coalesced4_paramrk_shared",
+        "replacement_coalesced4_paramrk_shared_tuned",
+    }:
+        sbox_cuda = _emit_sbox_inline_cuda(
+            mapped, func_name="sbox_bp128_lop3_inline", noinline=False
+        )
+        kernel_src = _kernel_cu_source_replacement_coalesced4_paramrk_shared(sbox_cuda)
+        host_src = _host_bench_cu_source_replacement_paramrk_shared(layout="plane-major4")
+    elif args.kernel_mode in {
+        "replacement_coalesced4_paramrk_soa",
+        "replacement_coalesced4_paramrk_soa_tuned",
+    }:
+        sbox_cuda = _emit_sbox_inline_cuda(
+            mapped, func_name="sbox_bp128_lop3_inline", noinline=False
+        )
+        kernel_src = _kernel_cu_source_replacement_coalesced4_paramrk_soa(sbox_cuda)
+        host_src = _host_bench_cu_source_replacement_paramrk_soa(layout="plane-major4")
     else:
         sbox_cuda = _emit_sbox_inline_cuda(
             mapped, func_name="sbox_bp128_lop3_inline", noinline=False
@@ -1746,6 +1961,9 @@ def main() -> int:
             "replacement_tuned",
             "replacement_coalesced_tuned",
             "replacement_coalesced4_tuned",
+            "replacement_coalesced4_paramrk_tuned",
+            "replacement_coalesced4_paramrk_shared_tuned",
+            "replacement_coalesced4_paramrk_soa_tuned",
             "replacement_streamed_tuned",
         }:
             # Pascal-friendly defaults for this kernel shape.
@@ -1782,6 +2000,10 @@ def main() -> int:
                 if eval_b > best_eval_b:
                     best_eval_b = eval_b
                     best_block = block
+
+        if best_eval_b < 0.0:
+            print("no successful CUDA launches for the selected mode/config")
+            return 3
 
         if len(blocks) > 1 and best_eval_b >= 0.0:
             print(

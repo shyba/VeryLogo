@@ -2,11 +2,11 @@
 """Quick benchmark for already-compiled Keccak code."""
 
 import ctypes
-import json
 import subprocess
 import time
 from pathlib import Path
 
+from stc.layout_bin import read_packed_layout_bin
 Vec = ctypes.c_uint64 * 8
 
 def _aligned_vec_array(n: int) -> tuple[ctypes.Array, ctypes.POINTER(Vec)]:
@@ -209,7 +209,7 @@ def simulate_keccak_512_once_steps(
 def main():
     out_dir = Path("out/keccak_fixed")
     so_path = out_dir / "circuit_avx512.so"
-    layout_path = out_dir / "io_layout.json"
+    layout_path = out_dir / "io_layout.bin"
 
     if not so_path.exists():
         print(f"ERROR: {so_path} not found")
@@ -219,7 +219,7 @@ def main():
         print(f"ERROR: {layout_path} not found")
         return 1
 
-    layout = json.loads(layout_path.read_text(encoding="utf-8"))
+    layout = read_packed_layout_bin(layout_path).to_dict()
     lib = ctypes.CDLL(str(so_path))
 
     msg = b"abc"

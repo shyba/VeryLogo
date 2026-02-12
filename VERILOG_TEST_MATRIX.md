@@ -13,35 +13,35 @@ Columns:
 - `Produced by`: pipeline stage where the node is expected to appear.
 - `Verilog trigger`: a 1-line sketch of the construct to place inside a small single-module test.
 - `CLI flags`: minimal flags needed for the node to appear.
-- `Expected in`: which artifact should contain the node (`tick_ir.json` vs `reduced_tick_ir.json`).
+- `Expected in`: which artifact should contain the node (`tick_ir.bin` vs `reduced_tick_ir.bin`).
 - `Status`: whether the case is reachable today or what is missing to make it reachable from Verilog.
 
 | Category | Tick-IR node | kind | Produced by | Verilog trigger | CLI flags | Expected in | Status |
 |---|---|---:|---|---|---|---|---|
-| Core | `Var` | `var` | Frontend | `assign y = a;` | none | `tick_ir.json` | Reachable |
-| Const | `BoolConst` | `bool_const` | Frontend | `assign y = 1'b1;` | none | `tick_ir.json` | Reachable |
-| Const | `BitVecConst` | `bitvec_const` | Reducer | `assign y = 8'hA5;` | none | `reduced_tick_ir.json` | Reachable (via constant folding) |
+| Core | `Var` | `var` | Frontend | `assign y = a;` | none | `tick_ir.bin` | Reachable |
+| Const | `BoolConst` | `bool_const` | Frontend | `assign y = 1'b1;` | none | `tick_ir.bin` | Reachable |
+| Const | `BitVecConst` | `bitvec_const` | Reducer | `assign y = 8'hA5;` | none | `reduced_tick_ir.bin` | Reachable (via constant folding) |
 | Const | `FloatConst` | `float_const` | IR-only | N/A (no float Verilog subset) | N/A | N/A | Blocked (needs float frontend or IR fixture) |
-| Const | `SimdConst` | `simd_const` | Infer-SIMD | `always_ff ... if (rst) q <= '0;` with SIMD-typed `q` | `--infer-simd` | `tick_ir.json` | Reachable when SIMD inferred for a register |
-| Structural | `Slice` | `slice` | Frontend | `assign y = a[7:0];` | none | `tick_ir.json` | Reachable |
-| Structural | `Concat` | `concat` | Frontend | `assign y = {a[3:0], b[3:0]};` | none | `tick_ir.json` | Reachable |
-| Structural | `Mux` | `mux` | Frontend | `assign y = sel ? a : b;` | none | `tick_ir.json` | Reachable |
-| Structural | `Bitcast` | `bitcast` | Infer-SIMD | lane-wise concat output inferred as SIMD, wrapped by bitcast | `--infer-simd` | `tick_ir.json` | Reachable (via `infer_simd_types`) |
+| Const | `SimdConst` | `simd_const` | Infer-SIMD | `always_ff ... if (rst) q <= '0;` with SIMD-typed `q` | `--infer-simd` | `tick_ir.bin` | Reachable when SIMD inferred for a register |
+| Structural | `Slice` | `slice` | Frontend | `assign y = a[7:0];` | none | `tick_ir.bin` | Reachable |
+| Structural | `Concat` | `concat` | Frontend | `assign y = {a[3:0], b[3:0]};` | none | `tick_ir.bin` | Reachable |
+| Structural | `Mux` | `mux` | Frontend | `assign y = sel ? a : b;` | none | `tick_ir.bin` | Reachable |
+| Structural | `Bitcast` | `bitcast` | Infer-SIMD | lane-wise concat output inferred as SIMD, wrapped by bitcast | `--infer-simd` | `tick_ir.bin` | Reachable (via `infer_simd_types`) |
 | Structural | `Delay` | `delay` | IR-only | N/A (no Verilog→`Delay` recognition) | N/A | N/A | Blocked (needs reg-chain→Delay recognition or IR fixture) |
-| BV | `Not` | `not` | Frontend | `assign y = ~a;` | none | `tick_ir.json` | Reachable |
-| BV | `And` | `and` | Frontend | `assign y = a & b;` | none | `tick_ir.json` | Reachable |
-| BV | `Or` | `or` | Frontend | `assign y = a \| b;` | none | `tick_ir.json` | Reachable |
-| BV | `Xor` | `xor` | Frontend | `assign y = a ^ b;` | none | `tick_ir.json` | Reachable |
-| BV | `Add` | `add` | Frontend | `assign y = a + b;` | none | `tick_ir.json` | Reachable |
-| BV | `Sub` | `sub` | Frontend | `assign y = a - b;` | none | `tick_ir.json` | Reachable |
-| BV | `Shl` | `shl` | Frontend | `assign y = a << sh;` | none | `tick_ir.json` | Reachable |
-| BV | `LShr` | `lshr` | Frontend | `assign y = a >> sh;` | none | `tick_ir.json` | Reachable |
-| BV | `AShr` | `ashr` | Frontend | `assign y = $signed(a) >>> sh;` | none | `tick_ir.json` | Reachable |
-| BV | `Eq` | `eq` | Frontend | `assign y = (a == b);` | none | `tick_ir.json` | Reachable |
-| BV | `Ult` | `ult` | Frontend | `assign y = (a < b);` | none | `tick_ir.json` | Reachable (unsigned only) |
-| BV | `Ule` | `ule` | Frontend | `assign y = (a <= b);` | none | `tick_ir.json` | Reachable (unsigned only) |
-| BV | `Ugt` | `ugt` | Frontend | `assign y = (a > b);` | none | `tick_ir.json` | Reachable (unsigned only) |
-| BV | `Uge` | `uge` | Frontend | `assign y = (a >= b);` | none | `tick_ir.json` | Reachable (unsigned only) |
+| BV | `Not` | `not` | Frontend | `assign y = ~a;` | none | `tick_ir.bin` | Reachable |
+| BV | `And` | `and` | Frontend | `assign y = a & b;` | none | `tick_ir.bin` | Reachable |
+| BV | `Or` | `or` | Frontend | `assign y = a \| b;` | none | `tick_ir.bin` | Reachable |
+| BV | `Xor` | `xor` | Frontend | `assign y = a ^ b;` | none | `tick_ir.bin` | Reachable |
+| BV | `Add` | `add` | Frontend | `assign y = a + b;` | none | `tick_ir.bin` | Reachable |
+| BV | `Sub` | `sub` | Frontend | `assign y = a - b;` | none | `tick_ir.bin` | Reachable |
+| BV | `Shl` | `shl` | Frontend | `assign y = a << sh;` | none | `tick_ir.bin` | Reachable |
+| BV | `LShr` | `lshr` | Frontend | `assign y = a >> sh;` | none | `tick_ir.bin` | Reachable |
+| BV | `AShr` | `ashr` | Frontend | `assign y = $signed(a) >>> sh;` | none | `tick_ir.bin` | Reachable |
+| BV | `Eq` | `eq` | Frontend | `assign y = (a == b);` | none | `tick_ir.bin` | Reachable |
+| BV | `Ult` | `ult` | Frontend | `assign y = (a < b);` | none | `tick_ir.bin` | Reachable (unsigned only) |
+| BV | `Ule` | `ule` | Frontend | `assign y = (a <= b);` | none | `tick_ir.bin` | Reachable (unsigned only) |
+| BV | `Ugt` | `ugt` | Frontend | `assign y = (a > b);` | none | `tick_ir.bin` | Reachable (unsigned only) |
+| BV | `Uge` | `uge` | Frontend | `assign y = (a >= b);` | none | `tick_ir.bin` | Reachable (unsigned only) |
 | Float | `FNeg` | `fneg` | IR-only | N/A (no float Verilog subset) | N/A | N/A | Blocked (needs float frontend or IR fixture) |
 | Float | `FAbs` | `fabs` | IR-only | N/A (no float Verilog subset) | N/A | N/A | Blocked (needs float frontend or IR fixture) |
 | Float | `FAdd` | `fadd` | IR-only | N/A (no float Verilog subset) | N/A | N/A | Blocked (needs float frontend or IR fixture) |
@@ -53,18 +53,18 @@ Columns:
 | Float | `FLt` | `flt` | IR-only | N/A (no float Verilog subset) | N/A | N/A | Blocked (needs float frontend or IR fixture) |
 | Float | `FLe` | `fle` | IR-only | N/A (no float Verilog subset) | N/A | N/A | Blocked (needs float frontend or IR fixture) |
 | Float | `FNe` | `fne` | IR-only | N/A (no float Verilog subset) | N/A | N/A | Blocked (needs float frontend or IR fixture) |
-| SIMD-int | `SimdAdd` | `simd_add` | Autovec | lane-wise `+` on `W`-bit lanes, concat into wide output | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.json` | Reachable for regular add/sub/bitwise |
-| SIMD-int | `SimdSub` | `simd_sub` | Autovec | lane-wise `-` on `W`-bit lanes, concat into wide output | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.json` | Reachable |
+| SIMD-int | `SimdAdd` | `simd_add` | Autovec | lane-wise `+` on `W`-bit lanes, concat into wide output | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.bin` | Reachable for regular add/sub/bitwise |
+| SIMD-int | `SimdSub` | `simd_sub` | Autovec | lane-wise `-` on `W`-bit lanes, concat into wide output | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.bin` | Reachable |
 | SIMD-int | `SimdAddMasked` | `simd_add_masked` | IR-only | `out = mask ? (x+y) : x` (e.g. `SimdBlend(mask, x, SimdAdd(x,y))`) | N/A | N/A | Reachable only via IR fixtures or an explicit lowering from `SimdBlend` patterns |
 | SIMD-int | `SimdSubMasked` | `simd_sub_masked` | IR-only | `out = mask ? (x-y) : x` (e.g. `SimdBlend(mask, x, SimdSub(x,y))`) | N/A | N/A | Reachable only via IR fixtures or an explicit lowering from `SimdBlend` patterns |
-| SIMD-int | `SimdAnd` | `simd_and` | Autovec | lane-wise `&` on lanes, concat into wide output | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.json` | Reachable |
-| SIMD-int | `SimdOr` | `simd_or` | Autovec | lane-wise `\|` on lanes, concat into wide output | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.json` | Reachable |
-| SIMD-int | `SimdXor` | `simd_xor` | Autovec | lane-wise `^` on lanes, concat into wide output | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.json` | Reachable |
-| SIMD-int | `SimdEq` | `simd_eq` | Autovec | lane-wise `==` producing 1-bit lanes, concat mask bits | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.json` | Reachable (mask vectors) |
-| SIMD-int | `SimdUlt` | `simd_ult` | Autovec | lane-wise `<` producing 1-bit lanes, concat mask bits | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.json` | Reachable (unsigned only) |
-| SIMD-int | `SimdUle` | `simd_ule` | Autovec | lane-wise `<=` producing 1-bit lanes, concat mask bits | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.json` | Reachable (unsigned only) |
-| SIMD-int | `SimdUgt` | `simd_ugt` | Autovec | lane-wise `>` producing 1-bit lanes, concat mask bits | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.json` | Reachable (unsigned only) |
-| SIMD-int | `SimdUge` | `simd_uge` | Autovec | lane-wise `>=` producing 1-bit lanes, concat mask bits | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.json` | Reachable (unsigned only) |
+| SIMD-int | `SimdAnd` | `simd_and` | Autovec | lane-wise `&` on lanes, concat into wide output | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.bin` | Reachable |
+| SIMD-int | `SimdOr` | `simd_or` | Autovec | lane-wise `\|` on lanes, concat into wide output | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.bin` | Reachable |
+| SIMD-int | `SimdXor` | `simd_xor` | Autovec | lane-wise `^` on lanes, concat into wide output | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.bin` | Reachable |
+| SIMD-int | `SimdEq` | `simd_eq` | Autovec | lane-wise `==` producing 1-bit lanes, concat mask bits | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.bin` | Reachable (mask vectors) |
+| SIMD-int | `SimdUlt` | `simd_ult` | Autovec | lane-wise `<` producing 1-bit lanes, concat mask bits | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.bin` | Reachable (unsigned only) |
+| SIMD-int | `SimdUle` | `simd_ule` | Autovec | lane-wise `<=` producing 1-bit lanes, concat mask bits | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.bin` | Reachable (unsigned only) |
+| SIMD-int | `SimdUgt` | `simd_ugt` | Autovec | lane-wise `>` producing 1-bit lanes, concat mask bits | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.bin` | Reachable (unsigned only) |
+| SIMD-int | `SimdUge` | `simd_uge` | Autovec | lane-wise `>=` producing 1-bit lanes, concat mask bits | `--infer-simd --autovec --no-backend` | `reduced_tick_ir.bin` | Reachable (unsigned only) |
 | SIMD-int | `SimdNot` | `simd_not` | IR-only | lane-wise `~` (would require new autovec rule) | N/A | N/A | Blocked (extend autovec to emit `SimdNot`) |
 | SIMD-int | `SimdShl` | `simd_shl` | IR-only | lane-wise `<<` (would require new autovec rule) | N/A | N/A | Blocked (extend autovec to emit `SimdShl`) |
 | SIMD-int | `SimdLShr` | `simd_lshr` | IR-only | lane-wise `>>` (would require new autovec rule) | N/A | N/A | Blocked (extend autovec to emit `SimdLShr`) |

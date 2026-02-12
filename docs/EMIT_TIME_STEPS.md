@@ -6,7 +6,7 @@ On large stateful designs, that per-tick state copy dominates runtime.
 
 ## What changed
 
-When lowering `TickIR -> CircuitState`, the pipeline already produces an `io_layout.json` describing how many packed bits belong to primary inputs, primary outputs, and state.
+When lowering `TickIR -> CircuitState`, the pipeline already produces an `io_layout.bin` describing how many packed bits belong to primary inputs, primary outputs, and state.
 
 When that layout information is available, the AVX-512 scheduled emitter now also emits:
 
@@ -32,8 +32,7 @@ All pointers are arrays of bitsliced vectors (`__m512i`), one element per packed
 
 ## Using it
 
-- Run the normal pipeline to produce `circuit_avx512.c` and `io_layout.json`.
+- Run the normal pipeline to produce `circuit_avx512.c` and `io_layout.bin`.
 - Compile to a shared library and call `circuit_steps_shared(...)` via `ctypes` or native C.
 
 The Keccak benchmark script `scripts/bench_keccak_steps_avx512.py` demonstrates this pattern end-to-end.
-

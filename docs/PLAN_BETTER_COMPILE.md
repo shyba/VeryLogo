@@ -58,7 +58,7 @@ Key additions (new module recommended: `stc/tick_ir_normalize.py`):
    - If `$pmux`/wide mux lowered into nested muxes, canonicalize mux trees into a uniform form.
 
 Artifacts:
-- Write `out/normalized_tick_ir.json` plus a `out/normalize_report.json` explaining which rewrites triggered.
+- Write `out/normalized_tick_ir.bin` plus a `out/normalize_report.bin` explaining which rewrites triggered.
 
 ### Phase B — Packed lowering becomes the default for x86-avx512 (generic)
 Goal: lower to **64-bit semantic word** IR (`PackedCircuitState`) whenever possible.
@@ -75,9 +75,9 @@ Improvements to packed lowering (`stc/tick_ir_to_packed_circuit_state.py`):
      - Option 2 (simpler first): fall back the entire design but emit a detailed reason report.
 
 Artifacts:
-- Always write `out/lowering_choice.json`:
+- Always write `out/lowering_choice.bin`:
   - `{"path":"packed"|"bit", "reason":"...", "unsupported":[...], "stats":{...}}`
-- If packed succeeds: `out/packed_circuit_state.json` + `out/packed_word_layout.json`.
+- If packed succeeds: `out/packed_circuit_state.bin` + `out/packed_word_layout.bin`.
 
 ### Phase C — Region decomposition on packed IR (generic)
 Goal: reduce scheduling/register pressure and enable local optimization by compiling regions.
@@ -91,8 +91,8 @@ Use `stc/packed_regions.py` + `stc/packed_region_emit.py`:
   - optional “region graph” dump (DOT/JSON) for debugging
 
 Artifacts:
-- `out/regions.json` (list of regions, interfaces, sizes)
-- `out/regions_stats.json` (histograms and summary)
+- `out/regions.bin` (list of regions, interfaces, sizes)
+- `out/regions_stats.bin` (histograms and summary)
 
 ### Phase D — Backend codegen improvements (packed AVX-512 u64 first)
 Goal: make emitted code fast and predictable.
@@ -111,7 +111,7 @@ Goal: make emitted code fast and predictable.
      - optional microbenchmark if `--autotune` enabled
 
 Artifacts:
-- `out/codegen_report.json` with estimated register pressure, region metrics, and chosen config.
+- `out/codegen_report.bin` with estimated register pressure, region metrics, and chosen config.
 
 ### Phase E — Autotuning (fast, reproducible, easy to configure)
 Goal: “auto by default” but deterministic and controllable.
@@ -122,8 +122,8 @@ Introduce `--autotune` mode with:
 - `--autotune-candidates` (small list of region caps / ordering strategies)
 
 Autotune outputs:
-- `out/autotune_results.json` (candidate configs + measured/estimated scores)
-- `out/autotune_choice.json` (selected config)
+- `out/autotune_results.bin` (candidate configs + measured/estimated scores)
+- `out/autotune_choice.bin` (selected config)
 
 Default behavior when autotune is off:
 - Use a safe preset (`--use-regions` on for packed AVX-512 if packed lowering succeeds).
@@ -141,9 +141,9 @@ If packed lowering fails, provide:
 ### “Reduce to a smaller repro”
 Add a helper script (recommended):
 - `scripts/minimize_lowering_failure.py`
-  - takes `reduced_tick_ir.json`
+  - takes `reduced_tick_ir.bin`
   - isolates the smallest output/next-state cone that still triggers `PackedLoweringError`
-  - optionally emits a small `.v` or `.json` fixture for regression tests
+  - optionally emits a small `.v` or `.bin` fixture for regression tests
 
 ### Regression tests
 Add fixtures for:
@@ -163,11 +163,11 @@ Add fixtures for:
 - Add targeted unit tests in `tests/` for each new construct.
 
 ### PR2: “Lowering choice report” + minimizer tooling
-- Implement `out/lowering_choice.json` and detailed `PackedLoweringError` reporting.
+- Implement `out/lowering_choice.bin` and detailed `PackedLoweringError` reporting.
 - Add `scripts/minimize_lowering_failure.py` producing reproducible fixtures.
 
 ### PR3: Region pipeline hardening + diagnostics
-- Emit `out/regions.json`, `out/regions_stats.json`.
+- Emit `out/regions.bin`, `out/regions_stats.bin`.
 - Add region ordering heuristic options and deterministic tie-breaking.
 - Add an optional native correctness test that compiles the emitted region code and compares to `eval_packed_circuit_words`.
 
@@ -182,7 +182,7 @@ Add fixtures for:
   - runs the pipeline
   - compiles emitted C
   - runs `*_steps_shared` for a fixed workload
-  - prints throughput and stores results JSON in `out/bench.json`
+  - prints throughput and stores results in `out/bench.txt`
 - Keep Keccak as one benchmark case, but make the harness accept arbitrary `TickIR`/Verilog.
 
 ---
@@ -202,11 +202,11 @@ PYTHONPATH=. .venv/bin/python -m stc out/keccak_flat.json --top keccak --out out
 ```
 
 Expected artifacts:
-- Always: `out/keccak_out/reduced_tick_ir.json`
-- If packed succeeded: `out/keccak_out/packed_circuit_state.json`, `out/keccak_out/packed_word_layout.json`, and either:
+- Always: `out/keccak_out/reduced_tick_ir.bin`
+- If packed succeeded: `out/keccak_out/packed_circuit_state.bin`, `out/keccak_out/packed_word_layout.bin`, and either:
   - `out/keccak_out/circuit_avx512_u64.c` (scheduled) or
   - `out/keccak_out/circuit_avx512_u64_regions.c` (region-fused) when `--use-regions`
-- If packed failed: bit-level artifacts `out/keccak_out/circuit_avx512.c`, `out/keccak_out/io_layout.json`
+- If packed failed: bit-level artifacts `out/keccak_out/circuit_avx512.c`, `out/keccak_out/io_layout.bin`
 
 ### Benchmark Keccak (current bit-level baseline)
 ```bash
@@ -215,7 +215,7 @@ PYTHONPATH=. .venv/bin/python scripts/bench_keccak_steps_avx512.py --msg abc --r
 
 ### Benchmark packed region emission (generic runner)
 ```bash
-PYTHONPATH=. .venv/bin/python scripts/bench_packed_avx512_u64.py --tick-ir out/keccak_out/reduced_tick_ir.json --steps 1024 --iters 200 --check
+PYTHONPATH=. .venv/bin/python scripts/bench_packed_avx512_u64.py --tick-ir out/keccak_out/reduced_tick_ir.bin --steps 1024 --iters 200 --check
 ```
 
 ---
@@ -256,4 +256,3 @@ so scripts can consume it without re-implementing pipeline logic.
    - region cap autotuning vs fixed caps
 
 When these are in place, Keccak becomes a continuously useful benchmark rather than a one-off integration.  
-

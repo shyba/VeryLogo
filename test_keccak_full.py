@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import ctypes
-import json
 import subprocess
 from pathlib import Path
+
+from stc.layout_bin import read_packed_layout_bin
 
 Vec = ctypes.c_uint64 * 8
 
@@ -43,10 +44,10 @@ def _out_bits_to_digest_bytes(bits_512_lsb_first):
         raise ValueError("expected 512 bits")
     return raw[::-1]
 
-layout_path = Path("out/keccak_test/io_layout.json")
+layout_path = Path("out/keccak_test/io_layout.bin")
 so_path = Path("out/keccak_test/circuit_avx512.so")
 
-layout = json.loads(layout_path.read_text())
+layout = read_packed_layout_bin(layout_path).to_dict()
 lib = ctypes.CDLL(str(so_path))
 
 inputs = layout["inputs"]

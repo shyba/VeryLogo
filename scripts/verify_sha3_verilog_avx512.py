@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import argparse
 import hashlib
-import json
 import os
 import subprocess
 import tempfile
 from pathlib import Path
 
+from stc.layout_bin import read_packed_layout_bin
 
 def _have_avx512() -> bool:
     try:
@@ -85,10 +85,9 @@ def _pack_word_be(bs: bytes) -> int:
     return v
 
 
-def simulate_sha3_512_once(lib_path: Path, layout_path: Path, message: bytes) -> bytes:
+def simulate_sha3_512_once(lib_path: Path, layout: dict, message: bytes) -> bytes:
     import ctypes
 
-    layout = json.loads(layout_path.read_text(encoding="utf-8"))
     in_bits = int(layout["input_bits"])
     out_bits = int(layout["output_bits"])
 
@@ -292,12 +291,13 @@ def main() -> int:
         )
 
         c_path = out_dir / "circuit_avx512.c"
-        layout_path = out_dir / "io_layout.json"
+        layout_path = out_dir / "io_layout.bin"
         so_path = out_dir / "circuit_avx512.so"
         _build_shared(c_path, so_path)
 
         msg = args.msg.encode("utf-8")
-        got_bits = simulate_sha3_512_once(so_path, layout_path, msg)
+        layout = read_packed_layout_bin(layout_path).to_dict()
+        got_bits = simulate_sha3_512_once(so_path, layout, msg)
         got = _out_bits_to_digest_bytes(list(got_bits))
 
         from stc.keccak_ref import keccak_512

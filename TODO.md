@@ -31,15 +31,15 @@
 - [x] Map a minimal set of Yosys cells into Tick-IR
 - [x] Extract state elements and next-state equations (minimal `$dff`)
 - [x] Extract output equations
-- [x] Emit `tick_ir.json` (via CLI)
+- [x] Emit `tick_ir.bin` (via CLI)
 - [x] Support sync-reset FF extraction (`$sdff`)
 
 ## Reduction + Solvers (MVP)
 
 - [x] Implement combinational simplification (constant folding + boolean identities)
 - [x] Implement bounded dead-state removal (COI + bounded constant-state elimination for small designs)
-- [x] Emit `reduced_tick_ir.json` (via CLI)
-- [x] Emit `metrics.json` (before/after)
+- [x] Emit `reduced_tick_ir.bin` (via CLI)
+- [x] Emit `metrics.bin` (before/after)
 
 ## ATtiny85 Backend
 

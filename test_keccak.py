@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 import ctypes
-import json
 import subprocess
 from pathlib import Path
+
+from stc.layout_bin import read_packed_layout_bin
 
 Vec = ctypes.c_uint64 * 8
 
@@ -21,10 +22,10 @@ def _set_field_bits_bitsliced(arr, *, lsb, width, value):
         bit = (value >> i) & 1
         arr[lsb + i] = ONES if bit else ZEROS
 
-layout_path = Path("out/keccak_test/io_layout.json")
+layout_path = Path("out/keccak_test/io_layout.bin")
 so_path = Path("out/keccak_test/circuit_avx512.so")
 
-layout = json.loads(layout_path.read_text())
+layout = read_packed_layout_bin(layout_path).to_dict()
 lib = ctypes.CDLL(str(so_path))
 
 inputs = layout["inputs"]

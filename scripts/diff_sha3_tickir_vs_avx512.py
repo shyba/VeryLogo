@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import os
 import shutil
 import subprocess
@@ -10,7 +9,9 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from stc.interp import eval_expr
-from stc.tick_ir import TickIR
+from stc.circuit_state_bin import read_circuit_state_bin
+from stc.layout_bin import read_packed_layout_bin
+from stc.tick_ir_bin2 import read_tick_ir_bin
 from stc.tick_ir_validate import validate_tick_ir
 
 
@@ -96,7 +97,7 @@ class Layout:
 
     @staticmethod
     def load(path: Path) -> "Layout":
-        d = json.loads(path.read_text(encoding="utf-8"))
+        d = read_packed_layout_bin(path).to_dict()
         return Layout(
             input_bits=int(d["input_bits"]),
             output_bits=int(d["output_bits"]),
@@ -125,10 +126,10 @@ def _load_circuit_so(so_path: Path):
     return lib, Vec, aligned_vec_array
 
 
-def eval_circuit_state_once(circuit_state: dict, in_bits: list[int]) -> list[int]:
-    input_bits = int(circuit_state["input_bits"])
-    gates = circuit_state["gates"]
-    outputs = circuit_state["outputs"]
+def eval_circuit_state_once(circuit_state, in_bits: list[int]) -> list[int]:
+    input_bits = int(circuit_state.input_bits)
+    gates = circuit_state.gates
+    outputs = circuit_state.outputs
     if len(in_bits) != input_bits:
         raise ValueError("input bit length mismatch")
     nodes = list(int(b) & 1 for b in in_bits)
@@ -213,12 +214,10 @@ def main() -> int:
             env={**os.environ, "PYTHONPATH": "."},
         )
 
-        layout = Layout.load(out_dir / "io_layout.json")
-        ir = TickIR.from_dict(
-            json.loads((out_dir / "reduced_tick_ir.json").read_text())
-        )
+        layout = Layout.load(out_dir / "io_layout.bin")
+        ir = read_tick_ir_bin(str(out_dir / "reduced_tick_ir.bin"))
         validate_tick_ir(ir)
-        circuit_state = json.loads((out_dir / "circuit_state.json").read_text())
+        circuit_state = read_circuit_state_bin(out_dir / "circuit_state.bin")
 
         so_path = out_dir / "circuit_avx512.so"
         _build_shared(out_dir / "circuit_avx512.c", so_path)

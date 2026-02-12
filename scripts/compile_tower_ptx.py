@@ -5,22 +5,18 @@ Compile tower field S-box to PTX from Verilog pipeline output.
 
 import os
 import sys
-import json
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from stc.tick_ir_to_circuit_state import lower_tick_ir_to_circuit_state
-from stc.tick_ir import TickIR
+from stc.tick_ir_bin2 import read_tick_ir_bin
 from stc.backend_sched import generate_scheduled_code
 
 
 def main():
     # Load the reduced tick IR
     print("Loading reduced TickIR...")
-    with open("out/tower_sbox_ptx/reduced_tick_ir.json") as f:
-        ir_dict = json.load(f)
-
-    ir = TickIR.from_dict(ir_dict)
+    ir = read_tick_ir_bin("out/tower_sbox_ptx/reduced_tick_ir.bin")
     print(f"  Loaded TickIR")
     print()
 
@@ -43,7 +39,7 @@ def main():
 
     # Generate PTX code
     print("Generating PTX code...")
-    code = generate_scheduled_code(circuit_opt, target="ptx", scheduler="list")
+    code = generate_scheduled_code(circuit_opt, target="ptx_legacy", scheduler="list")
     print(f"  Generated: {len(code)} bytes")
 
     # Count lop3 instructions

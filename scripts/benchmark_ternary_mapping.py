@@ -19,7 +19,6 @@ Usage:
 """
 
 import argparse
-import json
 import sys
 import tempfile
 from pathlib import Path
@@ -28,6 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from stc.cli import run_pipeline
 from stc.metrics import compute_metrics
+from stc.metrics_bin import read_metrics_bin
+from stc.tick_ir_bin2 import read_tick_ir_bin
 
 
 def create_test_verilog(name: str, inputs: str, outputs: str, code: str) -> str:
@@ -172,12 +173,10 @@ def benchmark_testcase(testcase: dict, verbose: bool = False) -> dict:
                 )
 
                 # Load metrics
-                with open(out_dir / "reduced_metrics.json") as f:
-                    metrics = json.load(f)
+                metrics = read_metrics_bin(out_dir / "reduced_metrics.bin")
 
                 # Load IR to count TernaryLuts
-                with open(out_dir / "reduced_tick_ir.json") as f:
-                    ir_json = json.load(f)
+                ir_json = read_tick_ir_bin(str(out_dir / "reduced_tick_ir.bin")).to_dict()
 
                 ternary_count = count_ternary_luts(ir_json)
 

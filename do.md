@@ -34,8 +34,8 @@ Describe the fixed flow:
 
 input.v
  → normalized.(rtlil/json)
- → tick_ir.json
- → reduced_tick_ir.json
+ → tick_ir.bin
+ → reduced_tick_ir.bin
  → avr.c
 
 Briefly explain the role of each stage.

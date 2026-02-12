@@ -108,5 +108,5 @@ Tick-IR `SimdUnpackLo/Hi` and `SimdPack*` define full-vector behavior; AVX2 need
 
 ## Optional: Integration and Tooling
 
-- [x] Add a `scripts/emit_x86.py` CLI that emits C for a given `tick_ir.json` and runs the optional compile/run tests for the selected backend (SSE2/AVX/AVX2/AVX-512).
+- [x] Add a `scripts/emit_x86.py` CLI that emits C for a given `tick_ir.bin` and runs the optional compile/run tests for the selected backend (SSE2/AVX/AVX2/AVX-512).
 - [x] Add a `scripts/minimize_counterexample.py` helper that shrinks failing SIMD test vectors using the reducer (useful for AVX2 cross-lane bugs).
