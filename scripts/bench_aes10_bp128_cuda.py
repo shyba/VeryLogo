@@ -509,6 +509,10 @@ __device__ __forceinline__ void xtime8(const uint32_t a[8], uint32_t o[8]) {{
     o[0] = b7;
 }}
 
+__device__ __forceinline__ uint32_t rk_mask_u32(uint8_t k, int bit) {{
+    return (((uint32_t)k >> bit) & 1u) ? 0xffffffffu : 0u;
+}}
+
 __device__ __forceinline__ void mix_shifted_col_addkey(
     const uint32_t s0[8], const uint32_t s1[8], const uint32_t s2[8], const uint32_t s3[8],
     const uint32_t rk0[8], const uint32_t rk1[8], const uint32_t rk2[8], const uint32_t rk3[8],
@@ -2209,6 +2213,275 @@ extern "C" __global__ void aes10_bp128_kernel(
 """
 
 
+def _kernel_cu_source_replacement_coalesced4_masterkey_soa_streamed(
+    sbox_inline_cuda: str,
+    xor_accumulate: bool = False,
+    launch_bounds: tuple[int, int] | None = None,
+) -> str:
+    xor_flag = "1" if xor_accumulate else "0"
+    if launch_bounds is None:
+        launch_bounds_attr = ""
+    else:
+        launch_bounds_attr = (
+            f"__launch_bounds__({int(launch_bounds[0])}, {int(launch_bounds[1])}) "
+        )
+    return f"""
+#include <stdint.h>
+
+{sbox_inline_cuda}
+
+__device__ __constant__ uint8_t AES_SBOX_KS[256] = {{
+{_aes_sbox_c_initializer()}
+}};
+
+__device__ __forceinline__ uint8_t aes_xtime_u8(uint8_t x) {{
+    uint8_t hi = (uint8_t)(x >> 7);
+    return (uint8_t)(((uint8_t)(x << 1)) ^ (hi ? 0x1bu : 0x00u));
+}}
+
+__device__ __forceinline__ void aes128_expand_round_key_u8(
+    uint8_t rk[16], uint8_t rcon
+) {{
+    uint8_t t0 = AES_SBOX_KS[rk[13]];
+    uint8_t t1 = AES_SBOX_KS[rk[14]];
+    uint8_t t2 = AES_SBOX_KS[rk[15]];
+    uint8_t t3 = AES_SBOX_KS[rk[12]];
+    t0 ^= rcon;
+    rk[0] ^= t0;
+    rk[1] ^= t1;
+    rk[2] ^= t2;
+    rk[3] ^= t3;
+    #pragma unroll
+    for (int i = 4; i < 16; i++) {{
+        rk[i] ^= rk[i - 4];
+    }}
+}}
+
+__device__ __forceinline__ void xtime8(const uint32_t a[8], uint32_t o[8]) {{
+    const uint32_t b7 = a[7];
+    o[7] = a[6];
+    o[6] = a[5];
+    o[5] = a[4];
+    o[4] = a[3] ^ b7;
+    o[3] = a[2] ^ b7;
+    o[2] = a[1];
+    o[1] = a[0] ^ b7;
+    o[0] = b7;
+}}
+
+__device__ __forceinline__ uint32_t rk_mask_u32(uint8_t k, int bit) {{
+    return (((uint32_t)k >> bit) & 1u) ? 0xffffffffu : 0u;
+}}
+
+__device__ __forceinline__ void mix_shifted_col_addkey_rk(
+    const uint32_t s0[8], const uint32_t s1[8], const uint32_t s2[8], const uint32_t s3[8],
+    uint8_t rk0, uint8_t rk1, uint8_t rk2, uint8_t rk3,
+    uint32_t d0[8], uint32_t d1[8], uint32_t d2[8], uint32_t d3[8]
+) {{
+    uint32_t t[8], x01[8], x12[8], x23[8], x30[8], xt[8];
+
+    #pragma unroll
+    for (int bit = 0; bit < 8; bit++) {{
+        t[bit] = s0[bit] ^ s1[bit] ^ s2[bit] ^ s3[bit];
+        x01[bit] = s0[bit] ^ s1[bit];
+        x12[bit] = s1[bit] ^ s2[bit];
+        x23[bit] = s2[bit] ^ s3[bit];
+        x30[bit] = s3[bit] ^ s0[bit];
+    }}
+
+    xtime8(x01, xt);
+    #pragma unroll
+    for (int bit = 0; bit < 8; bit++) d0[bit] = s0[bit] ^ t[bit] ^ xt[bit] ^ rk_mask_u32(rk0, bit);
+
+    xtime8(x12, xt);
+    #pragma unroll
+    for (int bit = 0; bit < 8; bit++) d1[bit] = s1[bit] ^ t[bit] ^ xt[bit] ^ rk_mask_u32(rk1, bit);
+
+    xtime8(x23, xt);
+    #pragma unroll
+    for (int bit = 0; bit < 8; bit++) d2[bit] = s2[bit] ^ t[bit] ^ xt[bit] ^ rk_mask_u32(rk2, bit);
+
+    xtime8(x30, xt);
+    #pragma unroll
+    for (int bit = 0; bit < 8; bit++) d3[bit] = s3[bit] ^ t[bit] ^ xt[bit] ^ rk_mask_u32(rk3, bit);
+}}
+
+__device__ __forceinline__ void subbyte_addkey_to_uint4(
+    const uint32_t inb[8],
+    uint8_t rk_byte,
+    uint4* out0,
+    uint4* out1
+) {{
+    uint32_t tmp[8];
+    sbox_bp128_lop3_inline(inb, tmp);
+    uint4 o0;
+    uint4 o1;
+    o0.x = tmp[0] ^ rk_mask_u32(rk_byte, 0);
+    o0.y = tmp[1] ^ rk_mask_u32(rk_byte, 1);
+    o0.z = tmp[2] ^ rk_mask_u32(rk_byte, 2);
+    o0.w = tmp[3] ^ rk_mask_u32(rk_byte, 3);
+    o1.x = tmp[4] ^ rk_mask_u32(rk_byte, 4);
+    o1.y = tmp[5] ^ rk_mask_u32(rk_byte, 5);
+    o1.z = tmp[6] ^ rk_mask_u32(rk_byte, 6);
+    o1.w = tmp[7] ^ rk_mask_u32(rk_byte, 7);
+    *out0 = o0;
+    *out1 = o1;
+}}
+
+#define XOR_OUTPUT {xor_flag}
+
+__device__ __forceinline__ void store_subbyte_addkey_shifted(
+    uint4* out4,
+    size_t threads,
+    size_t t,
+    int dst_idx,
+    const uint32_t inb[8],
+    uint8_t rk_byte
+) {{
+    uint4 o0;
+    uint4 o1;
+    subbyte_addkey_to_uint4(inb, rk_byte, &o0, &o1);
+    size_t idx0 = ((size_t)dst_idx * 2u + 0u) * threads + t;
+    size_t idx1 = ((size_t)dst_idx * 2u + 1u) * threads + t;
+#if XOR_OUTPUT
+    uint4 prev0 = out4[idx0];
+    uint4 prev1 = out4[idx1];
+    o0.x ^= prev0.x;
+    o0.y ^= prev0.y;
+    o0.z ^= prev0.z;
+    o0.w ^= prev0.w;
+    o1.x ^= prev1.x;
+    o1.y ^= prev1.y;
+    o1.z ^= prev1.z;
+    o1.w ^= prev1.w;
+#endif
+    out4[idx0] = o0;
+    out4[idx1] = o1;
+}}
+
+extern "C" __global__ {launch_bounds_attr}void aes10_bp128_kernel(
+    const uint32_t* __restrict__ in_ptr,
+    uint32_t* __restrict__ out_ptr,
+    const uint8_t* __restrict__ key_bytes,
+    uint32_t n_threads
+) {{
+    uint32_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    if (tid >= n_threads) return;
+
+    uint32_t st[16][8];
+    uint8_t rk[16];
+    const size_t threads = (size_t)n_threads;
+    const size_t t = (size_t)tid;
+    const uint4* in4 = (const uint4*)in_ptr;
+    uint4* out4 = (uint4*)out_ptr;
+    #pragma unroll
+    for (int b = 0; b < 16; b++) {{
+        rk[b] = key_bytes[(size_t)b * threads + t];
+    }}
+
+    #pragma unroll
+    for (int b = 0; b < 16; b++) {{
+        size_t idx0 = ((size_t)b * 2u + 0u) * threads + t;
+        size_t idx1 = ((size_t)b * 2u + 1u) * threads + t;
+        uint4 v0 = in4[idx0];
+        uint4 v1 = in4[idx1];
+        st[b][0] = v0.x ^ rk_mask_u32(rk[b], 0);
+        st[b][1] = v0.y ^ rk_mask_u32(rk[b], 1);
+        st[b][2] = v0.z ^ rk_mask_u32(rk[b], 2);
+        st[b][3] = v0.w ^ rk_mask_u32(rk[b], 3);
+        st[b][4] = v1.x ^ rk_mask_u32(rk[b], 4);
+        st[b][5] = v1.y ^ rk_mask_u32(rk[b], 5);
+        st[b][6] = v1.z ^ rk_mask_u32(rk[b], 6);
+        st[b][7] = v1.w ^ rk_mask_u32(rk[b], 7);
+    }}
+
+    uint8_t rcon = 0x01u;
+    for (int round = 1; round <= 9; round++) {{
+        aes128_expand_round_key_u8(rk, rcon);
+        rcon = aes_xtime_u8(rcon);
+
+        uint32_t sv1[8], sv2[8], svx[8], svy[8];
+        uint32_t s0[8], s1[8], s2[8], s3[8];
+
+        #pragma unroll
+        for (int bit = 0; bit < 8; bit++) {{
+            sv1[bit] = st[1][bit];
+            sv2[bit] = st[2][bit];
+            svx[bit] = st[3][bit];
+        }}
+
+        sbox_bp128_lop3_inline(st[0], s0);
+        sbox_bp128_lop3_inline(st[5], s1);
+        sbox_bp128_lop3_inline(st[10], s2);
+        sbox_bp128_lop3_inline(st[15], s3);
+        mix_shifted_col_addkey_rk(
+            s0, s1, s2, s3,
+            rk[0], rk[1], rk[2], rk[3],
+            st[0], st[1], st[2], st[3]
+        );
+
+        sbox_bp128_lop3_inline(st[4], s0);
+        sbox_bp128_lop3_inline(st[9], s1);
+        sbox_bp128_lop3_inline(st[14], s2);
+        sbox_bp128_lop3_inline(svx, s3);
+        #pragma unroll
+        for (int bit = 0; bit < 8; bit++) {{
+            svx[bit] = st[6][bit];
+            svy[bit] = st[7][bit];
+        }}
+        mix_shifted_col_addkey_rk(
+            s0, s1, s2, s3,
+            rk[4], rk[5], rk[6], rk[7],
+            st[4], st[5], st[6], st[7]
+        );
+
+        sbox_bp128_lop3_inline(st[8], s0);
+        sbox_bp128_lop3_inline(st[13], s1);
+        sbox_bp128_lop3_inline(sv2, s2);
+        sbox_bp128_lop3_inline(svy, s3);
+        #pragma unroll
+        for (int bit = 0; bit < 8; bit++) {{
+            svy[bit] = st[11][bit];
+        }}
+        mix_shifted_col_addkey_rk(
+            s0, s1, s2, s3,
+            rk[8], rk[9], rk[10], rk[11],
+            st[8], st[9], st[10], st[11]
+        );
+
+        sbox_bp128_lop3_inline(st[12], s0);
+        sbox_bp128_lop3_inline(sv1, s1);
+        sbox_bp128_lop3_inline(svx, s2);
+        sbox_bp128_lop3_inline(svy, s3);
+        mix_shifted_col_addkey_rk(
+            s0, s1, s2, s3,
+            rk[12], rk[13], rk[14], rk[15],
+            st[12], st[13], st[14], st[15]
+        );
+    }}
+
+    aes128_expand_round_key_u8(rk, rcon);
+
+    store_subbyte_addkey_shifted(out4, threads, t, 0, st[0], rk[0]);
+    store_subbyte_addkey_shifted(out4, threads, t, 1, st[5], rk[1]);
+    store_subbyte_addkey_shifted(out4, threads, t, 2, st[10], rk[2]);
+    store_subbyte_addkey_shifted(out4, threads, t, 3, st[15], rk[3]);
+    store_subbyte_addkey_shifted(out4, threads, t, 4, st[4], rk[4]);
+    store_subbyte_addkey_shifted(out4, threads, t, 5, st[9], rk[5]);
+    store_subbyte_addkey_shifted(out4, threads, t, 6, st[14], rk[6]);
+    store_subbyte_addkey_shifted(out4, threads, t, 7, st[3], rk[7]);
+    store_subbyte_addkey_shifted(out4, threads, t, 8, st[8], rk[8]);
+    store_subbyte_addkey_shifted(out4, threads, t, 9, st[13], rk[9]);
+    store_subbyte_addkey_shifted(out4, threads, t, 10, st[2], rk[10]);
+    store_subbyte_addkey_shifted(out4, threads, t, 11, st[7], rk[11]);
+    store_subbyte_addkey_shifted(out4, threads, t, 12, st[12], rk[12]);
+    store_subbyte_addkey_shifted(out4, threads, t, 13, st[1], rk[13]);
+    store_subbyte_addkey_shifted(out4, threads, t, 14, st[6], rk[14]);
+    store_subbyte_addkey_shifted(out4, threads, t, 15, st[11], rk[15]);
+}}
+"""
+
+
 def _host_bench_cu_source_replacement_paramrk(layout: str = "plane-major4") -> str:
     if layout != "plane-major4":
         raise ValueError(
@@ -2498,6 +2771,10 @@ def main() -> int:
             "replacement_coalesced4_paramrk_soa_packed_tuned",
             "replacement_coalesced4_masterkey_soa",
             "replacement_coalesced4_masterkey_soa_tuned",
+            "replacement_coalesced4_masterkey_soa_streamed",
+            "replacement_coalesced4_masterkey_soa_streamed_tuned",
+            "replacement_coalesced4_masterkey_soa_streamed_xor",
+            "replacement_coalesced4_masterkey_soa_streamed_xor_tuned",
             "replacement_streamed",
             "replacement_streamed_tuned",
         ),
@@ -2601,6 +2878,36 @@ def main() -> int:
         host_src = _host_bench_cu_source_replacement_masterkey_soa(
             layout="plane-major4"
         )
+    elif args.kernel_mode in {
+        "replacement_coalesced4_masterkey_soa_streamed",
+        "replacement_coalesced4_masterkey_soa_streamed_tuned",
+    }:
+        sbox_cuda = _emit_sbox_inline_cuda(
+            mapped, func_name="sbox_bp128_lop3_inline", noinline=False
+        )
+        kernel_src = _kernel_cu_source_replacement_coalesced4_masterkey_soa_streamed(
+            sbox_cuda,
+            xor_accumulate=False,
+            launch_bounds=(128, 3) if args.kernel_mode.endswith("_tuned") else None,
+        )
+        host_src = _host_bench_cu_source_replacement_masterkey_soa(
+            layout="plane-major4"
+        )
+    elif args.kernel_mode in {
+        "replacement_coalesced4_masterkey_soa_streamed_xor",
+        "replacement_coalesced4_masterkey_soa_streamed_xor_tuned",
+    }:
+        sbox_cuda = _emit_sbox_inline_cuda(
+            mapped, func_name="sbox_bp128_lop3_inline", noinline=False
+        )
+        kernel_src = _kernel_cu_source_replacement_coalesced4_masterkey_soa_streamed(
+            sbox_cuda,
+            xor_accumulate=True,
+            launch_bounds=(128, 3) if args.kernel_mode.endswith("_tuned") else None,
+        )
+        host_src = _host_bench_cu_source_replacement_masterkey_soa(
+            layout="plane-major4"
+        )
     else:
         sbox_cuda = _emit_sbox_inline_cuda(
             mapped, func_name="sbox_bp128_lop3_inline", noinline=False
@@ -2697,6 +3004,11 @@ def main() -> int:
                 int(x.strip()) for x in args.autotune_blocks.split(",") if x.strip()
             ]
         elif args.kernel_mode in {
+            "replacement_coalesced4_masterkey_soa_streamed_tuned",
+            "replacement_coalesced4_masterkey_soa_streamed_xor_tuned",
+        }:
+            blocks = [64, 128]
+        elif args.kernel_mode in {
             "legacy_tuned",
             "legacy_streamed_tuned",
             "replacement_tuned",
@@ -2707,6 +3019,8 @@ def main() -> int:
             "replacement_coalesced4_paramrk_soa_tuned",
             "replacement_coalesced4_paramrk_soa_packed_tuned",
             "replacement_coalesced4_masterkey_soa_tuned",
+            "replacement_coalesced4_masterkey_soa_streamed_tuned",
+            "replacement_coalesced4_masterkey_soa_streamed_xor_tuned",
             "replacement_streamed_tuned",
         }:
             # Pascal-friendly defaults for this kernel shape.

@@ -73,15 +73,8 @@ def _support_for_combo(
                 "bitplanes output requires in_layout=bitplanes (plane-major4 kernel)",
             )
     elif out_layout == "words":
-        if not (
-            io_layout == "plane-major4"
-            and key_source == "const_key"
-            and key_bits == 128
-        ):
-            return (
-                False,
-                "words output only supported for AES-128 const_key bitplanes input",
-            )
+        if io_layout != "plane-major4":
+            return (False, "words output requires in_layout=bitplanes")
     elif out_layout == "bytes":
         if io_layout != "bytes":
             return (False, "bytes output requires in_layout=bytes")

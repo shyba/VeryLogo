@@ -509,7 +509,7 @@ def _rename_kernel(src: str, kernel_name: str) -> str:
 
 def _patch_tail_abi(src: str) -> str:
     sig_keyed = re.compile(
-        r'(extern "C" __global__ void [^\n]+\(\n'
+        r'(extern "C" __global__ (?:__launch_bounds__\([^)]*\)\s+)?void [^\n]+\(\n'
         r"\s*const uint32_t\* __restrict__ in_ptr,\n"
         r"\s*uint32_t\* __restrict__ out_ptr,\n"
         r"\s*const uint8_t\* __restrict__ [A-Za-z0-9_]+,\n"
@@ -525,7 +525,7 @@ def _patch_tail_abi(src: str) -> str:
     )
 
     sig_const = re.compile(
-        r'(extern "C" __global__ void [^\n]+\(\n'
+        r'(extern "C" __global__ (?:__launch_bounds__\([^)]*\)\s+)?void [^\n]+\(\n'
         r"\s*const uint32_t\* __restrict__ in_ptr,\n"
         r"\s*uint32_t\* __restrict__ out_ptr,\n"
         r"\s*)uint32_t n_threads\n(\) \{)",
@@ -869,7 +869,10 @@ def _apply_post_op(src: str, post_op: PostOp) -> str:
     if post_op != "xor_accumulate":
         raise ValueError(f"unsupported post_op={post_op}")
 
-    old = "        out4[idx0] = o0;\n        out4[idx1] = o1;"
+    old_candidates = [
+        "        out4[idx0] = o0;\n        out4[idx1] = o1;",
+        "    out4[idx0] = o0;\n    out4[idx1] = o1;",
+    ]
     new = (
         "        uint4 prev0 = out4[idx0];\n"
         "        uint4 prev1 = out4[idx1];\n"
@@ -884,9 +887,10 @@ def _apply_post_op(src: str, post_op: PostOp) -> str:
         "        out4[idx0] = o0;\n"
         "        out4[idx1] = o1;"
     )
-    if old not in src:
-        raise RuntimeError("failed to patch output stores for xor_accumulate post-op")
-    return src.replace(old, new)
+    for old in old_candidates:
+        if old in src:
+            return src.replace(old, new)
+    raise RuntimeError("failed to patch output stores for xor_accumulate post-op")
 
 
 def _generate_plane_major4_core_source(
@@ -896,8 +900,10 @@ def _generate_plane_major4_core_source(
     sbox_inline_cuda = _bp128_sbox_inline_cuda()
     if meta.key_source == "masterkey_soa":
         if meta.key_bits == 128:
-            src = bench._kernel_cu_source_replacement_coalesced4_masterkey_soa(
-                sbox_inline_cuda
+            src = bench._kernel_cu_source_replacement_coalesced4_masterkey_soa_streamed(
+                sbox_inline_cuda,
+                xor_accumulate=False,
+                launch_bounds=(128, 3),
             )
         else:
             src = bench._kernel_cu_source_replacement_coalesced4_paramrk_soa_packed(
@@ -1459,14 +1465,10 @@ def check_variant_correctness(
             False,
             "output_layout=bytes requires io_layout=bytes in this family",
         )
-    if output_layout == "words" and not (
-        meta.io_layout == "plane-major4"
-        and meta.key_source == "const_key"
-        and meta.key_bits == 128
-    ):
+    if output_layout == "words" and meta.io_layout != "plane-major4":
         return (
             False,
-            "output_layout=words currently supports only const_key AES-128 plane-major4",
+            "output_layout=words requires io_layout=plane-major4",
         )
 
     pt_block = bytes(
@@ -1523,7 +1525,14 @@ def check_variant_correctness(
     else:
         expected = bytes((out_seed[i] ^ expected_store[i]) & 0xFF for i in range(16))
 
-    if output_layout == "words":
+    use_words_fastpath = (
+        output_layout == "words"
+        and meta.io_layout == "plane-major4"
+        and meta.key_source == "const_key"
+        and meta.key_bits == 128
+    )
+
+    if use_words_fastpath:
         cubin = _compile_coalesced_words_cubin(sm=sm, post_op=post_op)
         words = threads_eff * 128
         host_in = (ctypes.c_uint32 * words)()
@@ -1569,7 +1578,7 @@ def check_variant_correctness(
                 cuda.mem_free(d_out)
         finally:
             cuda.ctx_destroy(ctx)
-        got = _decode_first_lane_words(host_out, threads_eff)
+            got = _decode_first_lane_words(host_out, threads_eff)
         ok = got == expected
         return (
             ok,
@@ -1787,13 +1796,9 @@ def benchmark_variant(
         )
     if meta.io_layout == "plane-major4" and output_layout == "bytes":
         raise ValueError("output_layout=bytes requires io_layout=bytes")
-    if output_layout == "words" and not (
-        meta.io_layout == "plane-major4"
-        and meta.key_source == "const_key"
-        and meta.key_bits == 128
-    ):
+    if output_layout == "words" and meta.io_layout != "plane-major4":
         raise ValueError(
-            "output_layout=words currently supports only const_key AES-128 plane-major4"
+            "output_layout=words requires io_layout=plane-major4"
         )
 
     rng = random.Random(seed)
@@ -1806,7 +1811,14 @@ def benchmark_variant(
         shared_key=shared_key,
     )
 
-    if output_layout == "words":
+    use_words_fastpath = (
+        output_layout == "words"
+        and meta.io_layout == "plane-major4"
+        and meta.key_source == "const_key"
+        and meta.key_bits == 128
+    )
+
+    if use_words_fastpath:
         cubin = _compile_coalesced_words_cubin(sm=sm, post_op=post_op)
         words = threads_eff * 128
         host_in = (ctypes.c_uint32 * words)()
