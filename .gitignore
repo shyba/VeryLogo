@@ -29,6 +29,8 @@ target/
 *.ptx
 *.spv
 *.spvasm
+*.ncu-rep
+*.nsys-rep
 
 external-*/
 
