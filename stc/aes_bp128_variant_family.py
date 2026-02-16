@@ -17,6 +17,7 @@ from stc.cuda_driver import Cuda, CudaError
 KeySource = Literal["masterkey_soa", "expanded_rk_soa", "const_key"]
 PostOp = Literal["store", "xor_accumulate"]
 IoLayout = Literal["plane-major4", "bytes"]
+OutputLayout = Literal["bitplanes", "words", "bytes"]
 
 KEY_BITS_OPTIONS = (128, 192, 256)
 CTR_GROUP_OPTIONS = (1, 2, 4)
@@ -26,6 +27,9 @@ KEY_SOURCE_OPTIONS: tuple[KeySource, ...] = (
     "const_key",
 )
 IO_LAYOUT_OPTIONS: tuple[IoLayout, ...] = ("plane-major4", "bytes")
+
+_BYTES_TO_PLANES4_KERNEL = "stc_bytes_to_planes4_kernel"
+_PLANES4_TO_BYTES_KERNEL = "stc_planes4_to_bytes_kernel"
 
 _AES_NR_BY_KEY_BITS = {128: 10, 192: 12, 256: 14}
 _AES_SBOX = (
@@ -330,8 +334,13 @@ def kernel_name_from_variant_id(v_id: str) -> str:
 def _support_notes(
     key_bits: int, key_source: KeySource, io_layout: IoLayout
 ) -> tuple[bool, str]:
+    if io_layout == "bytes":
+        return (
+            True,
+            "supported via byte<->plane-major4 converter kernels (tail-aware ABI)",
+        )
     if io_layout != "plane-major4":
-        return (False, "bytes layout not implemented in fast kernel family")
+        return (False, f"unsupported io_layout={io_layout}")
     if key_source == "masterkey_soa" and key_bits != 128:
         return (
             True,
@@ -402,15 +411,24 @@ def family_manifest_json(indent: int = 2) -> str:
             "kernel_signature": (
                 "masterkey_soa/expanded_rk_soa: "
                 "void kernel(const uint32_t* in_ptr, uint32_t* out_ptr, "
-                "const uint8_t* key_or_rk_soa, uint32_t n_threads); "
+                "const uint8_t* key_or_rk_soa, uint32_t n_threads, "
+                "uint32_t out_len_bytes, uint32_t tail_bytes); "
                 "const_key: "
                 "void kernel(const uint32_t* in_ptr, uint32_t* out_ptr, "
-                "uint32_t n_threads)"
+                "uint32_t n_threads, uint32_t out_len_bytes, uint32_t tail_bytes)"
             ),
-            "layout": "plane-major4",
+            "layout": (
+                "input plane-major4 or bytes; output bitplanes/words/bytes via "
+                "runtime output_layout selection"
+            ),
             "n_threads": (
                 "effective threads = logical_threads * ctr_group "
                 "(host replicates per-thread key material per group)"
+            ),
+            "tail": (
+                "out_len_bytes/tail_bytes enable tail-aware output handling; "
+                "core plane-major kernels keep register behavior and treat them "
+                "as ABI fields."
             ),
         },
     }
@@ -487,6 +505,230 @@ def _patch_round_count_expanded_source(src: str, rounds: int) -> str:
 
 def _rename_kernel(src: str, kernel_name: str) -> str:
     return src.replace("aes10_bp128_kernel", kernel_name)
+
+
+def _patch_tail_abi(src: str) -> str:
+    sig_keyed = re.compile(
+        r'(extern "C" __global__ void [^\n]+\(\n'
+        r"\s*const uint32_t\* __restrict__ in_ptr,\n"
+        r"\s*uint32_t\* __restrict__ out_ptr,\n"
+        r"\s*const uint8_t\* __restrict__ [A-Za-z0-9_]+,\n"
+        r"\s*)uint32_t n_threads\n(\) \{)",
+        re.MULTILINE,
+    )
+    src, keyed_count = sig_keyed.subn(
+        r"\1uint32_t n_threads,\n"
+        r"    uint32_t out_len_bytes,\n"
+        r"    uint32_t tail_bytes\n\2",
+        src,
+        count=1,
+    )
+
+    sig_const = re.compile(
+        r'(extern "C" __global__ void [^\n]+\(\n'
+        r"\s*const uint32_t\* __restrict__ in_ptr,\n"
+        r"\s*uint32_t\* __restrict__ out_ptr,\n"
+        r"\s*)uint32_t n_threads\n(\) \{)",
+        re.MULTILINE,
+    )
+    src, const_count = sig_const.subn(
+        r"\1uint32_t n_threads,\n"
+        r"    uint32_t out_len_bytes,\n"
+        r"    uint32_t tail_bytes\n\2",
+        src,
+        count=1,
+    )
+    if keyed_count + const_count != 1:
+        raise RuntimeError("failed to patch kernel signature for tail-aware ABI")
+
+    marker = "    if (tid >= n_threads) return;\n"
+    if marker not in src:
+        raise RuntimeError("failed to patch kernel body for tail-aware ABI")
+    src = src.replace(
+        marker,
+        marker + "    (void)out_len_bytes;\n" + "    (void)tail_bytes;\n",
+        1,
+    )
+    return src
+
+
+def _bytes_converter_cuda_source(post_op: PostOp) -> str:
+    if post_op not in {"store", "xor_accumulate"}:
+        raise ValueError(f"unsupported post_op={post_op}")
+    xor_enabled = "1" if post_op == "xor_accumulate" else "0"
+    return f"""
+extern "C" __global__ void {_BYTES_TO_PLANES4_KERNEL}(
+    const uint4* __restrict__ in_blocks4,
+    uint4* __restrict__ out_planes4,
+    uint32_t n_threads
+) {{
+    uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t lane = gid & 31u;
+    uint32_t tid = gid >> 5;
+    if (tid >= n_threads) return;
+
+    uint4 blk = in_blocks4[(size_t)tid * 32u + (size_t)lane];
+    uint8_t by[16];
+    by[0] = (uint8_t)(blk.x & 0xffu);
+    by[1] = (uint8_t)((blk.x >> 8) & 0xffu);
+    by[2] = (uint8_t)((blk.x >> 16) & 0xffu);
+    by[3] = (uint8_t)((blk.x >> 24) & 0xffu);
+    by[4] = (uint8_t)(blk.y & 0xffu);
+    by[5] = (uint8_t)((blk.y >> 8) & 0xffu);
+    by[6] = (uint8_t)((blk.y >> 16) & 0xffu);
+    by[7] = (uint8_t)((blk.y >> 24) & 0xffu);
+    by[8] = (uint8_t)(blk.z & 0xffu);
+    by[9] = (uint8_t)((blk.z >> 8) & 0xffu);
+    by[10] = (uint8_t)((blk.z >> 16) & 0xffu);
+    by[11] = (uint8_t)((blk.z >> 24) & 0xffu);
+    by[12] = (uint8_t)(blk.w & 0xffu);
+    by[13] = (uint8_t)((blk.w >> 8) & 0xffu);
+    by[14] = (uint8_t)((blk.w >> 16) & 0xffu);
+    by[15] = (uint8_t)((blk.w >> 24) & 0xffu);
+
+    #pragma unroll
+    for (int b = 0; b < 16; b++) {{
+        uint8_t pb = by[b];
+        uint32_t m0 = __ballot_sync(0xffffffffu, (pb >> 0) & 1u);
+        uint32_t m1 = __ballot_sync(0xffffffffu, (pb >> 1) & 1u);
+        uint32_t m2 = __ballot_sync(0xffffffffu, (pb >> 2) & 1u);
+        uint32_t m3 = __ballot_sync(0xffffffffu, (pb >> 3) & 1u);
+        uint32_t m4 = __ballot_sync(0xffffffffu, (pb >> 4) & 1u);
+        uint32_t m5 = __ballot_sync(0xffffffffu, (pb >> 5) & 1u);
+        uint32_t m6 = __ballot_sync(0xffffffffu, (pb >> 6) & 1u);
+        uint32_t m7 = __ballot_sync(0xffffffffu, (pb >> 7) & 1u);
+        if (lane == 0u) {{
+            size_t idx0 = ((size_t)b * 2u + 0u) * (size_t)n_threads + (size_t)tid;
+            size_t idx1 = ((size_t)b * 2u + 1u) * (size_t)n_threads + (size_t)tid;
+            out_planes4[idx0] = make_uint4(m0, m1, m2, m3);
+            out_planes4[idx1] = make_uint4(m4, m5, m6, m7);
+        }}
+    }}
+}}
+
+extern "C" __global__ void {_PLANES4_TO_BYTES_KERNEL}(
+    const uint4* __restrict__ in_planes4,
+    uint4* __restrict__ out_blocks4,
+    uint32_t n_threads,
+    uint32_t out_len_bytes,
+    uint32_t tail_bytes
+) {{
+    uint32_t gid = blockIdx.x * blockDim.x + threadIdx.x;
+    uint32_t lane = gid & 31u;
+    uint32_t tid = gid >> 5;
+    if (tid >= n_threads) return;
+
+    uint64_t default_len = (uint64_t)n_threads * 32ull * 16ull;
+    uint64_t total_bytes = out_len_bytes ? (uint64_t)out_len_bytes : default_len;
+    (void)tail_bytes;
+
+    uint8_t by[16];
+    #pragma unroll
+    for (int b = 0; b < 16; b++) {{
+        uint32_t m0 = 0u, m1 = 0u, m2 = 0u, m3 = 0u;
+        uint32_t m4 = 0u, m5 = 0u, m6 = 0u, m7 = 0u;
+        if (lane == 0u) {{
+            size_t idx0 = ((size_t)b * 2u + 0u) * (size_t)n_threads + (size_t)tid;
+            size_t idx1 = ((size_t)b * 2u + 1u) * (size_t)n_threads + (size_t)tid;
+            uint4 v0 = in_planes4[idx0];
+            uint4 v1 = in_planes4[idx1];
+            m0 = v0.x;
+            m1 = v0.y;
+            m2 = v0.z;
+            m3 = v0.w;
+            m4 = v1.x;
+            m5 = v1.y;
+            m6 = v1.z;
+            m7 = v1.w;
+        }}
+        m0 = __shfl_sync(0xffffffffu, m0, 0);
+        m1 = __shfl_sync(0xffffffffu, m1, 0);
+        m2 = __shfl_sync(0xffffffffu, m2, 0);
+        m3 = __shfl_sync(0xffffffffu, m3, 0);
+        m4 = __shfl_sync(0xffffffffu, m4, 0);
+        m5 = __shfl_sync(0xffffffffu, m5, 0);
+        m6 = __shfl_sync(0xffffffffu, m6, 0);
+        m7 = __shfl_sync(0xffffffffu, m7, 0);
+
+        uint8_t pb = 0u;
+        pb |= (uint8_t)(((m0 >> lane) & 1u) << 0);
+        pb |= (uint8_t)(((m1 >> lane) & 1u) << 1);
+        pb |= (uint8_t)(((m2 >> lane) & 1u) << 2);
+        pb |= (uint8_t)(((m3 >> lane) & 1u) << 3);
+        pb |= (uint8_t)(((m4 >> lane) & 1u) << 4);
+        pb |= (uint8_t)(((m5 >> lane) & 1u) << 5);
+        pb |= (uint8_t)(((m6 >> lane) & 1u) << 6);
+        pb |= (uint8_t)(((m7 >> lane) & 1u) << 7);
+        by[b] = pb;
+    }}
+
+    uint64_t block_idx = (uint64_t)tid * 32ull + (uint64_t)lane;
+    uint64_t block_byte_base = block_idx * 16ull;
+    if (block_byte_base >= total_bytes) {{
+        return;
+    }}
+    uint32_t valid_bytes = (block_byte_base + 16ull <= total_bytes)
+        ? 16u
+        : (uint32_t)(total_bytes - block_byte_base);
+
+    size_t out_idx = (size_t)block_idx;
+    uint4 outv = make_uint4(
+        ((uint32_t)by[0]) | ((uint32_t)by[1] << 8) | ((uint32_t)by[2] << 16) | ((uint32_t)by[3] << 24),
+        ((uint32_t)by[4]) | ((uint32_t)by[5] << 8) | ((uint32_t)by[6] << 16) | ((uint32_t)by[7] << 24),
+        ((uint32_t)by[8]) | ((uint32_t)by[9] << 8) | ((uint32_t)by[10] << 16) | ((uint32_t)by[11] << 24),
+        ((uint32_t)by[12]) | ((uint32_t)by[13] << 8) | ((uint32_t)by[14] << 16) | ((uint32_t)by[15] << 24)
+    );
+
+    if (valid_bytes == 16u) {{
+        if ({xor_enabled}) {{
+            uint4 prev = out_blocks4[out_idx];
+            outv.x ^= prev.x;
+            outv.y ^= prev.y;
+            outv.z ^= prev.z;
+            outv.w ^= prev.w;
+        }}
+        out_blocks4[out_idx] = outv;
+        return;
+    }}
+
+    uint4 prev = out_blocks4[out_idx];
+    uint8_t prev_by[16];
+    prev_by[0] = (uint8_t)(prev.x & 0xffu);
+    prev_by[1] = (uint8_t)((prev.x >> 8) & 0xffu);
+    prev_by[2] = (uint8_t)((prev.x >> 16) & 0xffu);
+    prev_by[3] = (uint8_t)((prev.x >> 24) & 0xffu);
+    prev_by[4] = (uint8_t)(prev.y & 0xffu);
+    prev_by[5] = (uint8_t)((prev.y >> 8) & 0xffu);
+    prev_by[6] = (uint8_t)((prev.y >> 16) & 0xffu);
+    prev_by[7] = (uint8_t)((prev.y >> 24) & 0xffu);
+    prev_by[8] = (uint8_t)(prev.z & 0xffu);
+    prev_by[9] = (uint8_t)((prev.z >> 8) & 0xffu);
+    prev_by[10] = (uint8_t)((prev.z >> 16) & 0xffu);
+    prev_by[11] = (uint8_t)((prev.z >> 24) & 0xffu);
+    prev_by[12] = (uint8_t)(prev.w & 0xffu);
+    prev_by[13] = (uint8_t)((prev.w >> 8) & 0xffu);
+    prev_by[14] = (uint8_t)((prev.w >> 16) & 0xffu);
+    prev_by[15] = (uint8_t)((prev.w >> 24) & 0xffu);
+
+    for (uint32_t i = 0; i < valid_bytes; i++) {{
+        if ({xor_enabled}) {{
+            prev_by[i] ^= by[i];
+        }} else {{
+            prev_by[i] = by[i];
+        }}
+    }}
+    out_blocks4[out_idx] = make_uint4(
+        ((uint32_t)prev_by[0]) | ((uint32_t)prev_by[1] << 8) | ((uint32_t)prev_by[2] << 16) | ((uint32_t)prev_by[3] << 24),
+        ((uint32_t)prev_by[4]) | ((uint32_t)prev_by[5] << 8) | ((uint32_t)prev_by[6] << 16) | ((uint32_t)prev_by[7] << 24),
+        ((uint32_t)prev_by[8]) | ((uint32_t)prev_by[9] << 8) | ((uint32_t)prev_by[10] << 16) | ((uint32_t)prev_by[11] << 24),
+        ((uint32_t)prev_by[12]) | ((uint32_t)prev_by[13] << 8) | ((uint32_t)prev_by[14] << 16) | ((uint32_t)prev_by[15] << 24)
+    );
+}}
+"""
+
+
+def _core_kernel_name(meta: Bp128VariantMetadata) -> str:
+    return meta.kernel_name
 
 
 def _patch_const_key_from_expanded_source(src: str, rounds: int) -> str:
@@ -647,10 +889,9 @@ def _apply_post_op(src: str, post_op: PostOp) -> str:
     return src.replace(old, new)
 
 
-def generate_cuda_source(meta: Bp128VariantMetadata, post_op: PostOp = "store") -> str:
-    if not meta.supported:
-        raise ValueError(f"unsupported variant: {meta.variant_id} ({meta.notes})")
-
+def _generate_plane_major4_core_source(
+    meta: Bp128VariantMetadata, kernel_name: str, post_op: PostOp
+) -> str:
     bench = _load_bench_module()
     sbox_inline_cuda = _bp128_sbox_inline_cuda()
     if meta.key_source == "masterkey_soa":
@@ -680,9 +921,39 @@ def generate_cuda_source(meta: Bp128VariantMetadata, post_op: PostOp = "store") 
             src = _patch_round_count_expanded_source(src, meta.rounds)
             src = _patch_const_key_from_expanded_source(src, meta.rounds)
             src = _optimize_packed_rk_loads(src)
-    src = _rename_kernel(src, meta.kernel_name)
+    src = _rename_kernel(src, kernel_name)
+    src = _patch_tail_abi(src)
     src = _apply_post_op(src, post_op)
     return src
+
+
+def generate_cuda_source(meta: Bp128VariantMetadata, post_op: PostOp = "store") -> str:
+    if not meta.supported:
+        raise ValueError(f"unsupported variant: {meta.variant_id} ({meta.notes})")
+
+    if meta.io_layout == "plane-major4":
+        return _generate_plane_major4_core_source(
+            meta=meta,
+            kernel_name=meta.kernel_name,
+            post_op=post_op,
+        )
+
+    if meta.io_layout != "bytes":
+        raise ValueError(f"unsupported io_layout={meta.io_layout}")
+
+    plane_meta = build_variant_metadata(
+        key_bits=meta.key_bits,
+        ctr_group=meta.ctr_group,
+        key_source=meta.key_source,
+        io_layout="plane-major4",
+    )
+    core_name = meta.kernel_name
+    core_src = _generate_plane_major4_core_source(
+        meta=plane_meta,
+        kernel_name=core_name,
+        post_op="store",
+    )
+    return core_src + "\n" + _bytes_converter_cuda_source(post_op=post_op)
 
 
 @lru_cache(maxsize=64)
@@ -959,6 +1230,98 @@ def _decode_first_lane_planes4(
     return bytes(out)
 
 
+def _seed_plaintext_bytes(
+    data: ctypes.Array[ctypes.c_uint8], blocks_total: int, block16: bytes
+) -> None:
+    if len(block16) != 16:
+        raise ValueError("seed block must be 16 bytes")
+    for blk in range(blocks_total):
+        base = blk * 16
+        for i in range(16):
+            data[base + i] = block16[i]
+
+
+def _decode_first_block_bytes(data: ctypes.Array[ctypes.c_uint8]) -> bytes:
+    return bytes(int(data[i]) for i in range(16))
+
+
+def _seed_bitplanes_words(
+    words: ctypes.Array[ctypes.c_uint32], threads_eff: int, block16: bytes
+) -> None:
+    if len(block16) != 16:
+        raise ValueError("seed block must be 16 bytes")
+    for tid in range(threads_eff):
+        for b in range(16):
+            pb = block16[b]
+            for bit in range(8):
+                plane = b * 8 + bit
+                words[plane * threads_eff + tid] = (
+                    0xFFFFFFFF if ((pb >> bit) & 1) else 0
+                )
+
+
+def _decode_first_lane_words(
+    words: ctypes.Array[ctypes.c_uint32], threads_eff: int
+) -> bytes:
+    out = bytearray(16)
+    for b in range(16):
+        v = 0
+        for bit in range(8):
+            plane = b * 8 + bit
+            bitval = words[plane * threads_eff + 0] & 1
+            v |= bitval << bit
+        out[b] = v
+    return bytes(out)
+
+
+@lru_cache(maxsize=8)
+def _compile_coalesced_words_cubin(sm: str, post_op: PostOp) -> bytes:
+    bench = _load_bench_module()
+    mapped, _lop3_count = bench._build_bp128_mapped()
+    sbox_cuda = bench._emit_sbox_inline_cuda(
+        mapped, func_name="sbox_bp128_lop3_inline", noinline=False
+    )
+    src = bench._kernel_cu_source_replacement_coalesced(sbox_cuda)
+    src = _patch_tail_abi(src)
+    if post_op == "xor_accumulate":
+        old = "            out_ptr[plane * threads + t] = sr[b][bit] ^ RK_BITS[10][b][bit];"
+        new = (
+            "            uint32_t outv = sr[b][bit] ^ RK_BITS[10][b][bit];\n"
+            "            out_ptr[plane * threads + t] ^= outv;"
+        )
+        if old not in src:
+            raise RuntimeError(
+                "failed to patch coalesced words store for xor_accumulate"
+            )
+        src = src.replace(old, new)
+    elif post_op != "store":
+        raise ValueError(f"unsupported post_op={post_op}")
+    src = _rename_kernel(src, "stc_bp128_words_kernel")
+    with tempfile.TemporaryDirectory(prefix="bp128_words_cubin_") as td:
+        work_dir = Path(td)
+        cu_path = work_dir / "kernel.cu"
+        cubin_path = work_dir / "kernel.cubin"
+        cu_path.write_text(src, encoding="utf-8")
+        cmd = [
+            _require_nvcc(),
+            "-cubin",
+            "-O3",
+            "-std=c++17",
+            f"-arch={sm}",
+            str(cu_path),
+            "-o",
+            str(cubin_path),
+        ]
+        run = subprocess.run(cmd, capture_output=True, text=True)
+        if run.returncode != 0:
+            raise RuntimeError(
+                "nvcc failed for coalesced words kernel\n"
+                f"CMD: {' '.join(cmd)}\n"
+                f"STDOUT:\n{run.stdout}\nSTDERR:\n{run.stderr}"
+            )
+        return cubin_path.read_bytes()
+
+
 def _module_get_global_ptr(
     cuda: Cuda, mod: ctypes.c_void_p, symbol: str
 ) -> tuple[int, int]:
@@ -1022,22 +1385,90 @@ def _upload_const_rk_bytes(cuda: Cuda, mod: ctypes.c_void_p, key_bits: int) -> N
     cuda.memcpy_htod(dptr, rk_arr, rk_nbytes)
 
 
+def _upload_const_keys(
+    cuda: Cuda, mod: ctypes.c_void_p, meta: Bp128VariantMetadata
+) -> None:
+    if meta.key_source != "const_key":
+        return
+    if meta.key_bits == 128:
+        _upload_const_rk_bits(cuda, mod, key_bits=128)
+    else:
+        _upload_const_rk_bytes(cuda, mod, key_bits=meta.key_bits)
+
+
+def _build_check_key_material(
+    meta: Bp128VariantMetadata, threads: int
+) -> tuple[bytes, ctypes.Array[ctypes.c_uint8]]:
+    key_bytes = bytes(range(meta.key_bits // 8))
+    if meta.key_source == "const_key":
+        return key_bytes, (ctypes.c_uint8 * 0)()
+    if meta.key_source == "masterkey_soa":
+        if meta.key_bits == 128:
+            key_soa = _pack_key_soa(
+                [key_bytes for _ in range(threads)],
+                byte_len=len(key_bytes),
+                ctr_group=meta.ctr_group,
+            )
+            return key_bytes, key_soa
+        expanded = _expand_round_keys(key_bytes, meta.key_bits)
+        key_soa = _pack_key_soa(
+            [expanded for _ in range(threads)],
+            byte_len=len(expanded),
+            ctr_group=meta.ctr_group,
+        )
+        return key_bytes, key_soa
+    expanded = _expand_round_keys(key_bytes, meta.key_bits)
+    key_soa = _pack_key_soa(
+        [expanded for _ in range(threads)],
+        byte_len=len(expanded),
+        ctr_group=meta.ctr_group,
+    )
+    return key_bytes, key_soa
+
+
 def check_variant_correctness(
     meta: Bp128VariantMetadata,
     threads: int = 256,
     block: int = 64,
     sm: str = "sm_61",
     post_op: PostOp = "store",
+    output_layout: OutputLayout | None = None,
+    out_len_bytes: int | None = None,
+    tail_bytes: int = 0,
 ) -> tuple[bool, str]:
     if not meta.supported:
         return (False, f"unsupported variant: {meta.variant_id}")
-    if meta.io_layout != "plane-major4":
-        return (False, "correctness check only supports plane-major4")
+    if output_layout is None:
+        output_layout = "bytes" if meta.io_layout == "bytes" else "bitplanes"
 
     threads_eff = threads * meta.ctr_group
-    words = threads_eff * 128
-    host_in = (ctypes.c_uint32 * words)()
-    host_out = (ctypes.c_uint32 * words)()
+    blocks_total = threads_eff * 32
+    if out_len_bytes is None:
+        out_len_bytes_eff = blocks_total * 16
+    else:
+        out_len_bytes_eff = int(out_len_bytes)
+    tail_bytes_eff = tail_bytes if tail_bytes > 0 else (out_len_bytes_eff % 16)
+
+    if meta.io_layout == "bytes" and output_layout != "bytes":
+        return (
+            False,
+            f"io_layout={meta.io_layout} requires output_layout=bytes (got {output_layout})",
+        )
+    if meta.io_layout == "plane-major4" and output_layout == "bytes":
+        return (
+            False,
+            "output_layout=bytes requires io_layout=bytes in this family",
+        )
+    if output_layout == "words" and not (
+        meta.io_layout == "plane-major4"
+        and meta.key_source == "const_key"
+        and meta.key_bits == 128
+    ):
+        return (
+            False,
+            "output_layout=words currently supports only const_key AES-128 plane-major4",
+        )
+
     pt_block = bytes(
         (
             0x00,
@@ -1058,10 +1489,7 @@ def check_variant_correctness(
             0xFF,
         )
     )
-    _seed_plaintext_planes4(host_in, threads_eff, pt_block)
     if post_op == "store":
-        for i in range(words):
-            host_out[i] = 0
         out_seed = bytes(16)
     elif post_op == "xor_accumulate":
         out_seed = bytes(
@@ -1084,43 +1512,73 @@ def check_variant_correctness(
                 0x87,
             )
         )
-        _seed_plaintext_planes4(host_out, threads_eff, out_seed)
     else:
         raise ValueError(f"unsupported post_op={post_op}")
 
-    key_bytes = bytes(range(meta.key_bits // 8))
-    if meta.key_source == "const_key":
-        exp_key = key_bytes
-        key_soa = (ctypes.c_uint8 * 0)()
-    elif meta.key_source == "masterkey_soa":
-        exp_key = key_bytes
-        if meta.key_bits == 128:
-            key_soa = _pack_key_soa(
-                [key_bytes for _ in range(threads)],
-                byte_len=len(key_bytes),
-                ctr_group=meta.ctr_group,
-            )
-        else:
-            expanded = _expand_round_keys(key_bytes, meta.key_bits)
-            key_soa = _pack_key_soa(
-                [expanded for _ in range(threads)],
-                byte_len=len(expanded),
-                ctr_group=meta.ctr_group,
-            )
-    else:
-        exp_key = key_bytes
-        expanded = _expand_round_keys(key_bytes, meta.key_bits)
-        key_soa = _pack_key_soa(
-            [expanded for _ in range(threads)],
-            byte_len=len(expanded),
-            ctr_group=meta.ctr_group,
-        )
+    exp_key, key_soa = _build_check_key_material(meta, threads)
 
     expected_store = _aes_encrypt_block_ref(pt_block, exp_key, meta.key_bits)
     if post_op == "store":
         expected = expected_store
     else:
         expected = bytes((out_seed[i] ^ expected_store[i]) & 0xFF for i in range(16))
+
+    if output_layout == "words":
+        cubin = _compile_coalesced_words_cubin(sm=sm, post_op=post_op)
+        words = threads_eff * 128
+        host_in = (ctypes.c_uint32 * words)()
+        host_out = (ctypes.c_uint32 * words)()
+        _seed_bitplanes_words(host_in, threads_eff, pt_block)
+        if post_op == "store":
+            for i in range(words):
+                host_out[i] = 0
+        else:
+            _seed_bitplanes_words(host_out, threads_eff, out_seed)
+
+        cuda = Cuda()
+        cuda.init()
+        dev = cuda.device(0)
+        ctx = cuda.ctx_create(dev)
+        try:
+            mod = cuda.module_load_data(cubin)
+            _upload_const_rk_bits(cuda, mod, key_bits=128)
+            fn = cuda.module_get_function(mod, "stc_bp128_words_kernel")
+            d_in = cuda.mem_alloc(ctypes.sizeof(host_in))
+            d_out = cuda.mem_alloc(ctypes.sizeof(host_out))
+            try:
+                cuda.memcpy_htod(d_in, host_in, ctypes.sizeof(host_in))
+                cuda.memcpy_htod(d_out, host_out, ctypes.sizeof(host_out))
+                arg_in = ctypes.c_uint64(d_in)
+                arg_out = ctypes.c_uint64(d_out)
+                arg_threads = ctypes.c_uint32(threads_eff)
+                arg_out_len = ctypes.c_uint32(out_len_bytes_eff)
+                arg_tail = ctypes.c_uint32(tail_bytes_eff)
+                args = [
+                    ctypes.cast(ctypes.byref(arg_in), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_out), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_out_len), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_tail), ctypes.c_void_p),
+                ]
+                grid = ((threads_eff + block - 1) // block, 1, 1)
+                cuda.launch_async(fn, grid=grid, block=(block, 1, 1), args=args)
+                cuda.synchronize()
+                cuda.memcpy_dtoh(host_out, d_out, ctypes.sizeof(host_out))
+            finally:
+                cuda.mem_free(d_in)
+                cuda.mem_free(d_out)
+        finally:
+            cuda.ctx_destroy(ctx)
+        got = _decode_first_lane_words(host_out, threads_eff)
+        ok = got == expected
+        return (
+            ok,
+            (
+                f"expected={expected.hex()} got={got.hex()}"
+                if not ok
+                else f"ciphertext={got.hex()}"
+            ),
+        )
 
     cubin = compile_variant_to_cubin(meta, sm=sm, post_op=post_op)
     cuda = Cuda()
@@ -1129,52 +1587,163 @@ def check_variant_correctness(
     ctx = cuda.ctx_create(dev)
     try:
         mod = cuda.module_load_data(cubin)
-        if meta.key_source == "const_key":
-            if meta.key_bits == 128:
-                _upload_const_rk_bits(cuda, mod, key_bits=128)
-            else:
-                _upload_const_rk_bytes(cuda, mod, key_bits=meta.key_bits)
-        fn = cuda.module_get_function(mod, meta.kernel_name)
-        d_in = cuda.mem_alloc(ctypes.sizeof(host_in))
-        d_out = cuda.mem_alloc(ctypes.sizeof(host_out))
-        d_key = 0
-        try:
-            cuda.memcpy_htod(d_in, host_in, ctypes.sizeof(host_in))
-            cuda.memcpy_htod(d_out, host_out, ctypes.sizeof(host_out))
+        _upload_const_keys(cuda, mod, meta)
+        core_fn = cuda.module_get_function(mod, _core_kernel_name(meta))
 
-            arg_in = ctypes.c_uint64(d_in)
-            arg_out = ctypes.c_uint64(d_out)
-            arg_threads = ctypes.c_uint32(threads_eff)
-            if meta.key_source == "const_key":
-                args = [
-                    ctypes.cast(ctypes.byref(arg_in), ctypes.c_void_p),
-                    ctypes.cast(ctypes.byref(arg_out), ctypes.c_void_p),
+        if meta.io_layout == "bytes":
+            if (block & 31) != 0:
+                return (False, "bytes io_layout requires block multiple of 32")
+            conv_in_fn = cuda.module_get_function(mod, _BYTES_TO_PLANES4_KERNEL)
+            conv_out_fn = cuda.module_get_function(mod, _PLANES4_TO_BYTES_KERNEL)
+            bytes_io = blocks_total * 16
+            planes_words = threads_eff * 128
+            planes_bytes = ctypes.sizeof(ctypes.c_uint32) * planes_words
+            host_in_bytes = (ctypes.c_uint8 * bytes_io)()
+            host_out_bytes = (ctypes.c_uint8 * bytes_io)()
+            _seed_plaintext_bytes(host_in_bytes, blocks_total, pt_block)
+            if post_op == "store":
+                for i in range(bytes_io):
+                    host_out_bytes[i] = 0
+            else:
+                _seed_plaintext_bytes(host_out_bytes, blocks_total, out_seed)
+
+            d_in_bytes = cuda.mem_alloc(ctypes.sizeof(host_in_bytes))
+            d_out_bytes = cuda.mem_alloc(ctypes.sizeof(host_out_bytes))
+            d_planes0 = cuda.mem_alloc(planes_bytes)
+            d_planes1 = cuda.mem_alloc(planes_bytes)
+            d_key = 0
+            try:
+                cuda.memcpy_htod(
+                    d_in_bytes, host_in_bytes, ctypes.sizeof(host_in_bytes)
+                )
+                cuda.memcpy_htod(
+                    d_out_bytes, host_out_bytes, ctypes.sizeof(host_out_bytes)
+                )
+                arg_threads = ctypes.c_uint32(threads_eff)
+                arg_out_len = ctypes.c_uint32(out_len_bytes_eff)
+                arg_tail = ctypes.c_uint32(tail_bytes_eff)
+                arg_in_b = ctypes.c_uint64(d_in_bytes)
+                arg_out_b = ctypes.c_uint64(d_out_bytes)
+                arg_p0 = ctypes.c_uint64(d_planes0)
+                arg_p1 = ctypes.c_uint64(d_planes1)
+                conv_in_args = [
+                    ctypes.cast(ctypes.byref(arg_in_b), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_p0), ctypes.c_void_p),
                     ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
                 ]
-            else:
-                d_key = cuda.mem_alloc(ctypes.sizeof(key_soa))
-                cuda.memcpy_htod(d_key, key_soa, ctypes.sizeof(key_soa))
-                arg_key = ctypes.c_uint64(d_key)
-                args = [
-                    ctypes.cast(ctypes.byref(arg_in), ctypes.c_void_p),
-                    ctypes.cast(ctypes.byref(arg_out), ctypes.c_void_p),
-                    ctypes.cast(ctypes.byref(arg_key), ctypes.c_void_p),
+                conv_out_args = [
+                    ctypes.cast(ctypes.byref(arg_p1), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_out_b), ctypes.c_void_p),
                     ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_out_len), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_tail), ctypes.c_void_p),
                 ]
+                if meta.key_source == "const_key":
+                    aes_args = [
+                        ctypes.cast(ctypes.byref(arg_p0), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_p1), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_out_len), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_tail), ctypes.c_void_p),
+                    ]
+                else:
+                    d_key = cuda.mem_alloc(ctypes.sizeof(key_soa))
+                    cuda.memcpy_htod(d_key, key_soa, ctypes.sizeof(key_soa))
+                    arg_key = ctypes.c_uint64(d_key)
+                    aes_args = [
+                        ctypes.cast(ctypes.byref(arg_p0), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_p1), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_key), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_out_len), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_tail), ctypes.c_void_p),
+                    ]
 
-            grid = ((threads_eff + block - 1) // block, 1, 1)
-            cuda.launch_async(fn, grid=grid, block=(block, 1, 1), args=args)
-            cuda.synchronize()
-            cuda.memcpy_dtoh(host_out, d_out, ctypes.sizeof(host_out))
-        finally:
-            if d_key:
-                cuda.mem_free(d_key)
-            cuda.mem_free(d_in)
-            cuda.mem_free(d_out)
+                grid_aes = ((threads_eff + block - 1) // block, 1, 1)
+                conv_threads = threads_eff * 32
+                grid_conv = ((conv_threads + block - 1) // block, 1, 1)
+                cuda.launch_async(
+                    conv_in_fn,
+                    grid=grid_conv,
+                    block=(block, 1, 1),
+                    args=conv_in_args,
+                )
+                cuda.launch_async(
+                    core_fn, grid=grid_aes, block=(block, 1, 1), args=aes_args
+                )
+                cuda.launch_async(
+                    conv_out_fn,
+                    grid=grid_conv,
+                    block=(block, 1, 1),
+                    args=conv_out_args,
+                )
+                cuda.synchronize()
+                cuda.memcpy_dtoh(
+                    host_out_bytes, d_out_bytes, ctypes.sizeof(host_out_bytes)
+                )
+            finally:
+                if d_key:
+                    cuda.mem_free(d_key)
+                cuda.mem_free(d_in_bytes)
+                cuda.mem_free(d_out_bytes)
+                cuda.mem_free(d_planes0)
+                cuda.mem_free(d_planes1)
+            got = _decode_first_block_bytes(host_out_bytes)
+        else:
+            words = threads_eff * 128
+            host_in = (ctypes.c_uint32 * words)()
+            host_out = (ctypes.c_uint32 * words)()
+            _seed_plaintext_planes4(host_in, threads_eff, pt_block)
+            if post_op == "store":
+                for i in range(words):
+                    host_out[i] = 0
+            else:
+                _seed_plaintext_planes4(host_out, threads_eff, out_seed)
+
+            d_in = cuda.mem_alloc(ctypes.sizeof(host_in))
+            d_out = cuda.mem_alloc(ctypes.sizeof(host_out))
+            d_key = 0
+            try:
+                cuda.memcpy_htod(d_in, host_in, ctypes.sizeof(host_in))
+                cuda.memcpy_htod(d_out, host_out, ctypes.sizeof(host_out))
+                arg_in = ctypes.c_uint64(d_in)
+                arg_out = ctypes.c_uint64(d_out)
+                arg_threads = ctypes.c_uint32(threads_eff)
+                arg_out_len = ctypes.c_uint32(out_len_bytes_eff)
+                arg_tail = ctypes.c_uint32(tail_bytes_eff)
+                if meta.key_source == "const_key":
+                    args = [
+                        ctypes.cast(ctypes.byref(arg_in), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_out), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_out_len), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_tail), ctypes.c_void_p),
+                    ]
+                else:
+                    d_key = cuda.mem_alloc(ctypes.sizeof(key_soa))
+                    cuda.memcpy_htod(d_key, key_soa, ctypes.sizeof(key_soa))
+                    arg_key = ctypes.c_uint64(d_key)
+                    args = [
+                        ctypes.cast(ctypes.byref(arg_in), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_out), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_key), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_out_len), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_tail), ctypes.c_void_p),
+                    ]
+                grid = ((threads_eff + block - 1) // block, 1, 1)
+                cuda.launch_async(core_fn, grid=grid, block=(block, 1, 1), args=args)
+                cuda.synchronize()
+                cuda.memcpy_dtoh(host_out, d_out, ctypes.sizeof(host_out))
+            finally:
+                if d_key:
+                    cuda.mem_free(d_key)
+                cuda.mem_free(d_in)
+                cuda.mem_free(d_out)
+            got = _decode_first_lane_planes4(host_out, threads_eff)
     finally:
         cuda.ctx_destroy(ctx)
 
-    got = _decode_first_lane_planes4(host_out, threads_eff)
     ok = got == expected
     return (
         ok,
@@ -1195,26 +1764,41 @@ def benchmark_variant(
     seed: int = 0x12345678,
     shared_key: bool = True,
     post_op: PostOp = "store",
+    output_layout: OutputLayout | None = None,
+    out_len_bytes: int | None = None,
+    tail_bytes: int = 0,
 ) -> tuple[float, float]:
     if not meta.supported:
         raise ValueError(f"unsupported variant: {meta.variant_id}")
-    if meta.io_layout != "plane-major4":
-        raise ValueError("benchmark only supports plane-major4")
+    if output_layout is None:
+        output_layout = "bytes" if meta.io_layout == "bytes" else "bitplanes"
 
-    cubin = compile_variant_to_cubin(meta, sm=sm, post_op=post_op)
     threads_eff = threads * meta.ctr_group
+    blocks_total = threads_eff * 32
+    if out_len_bytes is None:
+        out_len_bytes_eff = blocks_total * 16
+    else:
+        out_len_bytes_eff = int(out_len_bytes)
+    tail_bytes_eff = tail_bytes if tail_bytes > 0 else (out_len_bytes_eff % 16)
+
+    if meta.io_layout == "bytes" and output_layout != "bytes":
+        raise ValueError(
+            f"io_layout={meta.io_layout} requires output_layout=bytes (got {output_layout})"
+        )
+    if meta.io_layout == "plane-major4" and output_layout == "bytes":
+        raise ValueError("output_layout=bytes requires io_layout=bytes")
+    if output_layout == "words" and not (
+        meta.io_layout == "plane-major4"
+        and meta.key_source == "const_key"
+        and meta.key_bits == 128
+    ):
+        raise ValueError(
+            "output_layout=words currently supports only const_key AES-128 plane-major4"
+        )
+
     rng = random.Random(seed)
-    words = threads_eff * 128
-    host_in = (ctypes.c_uint32 * words)()
-    host_out = (ctypes.c_uint32 * words)()
-    for i in range(words):
-        host_in[i] = rng.getrandbits(32)
-        if post_op == "store":
-            host_out[i] = 0
-        elif post_op == "xor_accumulate":
-            host_out[i] = rng.getrandbits(32)
-        else:
-            raise ValueError(f"unsupported post_op={post_op}")
+    if post_op not in {"store", "xor_accumulate"}:
+        raise ValueError(f"unsupported post_op={post_op}")
     key_soa = make_key_material_soa(
         meta,
         logical_threads=threads,
@@ -1222,65 +1806,258 @@ def benchmark_variant(
         shared_key=shared_key,
     )
 
+    if output_layout == "words":
+        cubin = _compile_coalesced_words_cubin(sm=sm, post_op=post_op)
+        words = threads_eff * 128
+        host_in = (ctypes.c_uint32 * words)()
+        host_out = (ctypes.c_uint32 * words)()
+        for i in range(words):
+            host_in[i] = rng.getrandbits(32)
+            host_out[i] = 0 if post_op == "store" else rng.getrandbits(32)
+        cuda = Cuda()
+        cuda.init()
+        dev = cuda.device(0)
+        ctx = cuda.ctx_create(dev)
+        try:
+            mod = cuda.module_load_data(cubin)
+            _upload_const_rk_bits(cuda, mod, key_bits=128)
+            fn = cuda.module_get_function(mod, "stc_bp128_words_kernel")
+            d_in = cuda.mem_alloc(ctypes.sizeof(host_in))
+            d_out = cuda.mem_alloc(ctypes.sizeof(host_out))
+            try:
+                cuda.memcpy_htod(d_in, host_in, ctypes.sizeof(host_in))
+                cuda.memcpy_htod(d_out, host_out, ctypes.sizeof(host_out))
+                arg_in = ctypes.c_uint64(d_in)
+                arg_out = ctypes.c_uint64(d_out)
+                arg_threads = ctypes.c_uint32(threads_eff)
+                arg_out_len = ctypes.c_uint32(out_len_bytes_eff)
+                arg_tail = ctypes.c_uint32(tail_bytes_eff)
+                args = [
+                    ctypes.cast(ctypes.byref(arg_in), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_out), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_out_len), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_tail), ctypes.c_void_p),
+                ]
+                grid = ((threads_eff + block - 1) // block, 1, 1)
+                for _ in range(20):
+                    cuda.launch_async(fn, grid=grid, block=(block, 1, 1), args=args)
+                cuda.synchronize()
+                start = cuda.event_create()
+                end = cuda.event_create()
+                try:
+                    cuda.event_record(start)
+                    for _ in range(reps):
+                        cuda.launch_async(fn, grid=grid, block=(block, 1, 1), args=args)
+                    cuda.event_record(end)
+                    cuda.event_synchronize(end)
+                    ms = cuda.event_elapsed_ms(start, end)
+                finally:
+                    cuda.event_destroy(start)
+                    cuda.event_destroy(end)
+            finally:
+                cuda.mem_free(d_in)
+                cuda.mem_free(d_out)
+        finally:
+            cuda.ctx_destroy(ctx)
+
+        seconds = ms / 1000.0
+        evals_per_sec = (threads_eff * 32 * reps) / seconds
+        mib_s = evals_per_sec * 16.0 / (1024.0 * 1024.0)
+        return evals_per_sec / 1e9, mib_s
+
+    cubin = compile_variant_to_cubin(meta, sm=sm, post_op=post_op)
     cuda = Cuda()
     cuda.init()
     dev = cuda.device(0)
     ctx = cuda.ctx_create(dev)
     try:
         mod = cuda.module_load_data(cubin)
-        if meta.key_source == "const_key":
-            if meta.key_bits == 128:
-                _upload_const_rk_bits(cuda, mod, key_bits=128)
-            else:
-                _upload_const_rk_bytes(cuda, mod, key_bits=meta.key_bits)
-        fn = cuda.module_get_function(mod, meta.kernel_name)
-        d_in = cuda.mem_alloc(ctypes.sizeof(host_in))
-        d_out = cuda.mem_alloc(ctypes.sizeof(host_out))
-        d_key = 0
-        try:
-            cuda.memcpy_htod(d_in, host_in, ctypes.sizeof(host_in))
-            cuda.memcpy_htod(d_out, host_out, ctypes.sizeof(host_out))
+        _upload_const_keys(cuda, mod, meta)
+        core_fn = cuda.module_get_function(mod, _core_kernel_name(meta))
 
-            arg_in = ctypes.c_uint64(d_in)
-            arg_out = ctypes.c_uint64(d_out)
-            arg_threads = ctypes.c_uint32(threads_eff)
-            if meta.key_source == "const_key":
-                args = [
-                    ctypes.cast(ctypes.byref(arg_in), ctypes.c_void_p),
-                    ctypes.cast(ctypes.byref(arg_out), ctypes.c_void_p),
-                    ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
-                ]
-            else:
-                d_key = cuda.mem_alloc(ctypes.sizeof(key_soa))
-                cuda.memcpy_htod(d_key, key_soa, ctypes.sizeof(key_soa))
-                arg_key = ctypes.c_uint64(d_key)
-                args = [
-                    ctypes.cast(ctypes.byref(arg_in), ctypes.c_void_p),
-                    ctypes.cast(ctypes.byref(arg_out), ctypes.c_void_p),
-                    ctypes.cast(ctypes.byref(arg_key), ctypes.c_void_p),
-                    ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
-                ]
-            grid = ((threads_eff + block - 1) // block, 1, 1)
-            for _ in range(20):
-                cuda.launch_async(fn, grid=grid, block=(block, 1, 1), args=args)
-            cuda.synchronize()
-            start = cuda.event_create()
-            end = cuda.event_create()
+        if meta.io_layout == "bytes":
+            if (block & 31) != 0:
+                raise ValueError("bytes io_layout requires block multiple of 32")
+            conv_in_fn = cuda.module_get_function(mod, _BYTES_TO_PLANES4_KERNEL)
+            conv_out_fn = cuda.module_get_function(mod, _PLANES4_TO_BYTES_KERNEL)
+            bytes_io = blocks_total * 16
+            planes_words = threads_eff * 128
+            planes_bytes = ctypes.sizeof(ctypes.c_uint32) * planes_words
+            host_in_bytes = (ctypes.c_uint8 * bytes_io)()
+            host_out_bytes = (ctypes.c_uint8 * bytes_io)()
+            for i in range(bytes_io):
+                host_in_bytes[i] = rng.getrandbits(8)
+                host_out_bytes[i] = 0 if post_op == "store" else rng.getrandbits(8)
+            d_in_bytes = cuda.mem_alloc(ctypes.sizeof(host_in_bytes))
+            d_out_bytes = cuda.mem_alloc(ctypes.sizeof(host_out_bytes))
+            d_planes0 = cuda.mem_alloc(planes_bytes)
+            d_planes1 = cuda.mem_alloc(planes_bytes)
+            d_key = 0
             try:
-                cuda.event_record(start)
-                for _ in range(reps):
-                    cuda.launch_async(fn, grid=grid, block=(block, 1, 1), args=args)
-                cuda.event_record(end)
-                cuda.event_synchronize(end)
-                ms = cuda.event_elapsed_ms(start, end)
+                cuda.memcpy_htod(
+                    d_in_bytes, host_in_bytes, ctypes.sizeof(host_in_bytes)
+                )
+                cuda.memcpy_htod(
+                    d_out_bytes, host_out_bytes, ctypes.sizeof(host_out_bytes)
+                )
+                arg_threads = ctypes.c_uint32(threads_eff)
+                arg_out_len = ctypes.c_uint32(out_len_bytes_eff)
+                arg_tail = ctypes.c_uint32(tail_bytes_eff)
+                arg_in_b = ctypes.c_uint64(d_in_bytes)
+                arg_out_b = ctypes.c_uint64(d_out_bytes)
+                arg_p0 = ctypes.c_uint64(d_planes0)
+                arg_p1 = ctypes.c_uint64(d_planes1)
+                conv_in_args = [
+                    ctypes.cast(ctypes.byref(arg_in_b), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_p0), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
+                ]
+                conv_out_args = [
+                    ctypes.cast(ctypes.byref(arg_p1), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_out_b), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_out_len), ctypes.c_void_p),
+                    ctypes.cast(ctypes.byref(arg_tail), ctypes.c_void_p),
+                ]
+                if meta.key_source == "const_key":
+                    aes_args = [
+                        ctypes.cast(ctypes.byref(arg_p0), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_p1), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_out_len), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_tail), ctypes.c_void_p),
+                    ]
+                else:
+                    d_key = cuda.mem_alloc(ctypes.sizeof(key_soa))
+                    cuda.memcpy_htod(d_key, key_soa, ctypes.sizeof(key_soa))
+                    arg_key = ctypes.c_uint64(d_key)
+                    aes_args = [
+                        ctypes.cast(ctypes.byref(arg_p0), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_p1), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_key), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_out_len), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_tail), ctypes.c_void_p),
+                    ]
+
+                grid_aes = ((threads_eff + block - 1) // block, 1, 1)
+                conv_threads = threads_eff * 32
+                grid_conv = ((conv_threads + block - 1) // block, 1, 1)
+                for _ in range(20):
+                    cuda.launch_async(
+                        conv_in_fn,
+                        grid=grid_conv,
+                        block=(block, 1, 1),
+                        args=conv_in_args,
+                    )
+                    cuda.launch_async(
+                        core_fn, grid=grid_aes, block=(block, 1, 1), args=aes_args
+                    )
+                    cuda.launch_async(
+                        conv_out_fn,
+                        grid=grid_conv,
+                        block=(block, 1, 1),
+                        args=conv_out_args,
+                    )
+                cuda.synchronize()
+                start = cuda.event_create()
+                end = cuda.event_create()
+                try:
+                    cuda.event_record(start)
+                    for _ in range(reps):
+                        cuda.launch_async(
+                            conv_in_fn,
+                            grid=grid_conv,
+                            block=(block, 1, 1),
+                            args=conv_in_args,
+                        )
+                        cuda.launch_async(
+                            core_fn, grid=grid_aes, block=(block, 1, 1), args=aes_args
+                        )
+                        cuda.launch_async(
+                            conv_out_fn,
+                            grid=grid_conv,
+                            block=(block, 1, 1),
+                            args=conv_out_args,
+                        )
+                    cuda.event_record(end)
+                    cuda.event_synchronize(end)
+                    ms = cuda.event_elapsed_ms(start, end)
+                finally:
+                    cuda.event_destroy(start)
+                    cuda.event_destroy(end)
             finally:
-                cuda.event_destroy(start)
-                cuda.event_destroy(end)
-        finally:
-            cuda.mem_free(d_in)
-            cuda.mem_free(d_out)
-            if d_key:
-                cuda.mem_free(d_key)
+                if d_key:
+                    cuda.mem_free(d_key)
+                cuda.mem_free(d_in_bytes)
+                cuda.mem_free(d_out_bytes)
+                cuda.mem_free(d_planes0)
+                cuda.mem_free(d_planes1)
+        else:
+            words = threads_eff * 128
+            host_in = (ctypes.c_uint32 * words)()
+            host_out = (ctypes.c_uint32 * words)()
+            for i in range(words):
+                host_in[i] = rng.getrandbits(32)
+                host_out[i] = 0 if post_op == "store" else rng.getrandbits(32)
+            d_in = cuda.mem_alloc(ctypes.sizeof(host_in))
+            d_out = cuda.mem_alloc(ctypes.sizeof(host_out))
+            d_key = 0
+            try:
+                cuda.memcpy_htod(d_in, host_in, ctypes.sizeof(host_in))
+                cuda.memcpy_htod(d_out, host_out, ctypes.sizeof(host_out))
+
+                arg_in = ctypes.c_uint64(d_in)
+                arg_out = ctypes.c_uint64(d_out)
+                arg_threads = ctypes.c_uint32(threads_eff)
+                arg_out_len = ctypes.c_uint32(out_len_bytes_eff)
+                arg_tail = ctypes.c_uint32(tail_bytes_eff)
+                if meta.key_source == "const_key":
+                    args = [
+                        ctypes.cast(ctypes.byref(arg_in), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_out), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_out_len), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_tail), ctypes.c_void_p),
+                    ]
+                else:
+                    d_key = cuda.mem_alloc(ctypes.sizeof(key_soa))
+                    cuda.memcpy_htod(d_key, key_soa, ctypes.sizeof(key_soa))
+                    arg_key = ctypes.c_uint64(d_key)
+                    args = [
+                        ctypes.cast(ctypes.byref(arg_in), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_out), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_key), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_threads), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_out_len), ctypes.c_void_p),
+                        ctypes.cast(ctypes.byref(arg_tail), ctypes.c_void_p),
+                    ]
+                grid = ((threads_eff + block - 1) // block, 1, 1)
+                for _ in range(20):
+                    cuda.launch_async(
+                        core_fn, grid=grid, block=(block, 1, 1), args=args
+                    )
+                cuda.synchronize()
+                start = cuda.event_create()
+                end = cuda.event_create()
+                try:
+                    cuda.event_record(start)
+                    for _ in range(reps):
+                        cuda.launch_async(
+                            core_fn, grid=grid, block=(block, 1, 1), args=args
+                        )
+                    cuda.event_record(end)
+                    cuda.event_synchronize(end)
+                    ms = cuda.event_elapsed_ms(start, end)
+                finally:
+                    cuda.event_destroy(start)
+                    cuda.event_destroy(end)
+            finally:
+                cuda.mem_free(d_in)
+                cuda.mem_free(d_out)
+                if d_key:
+                    cuda.mem_free(d_key)
     finally:
         cuda.ctx_destroy(ctx)
 
