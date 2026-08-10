@@ -46,6 +46,12 @@ missing): `yosys`, `verilator`, a C compiler (`cc`), `ptxas`/CUDA, `futhark`.
 - PRs: concise summary, reproduction/validation steps
   (`./scripts/test.sh`), and any optional dependencies required.
 
+## License
+
+The project is licensed under the GNU Affero General Public License v3 or
+later (see `LICENSE`). By contributing, you agree that your contributions
+are licensed under the same terms.
+
 ## Repository layout
 
 - `stc/` — compiler core. Keep it free of imports from `scripts/`.

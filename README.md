@@ -127,4 +127,4 @@ cleanly when the tool is missing.
 
 ## License
 
-MIT — see `LICENSE`.
+GNU Affero General Public License v3 or later — see `LICENSE`.
