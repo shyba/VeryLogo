@@ -19,6 +19,21 @@ class SynthesisResult:
     and_count: int
 
 
+def _synth_start() -> tuple[float, float]:
+    return time.process_time(), time.time()
+
+
+def _synth_deadline(start_cpu: float, timeout_ms: int) -> float:
+    return start_cpu + timeout_ms / 1000.0
+
+
+def _synth_wall_for_cpu(ms: int, start_cpu: float, start_wall: float) -> int:
+    cpu_elapsed = time.process_time() - start_cpu
+    wall_elapsed = time.time() - start_wall
+    load_factor = wall_elapsed / max(cpu_elapsed, 1e-6)
+    return int(ms * min(max(load_factor, 1.0), 16.0))
+
+
 def synthesize_single_output(
     table: Sequence[int],
     input_bits: int = 8,
@@ -29,15 +44,18 @@ def synthesize_single_output(
     Synthesize a boolean circuit for a single-output function.
     Uses iterative deepening to find smallest circuit.
     """
-    start_time = time.time()
-    deadline = start_time + timeout_ms / 1000.0
+    start_cpu, start_wall = _synth_start()
+    deadline = _synth_deadline(start_cpu, timeout_ms)
 
-    time_per_attempt = max(timeout_ms // (max_gates + 1), 500)
+    time_per_attempt = max(timeout_ms // (max_gates + 1), 3000)
     for num_gates in range(max_gates + 1):
-        if time.time() > deadline:
+        if time.process_time() > deadline:
             return None
         result = _synthesize_single_fixed_size(
-            table, input_bits, num_gates, time_per_attempt
+            table,
+            input_bits,
+            num_gates,
+            _synth_wall_for_cpu(time_per_attempt, start_cpu, start_wall),
         )
         if result is not None:
             return result
@@ -57,8 +75,13 @@ def synthesize_single_output_binary_search(
     First verifies a solution exists at max_gates, then binary searches
     to find the minimum.
     """
+    start_cpu, start_wall = _synth_start()
+
     result_at_max = _synthesize_single_fixed_size(
-        table, input_bits, max_gates, timeout_ms_per_attempt
+        table,
+        input_bits,
+        max_gates,
+        _synth_wall_for_cpu(timeout_ms_per_attempt, start_cpu, start_wall),
     )
     if result_at_max is None:
         return None
@@ -70,7 +93,10 @@ def synthesize_single_output_binary_search(
     while lo <= hi:
         mid = (lo + hi) // 2
         result = _synthesize_single_fixed_size(
-            table, input_bits, mid, timeout_ms_per_attempt
+            table,
+            input_bits,
+            mid,
+            _synth_wall_for_cpu(timeout_ms_per_attempt, start_cpu, start_wall),
         )
         if result is not None:
             best = result
@@ -275,8 +301,8 @@ def synthesize_multi_output_shared(
     Returns:
         SynthesisResult if successful, None if no circuit found within limits
     """
-    start_time = time.time()
-    deadline = start_time + timeout_ms / 1000.0
+    start_cpu, start_wall = _synth_start()
+    deadline = _synth_deadline(start_cpu, timeout_ms)
 
     start_gates = min_gates if min_gates is not None else 0
     range_size = max_gates - start_gates + 1
@@ -284,11 +310,15 @@ def synthesize_multi_output_shared(
     base_time = max(timeout_ms // (range_size * 2), 500)
 
     for num_gates in range(start_gates, max_gates + 1):
-        if time.time() > deadline:
+        if time.process_time() > deadline:
             return None
         time_for_this = min(base_time * (1 + num_gates // 10), timeout_ms // 4)
         result = _synthesize_multi_fixed_size(
-            table, input_bits, output_bits, num_gates, time_for_this
+            table,
+            input_bits,
+            output_bits,
+            num_gates,
+            _synth_wall_for_cpu(time_for_this, start_cpu, start_wall),
         )
         if result is not None:
             return result
@@ -472,8 +502,8 @@ def synthesize_single_output_greedy(
     num_entries = 1 << input_bits
     assert len(table) == num_entries
 
-    start_time = time.time()
-    deadline = start_time + timeout_ms / 1000.0
+    start_cpu, _ = _synth_start()
+    deadline = _synth_deadline(start_cpu, timeout_ms)
 
     target = sum((table[i] & 1) << i for i in range(num_entries))
     inv_target = target ^ ((1 << num_entries) - 1)
@@ -504,13 +534,13 @@ def synthesize_single_output_greedy(
         return (Not(x=expr) if not isinstance(expr, Not) else expr.x, gates)
 
     for depth in range(max_gates):
-        if time.time() > deadline:
+        if time.process_time() > deadline:
             return None
         new_values: dict[int, tuple[Expr, int, int]] = {}
         value_list = list(values.keys())
 
         for i, v1 in enumerate(value_list):
-            if i % 100 == 0 and time.time() > deadline:
+            if i % 100 == 0 and time.process_time() > deadline:
                 return None
             for v2 in value_list[i + 1 :]:
                 xor_val = v1 ^ v2
@@ -574,8 +604,8 @@ def synthesize_single_output_cegar(
     num_entries = 1 << input_bits
     assert len(table) == num_entries
 
-    start_time = time.time()
-    deadline = start_time + timeout_ms_total / 1000.0
+    start_cpu, _ = _synth_start()
+    deadline = _synth_deadline(start_cpu, timeout_ms_total)
 
     def evaluate_circuit(
         node_exprs: list[int], out_idx: int, invert: bool, inp: int
@@ -591,10 +621,10 @@ def synthesize_single_output_cegar(
     constrained_inputs = [0, 1, 2, 255]
 
     for num_gates in range(max_gates + 1):
-        if time.time() > deadline:
+        if time.process_time() > deadline:
             return None
         for _ in range(max_rounds):
-            if time.time() > deadline:
+            if time.process_time() > deadline:
                 return None
             target = sum((table[i] & 1) << i for i in constrained_inputs)
             target_compact = sum(
