@@ -277,8 +277,37 @@ class AVX2Technology(Technology):
         return True
 
 
+class FutharkTechnology(Technology):
+    """Futhark backend - generic bool/bitvec cost model."""
+
+    @property
+    def name(self) -> str:
+        return "futhark"
+
+    def primitives(self) -> Sequence[Primitive]:
+        return [
+            Primitive("and", 2, 1, 1, 1.0, {}),
+            Primitive("or", 2, 1, 1, 1.0, {}),
+            Primitive("xor", 2, 1, 1, 1.0, {}),
+            Primitive("not", 1, 1, 0, 1.0, {}),
+            Primitive("add", 2, 1, 1, 1.0, {}),
+            Primitive("sub", 2, 1, 1, 1.0, {}),
+            Primitive("mux", 3, 1, 1, 1.0, {}),
+        ]
+
+    def cost_model(self) -> CostModel:
+        return DefaultCostModel()
+
+    def depth_model(self) -> DepthModel:
+        return DefaultDepthModel()
+
+    def is_legal(self, expr: Expr) -> bool:
+        return True
+
+
 register_technology(GenericTechnology())
 register_technology(PTXTechnology())
 register_technology(AVX512Technology())
 register_technology(AVRTechnology())
 register_technology(AVX2Technology())
+register_technology(FutharkTechnology())

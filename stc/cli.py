@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import time
 from pathlib import Path
 
 from stc.autotune import autotune_configuration, write_autotune_results
 from stc.backend_avr import emit_avr_c
+from stc.backend_futhark import (
+    compute_futhark_source_metrics,
+    emit_futhark,
+    emit_futhark_manifest,
+    resolve_futhark_mode,
+)
 from stc.avr_project import emit_avr_project
 from stc.backend_sched import generate_scheduled_code, get_schedule_stats
 from stc.circuit_synth import CircuitState
@@ -64,6 +71,7 @@ def run_pipeline(
     io_map: Path | None = None,
     avr_project: bool = False,
     backend: str = "generic",
+    futhark_mode: str = "auto",
     ternary_mapping: bool | None = None,
     fuse_ticks: int = 1,
     fuse_mode: str = "final",
@@ -86,6 +94,7 @@ def run_pipeline(
     dump_arith_report: Path | None = None,
     max_live_pressure: int | None = None,
     scheduler: str | None = None,
+    bounded_state_opt: bool | None = None,
 ) -> None:
     timing_enabled = os.environ.get("STC_TIMING", "0").lower() not in {
         "0",
@@ -245,6 +254,11 @@ def run_pipeline(
         validate_tick_ir(tick_ir)
         _log_timing("validate_tick_ir", t0)
     t0 = time.perf_counter()
+    effective_bounded_state_opt = (
+        bounded_state_opt
+        if bounded_state_opt is not None
+        else backend not in {"x86-avx2", "x86-avx512", "ptx", "futhark"}
+    )
     reduced, arith_report = optimize_tick_ir(
         tick_ir,
         bound=bound,
@@ -257,7 +271,7 @@ def run_pipeline(
         ternary_mapping=ternary_mapping,
         # Bounded state pruning/const-prop is useful for small bounded analyses,
         # but is not semantics-preserving for long-horizon sequential designs.
-        bounded_state_opt=backend not in {"x86-avx2", "x86-avx512", "ptx"},
+        bounded_state_opt=effective_bounded_state_opt,
         fuse_ticks=fuse_ticks,
         fuse_mode=fuse_mode,
         fuse_input_policy=fuse_input_policy,
@@ -296,6 +310,32 @@ def run_pipeline(
     # `--no-backend` is set, users may be targeting non-AVR outputs and the
     # reduced IR may have many outputs that cannot fit the default PORTB map.
     if no_backend:
+        return
+
+    if backend == "futhark":
+        t0 = time.perf_counter()
+        selected_futhark_mode, fallback_reason = resolve_futhark_mode(
+            reduced, futhark_mode
+        )
+        fut_source = emit_futhark(
+            reduced, module_name=reduced.name, mode=selected_futhark_mode
+        )
+        (out_dir / "circuit_futhark.fut").write_text(fut_source, encoding="utf-8")
+        manifest = emit_futhark_manifest(
+            reduced,
+            module_name=reduced.name,
+            mode=selected_futhark_mode,
+            fallback_reason=fallback_reason,
+        )
+        (out_dir / "futhark_io_manifest.json").write_text(
+            json.dumps(manifest, indent=2, sort_keys=False) + "\n",
+            encoding="utf-8",
+        )
+        (out_dir / "futhark_source_metrics.json").write_text(
+            json.dumps(compute_futhark_source_metrics(fut_source), indent=2) + "\n",
+            encoding="utf-8",
+        )
+        _log_timing("emit_futhark", t0)
         return
 
     # Non-AVR scheduled backends: lower TickIR to CircuitState and emit scheduled code.
@@ -444,13 +484,13 @@ def run_pipeline(
                         rust_linear = False
                     else:
                         rust_linear = True
-                    max_gates = int(
-                        os.environ.get("STC_LINEAR_OPT_MAX_GATES", "50000")
-                    )
+                    max_gates = int(os.environ.get("STC_LINEAR_OPT_MAX_GATES", "50000"))
                     force_linear = os.environ.get(
                         "STC_FORCE_LINEAR_OPT", "0"
                     ).lower() not in {"0", "false", "no"}
-                    if not rust_linear and (force_linear or circuit.gate_count <= max_gates):
+                    if not rust_linear and (
+                        force_linear or circuit.gate_count <= max_gates
+                    ):
                         t0 = time.perf_counter()
                         circuit = circuit.optimize_linear_layers()
                         if write_bin:
@@ -544,7 +584,9 @@ def run_pipeline(
             t0 = time.perf_counter()
             sched = scheduler or "list"
             emit_io_split = (
-                None if target in {"ptx", "ptx_mir"} else (input_io_bits, output_io_bits)
+                None
+                if target in {"ptx", "ptx_mir"}
+                else (input_io_bits, output_io_bits)
             )
             code = generate_scheduled_code(
                 circuit,
@@ -556,7 +598,9 @@ def run_pipeline(
             )
             ext = "ptx" if target.startswith("ptx") else "c"
             (out_dir / f"circuit_{target}.{ext}").write_text(code, encoding="utf-8")
-            skip_stats_env = os.environ.get("STC_SKIP_SCHEDULE_STATS", "0").lower() not in {
+            skip_stats_env = os.environ.get(
+                "STC_SKIP_SCHEDULE_STATS", "0"
+            ).lower() not in {
                 "0",
                 "false",
                 "no",
@@ -654,9 +698,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--backend",
         "-b",
-        choices=["generic", "avr", "ptx", "x86-avx2", "x86-avx512"],
+        choices=["generic", "avr", "ptx", "x86-avx2", "x86-avx512", "futhark"],
         default="generic",
         help="Target backend for optimization",
+    )
+    p.add_argument(
+        "--futhark-mode",
+        choices=["auto", "combinational_fast", "step_legacy"],
+        default="auto",
+        help="Futhark emission mode (auto picks combinational_fast unless sequential feedback is detected).",
     )
     p.add_argument(
         "--force-bitsliced",
@@ -939,6 +989,7 @@ def main(argv: list[str] | None = None) -> int:
             io_map=ns.io_map,
             avr_project=ns.avr_project,
             backend=ns.backend,
+            futhark_mode=ns.futhark_mode,
             ternary_mapping=ns.ternary_mapping,
             fuse_ticks=ns.fuse_ticks,
             fuse_mode=ns.fuse_mode,

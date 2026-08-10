@@ -117,6 +117,66 @@ class TestCliPipeline(unittest.TestCase):
             code = out_path.read_text(encoding="utf-8")
             self.assertIn(".visible .entry", code)
 
+    def test_pipeline_futhark_backend_emits_futhark(self) -> None:
+        design = {
+            "modules": {
+                "top": {
+                    "ports": {
+                        "a": {"direction": "input", "bits": [2]},
+                        "y": {"direction": "output", "bits": [3]},
+                    },
+                    "cells": {
+                        "$not$0": {
+                            "type": "$not",
+                            "port_directions": {"A": "input", "Y": "output"},
+                            "connections": {"A": [2], "Y": [3]},
+                        }
+                    },
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            normalized = base / "normalized.json"
+            normalized.write_text(__import__("json").dumps(design), encoding="utf-8")
+            out_dir = base / "out"
+
+            run_pipeline(normalized, out_dir, bound=2, backend="futhark")
+
+            fut_path = out_dir / "circuit_futhark.fut"
+            manifest_path = out_dir / "futhark_io_manifest.json"
+            metrics_path = out_dir / "futhark_source_metrics.json"
+            self.assertTrue(fut_path.exists())
+            self.assertTrue(manifest_path.exists())
+            self.assertTrue(metrics_path.exists())
+            self.assertFalse((out_dir / "avr.c").exists())
+            fut_code = fut_path.read_text(encoding="utf-8")
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
+            self.assertEqual(manifest["mode"], "combinational_fast")
+            self.assertEqual(manifest["module_name"], "top")
+            self.assertIn("eval_batch", manifest["entries"])
+            self.assertIn("eval_batch_xor", manifest["entries"])
+            self.assertIn("step_batch", manifest["entries"])
+            self.assertIn("entry step_batch", fut_code)
+            self.assertIn("entry eval_batch", fut_code)
+            self.assertNotIn("entry run_steps_batch", fut_code)
+            self.assertIsNone(manifest["fallback_reason"])
+            self.assertGreaterEqual(metrics["lines"], 1)
+
+            import shutil
+            import subprocess
+
+            if shutil.which("futhark"):
+                subprocess.run(
+                    ["futhark", "check", str(fut_path)],
+                    check=True,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+
     def test_pipeline_requires_yosys_for_verilog(self) -> None:
         import shutil
 
@@ -187,7 +247,10 @@ class TestCliPipeline(unittest.TestCase):
             self.assertTrue((out_dir / "regions_stats.bin").exists())
             self.assertTrue((out_dir / "regions.dot").exists())
 
-            from stc.region_diagnostics_bin import read_regions_bin, read_regions_stats_bin
+            from stc.region_diagnostics_bin import (
+                read_regions_bin,
+                read_regions_stats_bin,
+            )
 
             regions_data = read_regions_bin(out_dir / "regions.bin")
             self.assertIn("regions", regions_data)
