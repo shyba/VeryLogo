@@ -128,9 +128,7 @@ def emit_avx512_u64_regions(
             b = get(int(g[2]))
             c = get(int(g[3]))
             imm8 = int(g[4]) & 0xFF
-            return (
-                f"{dst} = _mm512_ternarylogic_epi64({a}, {b}, {c}, {imm8});"
-            )
+            return f"{dst} = _mm512_ternarylogic_epi64({a}, {b}, {c}, {imm8});"
         if op in ("shl", "lshr"):
             a = get(int(g[1]))
             imm = int(g[2])

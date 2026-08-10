@@ -18,7 +18,14 @@ class TestScheduleStatsBin(unittest.TestCase):
         path = "out/test_schedule_stats.bin"
         write_schedule_stats_bin(stats, path)
         loaded = read_schedule_stats_bin(path)
-        for key in ("total_cycles", "max_live", "num_spills", "gates", "inputs", "outputs"):
+        for key in (
+            "total_cycles",
+            "max_live",
+            "num_spills",
+            "gates",
+            "inputs",
+            "outputs",
+        ):
             self.assertEqual(stats[key], loaded[key])
         self.assertEqual(stats["target"], loaded["target"])
         self.assertEqual(stats["scheduler"], loaded["scheduler"])

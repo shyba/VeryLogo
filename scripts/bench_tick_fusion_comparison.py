@@ -7,6 +7,7 @@ from pathlib import Path
 
 from stc.circuit_state_bin import read_circuit_state_bin
 
+
 def compile_keccak(out_dir: Path, flat_json: Path, fuse_ticks: int):
     """Compile Keccak with given fusion level."""
     cmd = [

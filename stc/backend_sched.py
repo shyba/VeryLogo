@@ -58,6 +58,7 @@ EMITTERS = {
     "ptx_legacy": PTXEmitter,
 }
 
+
 def _find_rust_sched_emit_bin() -> Path | None:
     candidates = [
         Path("rust/sched_emit_rs/target/release/sched_emit_rs"),
@@ -101,6 +102,7 @@ def _rust_generate_scheduled_code(
         if timing_enabled:
             elapsed = time.perf_counter() - start
             print(f"[timing] rust_sched_emit:{label}: {elapsed:.3f}s", flush=True)
+
     if timing_enabled:
         print(
             f"[timing] rust_sched_emit:enabled target={target} scheduler={scheduler}",
@@ -145,7 +147,9 @@ def _rust_generate_scheduled_code(
             cmd += ["--max-live-pressure", str(max_live_pressure)]
         try:
             t0 = time.perf_counter()
-            subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            subprocess.run(
+                cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE
+            )
             _log("subprocess", t0)
         except subprocess.CalledProcessError:
             return None

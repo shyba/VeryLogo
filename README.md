@@ -1,89 +1,130 @@
-# Space-Time Compiler (MVP)
+# Space-Time Compiler (STC)
 
-This repo contains a Python MVP for a space-time compiler that converts a restricted HDL design into Tick-IR, applies conservative reductions, and emits deterministic C for an ATtiny85-style tick loop.
+A compiler that turns a restricted subset of Verilog into an explicit
+**space-time machine** — a sequential IR with first-class state, time, and
+resources — then applies solver-guided optimization and emits deterministic
+code for microcontrollers, CPUs with SIMD, and GPUs.
+
+```
+input.v ──▶ yosys ──▶ normalized.json ──▶ Tick-IR ──▶ reduced Tick-IR ──▶
+                backends: ATtiny85 C · x86 SIMD C · PTX (CUDA) · Futhark
+```
+
+The central idea (see `info.md` and `design.md`): every design is modeled as a
+discrete state transition
+
+```
+S' = f(S, I)    next state
+O  = g(S, I)    outputs
+```
+
+where `S` is explicit state (registers), `I` are inputs, `O` are outputs, and
+the tick (clock) is a real semantic unit. Because the IR is equivalent to a
+sequential circuit, classic EDA techniques apply: boolean simplification,
+state reduction, bounded equivalence checking, and constraint-guided
+synthesis (Z3).
+
+## What's inside
+
+- **Frontend** — restricted Verilog subset elaborated with Yosys
+  (`read_verilog -sv`, `proc`, `opt`, `write_json`). Single top module, single
+  clock, synchronous reset.
+- **Tick-IR** — the source-of-truth IR (`stc/tick_ir.py`), with types
+  `bool`, `bitvec[N]`, `float[32/64]` (IEEE-754, RNE), and
+  `simd[lane_width, lanes]` (packed, lane-wise, no cross-lane carry).
+  Serialized as JSON or a compact binary format.
+- **Optimization** — combinational reduction, bounded dead-state removal,
+  structural hash-consing, Z3-backed autovectorization, Z3-guided
+  superoptimization, ternary-logic mapping (`lop3.b32` / `vpternlogd`),
+  constant-time tick fusion, and packed word-level lowering with automatic
+  path selection.
+- **Backends**
+  - `avr` — branchless C for ATtiny85 (GPIO mapping, tick loop).
+  - x86 SIMD — SSE2/SSE4.1/AVX/AVX2/AVX-512/AVX-512VL C with intrinsics;
+    auto-selection by CPU features, or explicit `--backend x86-avx2` /
+    `x86-avx512`.
+  - `ptx` — NVIDIA PTX kernels (sm_61), one thread per instance; fused
+    multi-tick execution for sequential designs.
+  - `futhark` — Futhark source with batch/step entry points.
+  - Vulkan SPIR-V codegen exists as an experimental path.
+- **Validation** — a Tick-IR interpreter, Verilator golden traces, and
+  bounded Z3 equivalence checks.
 
 ## Setup
 
-Create a virtual environment and install dev tools:
+```bash
+python3 -m venv .venv
+.venv/bin/pip install -r requirements-dev.txt
+```
 
-`python3 -m venv .venv`
+Dependencies: `z3-solver`, `msgpack` (runtime); `black` (dev). External
+tools used when available: `yosys` (required for Verilog input), `verilator`
+(golden simulation), a C compiler (native SIMD tests), `ptxas`/CUDA (PTX
+tests), `futhark` (Futhark checks).
 
-`.venv/bin/pip install -r requirements-dev.txt`
+## Usage
 
-## Tooling
+Compile a Verilog design to AVR C:
 
-- Verilog input (`.v`) requires `yosys` to be installed and available on `PATH`.
-- If `yosys` is installed but not on `PATH`, set `STC_YOSYS` to the full path to the binary.
-- Verilator-based golden simulation requires `verilator` to be installed and available on `PATH`.
-- Optional bounded equivalence requires `yosys-smtbmc` and `z3`. Installing `z3-solver` in `.venv` provides `.venv/bin/z3`.
+```bash
+.venv/bin/python -m stc fixtures/verilog/combinational_not.v --out out
+```
 
-## Formatting
+Compile to AVX-512 C with SIMD inference and autovectorization:
 
-`./scripts/fmt.sh`
+```bash
+.venv/bin/python -m stc fixtures/verilog/simd_lane_add_slices.v \
+  --out out --infer-simd --autovec --backend x86-avx512
+```
 
-## Tests
+Compile a sequential design to PTX and execute 11 fused ticks on a GPU:
 
-`\.venv/bin/python -m unittest discover -s tests`
+```bash
+.venv/bin/python scripts/bench_aes_gpu_tick.py \
+  --mode fused --n 262144 --ticks 11 --reps 20
+```
 
-## Run the pipeline
+Emit a full ATtiny85 project:
 
-From an existing `normalized.json`:
+```bash
+.venv/bin/python -m stc input.v --out out --avr-project
+```
 
-`\.venv/bin/python -m stc path/to/normalized.json --out out`
+Key flags: `--backend {generic,avr,ptx,x86-avx2,x86-avx512,futhark}`,
+`--infer-simd`, `--autovec`, `--superopt`, `--fuse-ticks N`,
+`--use-regions`, `--autotune`, `--ternary-mapping`, `--bound N`.
 
-From a Verilog file:
+Run `python -m stc --help` for the full list.
 
-`\.venv/bin/python -m stc path/to/input.v --out out`
+## Development
 
-The Verilog path requires `yosys` to be installed and on `PATH` (or `STC_YOSYS` set).
+```bash
+./scripts/fmt.sh                          # Black formatting
+./scripts/test.sh                         # format + full test suite
+.venv/bin/python -m unittest discover -s tests   # tests only
+```
 
-### Optional SIMD inference + autovectorization
+The test suite is ~1000 tests and runs in about two minutes with the toolchain
+installed. Tests that need external tools are marked `*_optional.py` and skip
+cleanly when the tool is missing.
 
-- `--infer-simd` upgrades eligible packed bit-vectors into `simd[lane_width, lanes]` types.
-- `--autovec` runs a solver-validated autovectorization pass during reduction.
-- `--superopt` runs a bounded Z3-guided expression superoptimizer during reduction.
-- `--no-backend` skips emitting `avr.c` (required when SIMD types are present).
+## Repository layout
 
-### Tick fusion (generic sequential unrolling)
+- `stc/` — compiler core (IR, extraction, optimization, lowering, backends)
+- `scripts/` — developer utilities, benchmarks, and experiment runners
+- `tests/` — `unittest` suite
+- `fixtures/` — Verilog and Tick-IR inputs
+- `docs/` — design notes, backend contracts, and archived plans
+- `bench/` — performance comparisons (e.g., Rust CPU AES)
+- `external-*/` — vendored reference projects used as inputs for experiments
 
-The compiler can fuse/unroll multiple sequential ticks at the Tick-IR level (before lowering to `CircuitState` / scheduling / emit). This is useful for stateful designs where a “1 tick per call” execution model would otherwise repeatedly materialize and copy large state.
+## Documentation
 
-- `--fuse-ticks N` enables fusion (`N=1` disables; default).
-- `--fuse-input-policy shared|replicate`
-  - `shared` (default): uses the same input variables for every fused tick.
-  - `replicate`: creates per-tick inputs named `name__t0`, `name__t1`, … `name__t{N-1}`.
-- `--fuse-mode final|all|state-only`
-  - `final` (default): outputs are computed for the last fused tick.
-  - `all`: outputs are exported for every tick, suffixed as `out__t{k}`.
-  - `state-only`: only fuses state; leaves outputs unchanged.
-- `--fuse-budget-max-step-ms N` stops fusion if a single fused step exceeds N ms (useful for very large designs).
+- `ARCHITECTURE.md` — pipeline and module overview
+- `design.md` — Tick-IR semantics and the MVP specification
+- `docs/X86_SIMD_ABI.md` — x86 SIMD C ABI (word layout, masks)
+- `CONTRIBUTING.md` — how to build, test, and contribute
 
-Example (replicated per-tick inputs):
+## License
 
-`\.venv/bin/python -m stc fixtures/verilog/foo.v --out out --backend x86-avx512 --fuse-ticks 8 --fuse-input-policy replicate`
-
-### AVR artifacts
-
-- `io_map.bin` is emitted for non-SIMD designs and defines the PORTB bit layout used by the AVR backend.
-- `--io-map path/to/io_map.bin` overrides the default packing.
-- `--avr-project` also emits `main.c` and `Makefile` (expects `avr.c` in the same folder).
-
-### Host simulation (no AVR toolchain)
-
-Compile the generated `avr.c` for the host using `STC_HOST`:
-
-`cc -std=c99 -O2 -DSTC_HOST -o host_runner host_main.c out/avr.c`
-
-## AES throughput (GPU Tick/PTX vs CPU Rust)
-
-**GPU (host)**: runs AES-128 (fixed key) compiled from `fixtures/verilog/aes128_fixedkey_seq_lut.v` to Tick-IR, then to PTX, then executes 11 ticks on the GPU (single kernel launch via `steps=11`).
-
-`\.venv/bin/python scripts/bench_aes_gpu_tick.py --mode fused --n 262144 --ticks 11 --reps 20`
-
-**GPU (Docker)**: runs the same benchmark inside `nvidia/cuda` with manual `/dev/nvidia*` + driver library mounts.
-
-`N=262144 TICKS=11 ./scripts/bench_aes_gpu_tick_docker.sh`
-
-**CPU (Rust)**: uses RustCrypto `aes` (AES-NI when available).
-
-`cd bench/aes_cpu && cargo run --release -- --blocks 262144 --min-seconds 0.2`
+MIT — see `LICENSE`.

@@ -127,7 +127,9 @@ def main() -> int:
         )
 
     baseline = next((row for row in results if row.mode == "replacement_tuned"), None)
-    target = next((row for row in results if row.mode == "replacement_coalesced4_tuned"), None)
+    target = next(
+        (row for row in results if row.mode == "replacement_coalesced4_tuned"), None
+    )
     if baseline and target and baseline.best_eval_b > 0:
         speedup = target.best_eval_b / baseline.best_eval_b
         print(f"\ncoalesced4 vs replacement speedup: {speedup:.2f}x")

@@ -442,7 +442,9 @@ def main() -> int:
                     print(run.stderr.strip()[:2000])
                 print(f"skipping block={block} due to failure")
                 continue
-            m = re.search(r"full_pipeline:\s+[0-9.]+ ms,\s+([0-9.]+)B evals/sec", run.stdout)
+            m = re.search(
+                r"full_pipeline:\s+[0-9.]+ ms,\s+([0-9.]+)B evals/sec", run.stdout
+            )
             if m:
                 ev = float(m.group(1))
                 if ev > best_eval:

@@ -176,7 +176,9 @@ def benchmark_testcase(testcase: dict, verbose: bool = False) -> dict:
                 metrics = read_metrics_bin(out_dir / "reduced_metrics.bin")
 
                 # Load IR to count TernaryLuts
-                ir_json = read_tick_ir_bin(str(out_dir / "reduced_tick_ir.bin")).to_dict()
+                ir_json = read_tick_ir_bin(
+                    str(out_dir / "reduced_tick_ir.bin")
+                ).to_dict()
 
                 ternary_count = count_ternary_luts(ir_json)
 

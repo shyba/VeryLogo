@@ -29,8 +29,7 @@ STAGES = [
 def _run_yosys_flatten(verilog: Path, top: str, out_json: Path) -> None:
     script = (
         f"read_verilog -sv {verilog}; hierarchy -top {top}; "
-        "proc; flatten; opt; opt_clean; write_json "
-        + str(out_json)
+        "proc; flatten; opt; opt_clean; write_json " + str(out_json)
     )
     subprocess.run(["yosys", "-q", "-p", script], check=True)
 
@@ -123,7 +122,10 @@ def _compile_stage(
         scheduler=scheduler,
         io_split=(input_io_words, output_io_words),
     )
-    print(f"[{name}] emit: {time.perf_counter()-t0:.2f}s code={len(code)} bytes", flush=True)
+    print(
+        f"[{name}] emit: {time.perf_counter()-t0:.2f}s code={len(code)} bytes",
+        flush=True,
+    )
     code = _rename_circuit_symbols(code, name)
     c_path = out_dir / f"{name}.c"
     c_path.write_text(code, encoding="utf-8")

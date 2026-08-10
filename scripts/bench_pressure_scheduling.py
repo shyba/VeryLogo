@@ -6,6 +6,7 @@ from pathlib import Path
 
 from stc.schedule_stats_bin import read_schedule_stats_bin
 
+
 def run_with_pressure(pressure_limit: int | None, out_dir: Path, flat_json: Path):
     """Compile Keccak with given pressure limit."""
     cmd = [

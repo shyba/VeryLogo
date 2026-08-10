@@ -1797,9 +1797,7 @@ def benchmark_variant(
     if meta.io_layout == "plane-major4" and output_layout == "bytes":
         raise ValueError("output_layout=bytes requires io_layout=bytes")
     if output_layout == "words" and meta.io_layout != "plane-major4":
-        raise ValueError(
-            "output_layout=words requires io_layout=plane-major4"
-        )
+        raise ValueError("output_layout=words requires io_layout=plane-major4")
 
     rng = random.Random(seed)
     if post_op not in {"store", "xor_accumulate"}:

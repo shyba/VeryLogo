@@ -15,6 +15,7 @@ from stc.circuit_state_bin import read_circuit_state_bin
 from stc.packed_circuit_bin import read_packed_circuit_bin
 from stc.tick_ir_bin2 import read_tick_ir_bin
 
+
 def run(cmd: list[str], *, env: dict[str, str] | None = None, capture: bool = False):
     """Run command, optionally capturing output."""
     try:

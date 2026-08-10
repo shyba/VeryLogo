@@ -9,6 +9,7 @@ from pathlib import Path
 
 from stc.layout_bin import read_packed_layout_bin
 
+
 def _have_avx512() -> bool:
     try:
         flags = Path("/proc/cpuinfo").read_text(encoding="utf-8", errors="ignore")

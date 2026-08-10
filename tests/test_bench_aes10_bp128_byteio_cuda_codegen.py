@@ -15,10 +15,14 @@ class TestBenchAes10Bp128ByteIoCodegen(unittest.TestCase):
 
     def test_host_source_has_three_stage_launch(self) -> None:
         host_src = bench_byteio._host_bench_cu_source()
-        self.assertIn("cuModuleGetFunction(&fn_in, mod, \"bytes_to_planes4_kernel\")", host_src)
-        self.assertIn("cuModuleGetFunction(&fn_aes, mod, \"aes10_bp128_kernel\")", host_src)
         self.assertIn(
-            "cuModuleGetFunction(&fn_out, mod, \"planes4_to_bytes_kernel\")", host_src
+            'cuModuleGetFunction(&fn_in, mod, "bytes_to_planes4_kernel")', host_src
+        )
+        self.assertIn(
+            'cuModuleGetFunction(&fn_aes, mod, "aes10_bp128_kernel")', host_src
+        )
+        self.assertIn(
+            'cuModuleGetFunction(&fn_out, mod, "planes4_to_bytes_kernel")', host_src
         )
         self.assertIn("full_pipeline:", host_src)
         self.assertIn("converter_only:", host_src)

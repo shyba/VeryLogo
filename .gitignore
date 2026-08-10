@@ -20,6 +20,8 @@ tmp_out/
 tmp_*
 /tmp*
 target/
+obj_dir/
+obj_dir.*/
 
 *.o
 *.so
@@ -39,6 +41,8 @@ debug_*.c
 /bench_keccak_quick.py
 
 paper.pdf
+
+.claude/
 
 CLAUDE.md
 LOWERING_CHOICE_REPORT.md

@@ -591,9 +591,7 @@ def eliminate_dead_gates(circuit: CircuitState) -> tuple[CircuitState, dict]:
     outputs = list(circuit.outputs)
 
     gate_infos = build_gate_info(gates, input_bits)
-    output_gate_indices = {
-        idx - input_bits for idx, _ in outputs if idx >= input_bits
-    }
+    output_gate_indices = {idx - input_bits for idx, _ in outputs if idx >= input_bits}
 
     live_gates: set[int] = set()
     worklist = list(output_gate_indices)

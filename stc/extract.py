@@ -118,6 +118,7 @@ def _lut2_expr(x: Expr, y: Expr, bits: list[int]) -> Expr:
         return Xor(a=x, b=y)
     if t == 0b1001:
         return Not(x=Xor(a=x, b=y))
+
     # Shannon expansion via mux on y, then x
     def _const(v: int) -> Expr:
         return BoolConst(value=bool(v))
@@ -751,17 +752,13 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
             if rst_bits is None or len(rst_bits) != 1:
                 raise ExtractionError("sdff reset must be 1 bit")
             rst = expr_for_bit(rst_bits[0])
-            next_state[cell.name] = Mux(
-                cond=rst, a=reset_state[cell.name], b=next_expr
-            )
+            next_state[cell.name] = Mux(cond=rst, a=reset_state[cell.name], b=next_expr)
         elif cell.type in {"$_SDFF_PP0_", "$_SDFFE_PP0P_", "$_SDFFE_PP0N_"}:
             rst_bits = cell.connections.get("R")
             if rst_bits is None or len(rst_bits) != 1:
                 raise ExtractionError("sdff reset must be 1 bit")
             rst = expr_for_bit(rst_bits[0])
-            next_state[cell.name] = Mux(
-                cond=rst, a=reset_state[cell.name], b=next_expr
-            )
+            next_state[cell.name] = Mux(cond=rst, a=reset_state[cell.name], b=next_expr)
         else:
             next_state[cell.name] = next_expr
 

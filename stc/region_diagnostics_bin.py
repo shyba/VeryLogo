@@ -104,7 +104,11 @@ def read_regions_bin(path: str | Path) -> dict:
                 "inputs": inputs,
             }
         )
-    return {"regions": regions, "total_regions": len(regions), "ordering": "topological"}
+    return {
+        "regions": regions,
+        "total_regions": len(regions),
+        "ordering": "topological",
+    }
 
 
 def write_regions_stats_bin(diagnostics: RegionDiagnostics, path: str | Path) -> None:

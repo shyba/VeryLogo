@@ -80,9 +80,7 @@ def coordinate_lowering(
         "expr_depth": metrics.expr_depth_max,
     }
 
-    packed_max_expr_nodes = int(
-        os.environ.get("STC_PACKED_MAX_EXPR_NODES", "1000000")
-    )
+    packed_max_expr_nodes = int(os.environ.get("STC_PACKED_MAX_EXPR_NODES", "1000000"))
     packed_max_ops = int(os.environ.get("STC_PACKED_MAX_OPS", "1000000"))
 
     if prefer_packed:

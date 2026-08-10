@@ -188,7 +188,9 @@ class PTXEmitter(BaseEmitter):
         elif op == "or":
             return f"or.b32 %r{dst_reg}, %r{left_reg}, %r{right_reg};"
         elif op in {"andn", "andnot"}:
-            return f"lop3.b32 %r{dst_reg}, %r{left_reg}, %r{right_reg}, %r{left_reg}, 12;"
+            return (
+                f"lop3.b32 %r{dst_reg}, %r{left_reg}, %r{right_reg}, %r{left_reg}, 12;"
+            )
         elif op == "not":
             return f"not.b32 %r{dst_reg}, %r{left_reg};"
         elif op == "const":

@@ -672,10 +672,12 @@ def rust_reduce_tick_ir(ir: TickIR) -> TickIR | None:
         "false",
         "no",
     }
+
     def _log(label: str, start: float) -> None:
         if timing_enabled:
             elapsed = time.perf_counter() - start
             print(f"[timing] rust_reduce:{label}: {elapsed:.3f}s", flush=True)
+
     with tempfile.TemporaryDirectory(prefix="stc_rust_reduce_") as td:
         td_path = Path(td)
         in_path = td_path / "in.bin"
@@ -741,6 +743,7 @@ def optimize_tick_ir(
     from stc.tech import get_technology
     from stc.mapping.ternary import TernaryMappingPass
     from stc.passmgr import PassContext
+
     timing_enabled = os.environ.get("STC_TIMING", "0").lower() not in {
         "0",
         "false",

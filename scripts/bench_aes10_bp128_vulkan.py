@@ -480,7 +480,9 @@ def _emit_spirv_aes10_bp128(
     sb.add(f"{sbox_ret_type} = OpTypeStruct {' '.join([uint_id] * 8)}")
     sbox_param_types = [uint_id] * 8
     sbox_func_type = sb.nid()
-    sb.add(f"{sbox_func_type} = OpTypeFunction {sbox_ret_type} {' '.join(sbox_param_types)}")
+    sb.add(
+        f"{sbox_func_type} = OpTypeFunction {sbox_ret_type} {' '.join(sbox_param_types)}"
+    )
     sb.add_blank()
 
     int_0 = sb.nid()
@@ -533,7 +535,9 @@ def _emit_spirv_aes10_bp128(
             val = not_id
         sbox_out_vals.append(val)
     ret_val = sb.nid()
-    sb.add(f"{ret_val} = OpCompositeConstruct {sbox_ret_type} {' '.join(sbox_out_vals)}")
+    sb.add(
+        f"{ret_val} = OpCompositeConstruct {sbox_ret_type} {' '.join(sbox_out_vals)}"
+    )
     sb.add(f"OpReturnValue {ret_val}")
     sb.add("OpFunctionEnd")
     sb.add_blank()
@@ -632,7 +636,10 @@ def _emit_spirv_aes10_bp128(
             a1 = [cur_state[_bit_index(i1, b)] for b in range(8)]
             a2 = [cur_state[_bit_index(i2, b)] for b in range(8)]
             a3 = [cur_state[_bit_index(i3, b)] for b in range(8)]
-            t = [emit_xor(emit_xor(a0[b], a1[b]), emit_xor(a2[b], a3[b])) for b in range(8)]
+            t = [
+                emit_xor(emit_xor(a0[b], a1[b]), emit_xor(a2[b], a3[b]))
+                for b in range(8)
+            ]
             x01 = [emit_xor(a0[b], a1[b]) for b in range(8)]
             x12 = [emit_xor(a1[b], a2[b]) for b in range(8)]
             x23 = [emit_xor(a2[b], a3[b]) for b in range(8)]
@@ -745,7 +752,9 @@ def main() -> int:
     ap.add_argument("--local-x", type=int, default=64)
     ap.add_argument("--local-y", type=int, default=1)
     ap.add_argument("--local-z", type=int, default=1)
-    ap.add_argument("--check", action="store_true", help="Validate output from one dispatch")
+    ap.add_argument(
+        "--check", action="store_true", help="Validate output from one dispatch"
+    )
     ap.add_argument("--out", default="out/aes10_bp128_vulkan")
     args = ap.parse_args()
 

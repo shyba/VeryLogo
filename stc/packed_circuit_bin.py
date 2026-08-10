@@ -178,7 +178,9 @@ def read_packed_circuit_bin(path: str | Path) -> PackedCircuitState:
     )
 
 
-def write_packed_circuit_bin_file(circuit: PackedCircuitState, path: str | Path) -> None:
+def write_packed_circuit_bin_file(
+    circuit: PackedCircuitState, path: str | Path
+) -> None:
     write_packed_circuit_bin(circuit, path)
 
 

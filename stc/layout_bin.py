@@ -71,7 +71,10 @@ def write_packed_layout_bin(layout: PackedLayout, path: str | Path) -> None:
     w.buf.extend(MAGIC_BIT)
     w.write_u8(VERSION_BIT)
     names = sorted(
-        set(layout.inputs) | set(layout.state) | set(layout.outputs) | set(layout.next_state)
+        set(layout.inputs)
+        | set(layout.state)
+        | set(layout.outputs)
+        | set(layout.next_state)
     )
     index = _write_string_table(w, names)
     w.write_u32(layout.input_bits)
@@ -129,7 +132,10 @@ def write_packed_word_layout_bin(layout: PackedWordLayout, path: str | Path) -> 
     mode = getattr(layout, "mode", "packed")
     w.write_u8(1 if mode == "bitslice" else 0)
     names = sorted(
-        set(layout.inputs) | set(layout.state) | set(layout.outputs) | set(layout.next_state)
+        set(layout.inputs)
+        | set(layout.state)
+        | set(layout.outputs)
+        | set(layout.next_state)
     )
     index = _write_string_table(w, names)
     w.write_u32(layout.input_words)

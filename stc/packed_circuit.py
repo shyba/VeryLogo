@@ -5,9 +5,7 @@ from typing import Any
 
 
 PackedGate = (
-    tuple[str, int, int]
-    | tuple[str, int, int, int]
-    | tuple[str, int, int, int, int]
+    tuple[str, int, int] | tuple[str, int, int, int] | tuple[str, int, int, int, int]
 )
 """
 Packed gate encoding (word-level).

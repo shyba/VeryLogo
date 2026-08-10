@@ -70,7 +70,10 @@ def slice_circuit_by_block_size(
             min_dep = min(dep)
             max_dep = max(dep)
             block_idx = min_dep // block_size
-            if min_dep < block_idx * block_size or max_dep >= (block_idx + 1) * block_size:
+            if (
+                min_dep < block_idx * block_size
+                or max_dep >= (block_idx + 1) * block_size
+            ):
                 return None
         outputs_by_block.setdefault(block_idx, []).append(out_idx)
 

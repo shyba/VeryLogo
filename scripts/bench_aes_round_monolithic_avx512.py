@@ -20,11 +20,12 @@ from stc.yosys_json import load_design
 from stc.bitslice import AES_SBOX_TABLE
 
 
-def _run_yosys_flatten(verilog: Path, extra_verilog: Path, top: str, out_json: Path) -> None:
+def _run_yosys_flatten(
+    verilog: Path, extra_verilog: Path, top: str, out_json: Path
+) -> None:
     script = (
         f"read_verilog -sv {verilog} {extra_verilog}; hierarchy -top {top}; "
-        "proc; flatten; opt; opt_clean; write_json "
-        + str(out_json)
+        "proc; flatten; opt; opt_clean; write_json " + str(out_json)
     )
     subprocess.run(["yosys", "-q", "-p", script], check=True)
 
@@ -146,7 +147,7 @@ endmodule
         )
         sink_expr = f"U[{st_off}]" if args.inplace else "S[0]"
 
-        bench_code = fr'''
+        bench_code = rf"""
 #include <stdio.h>
 #include <time.h>
 #include <stdint.h>
@@ -202,7 +203,7 @@ int main(int argc, char** argv) {{
     printf("  (Sink: %lu)\\n", sink);
     return 0;
 }}
-'''
+"""
 
         cdir = td / "c"
         cdir.mkdir()
@@ -239,10 +240,22 @@ int main(int argc, char** argv) {{
             def shift_rows(state):
                 b = state
                 return [
-                    b[0], b[5], b[10], b[15],
-                    b[4], b[9], b[14], b[3],
-                    b[8], b[13], b[2], b[7],
-                    b[12], b[1], b[6], b[11],
+                    b[0],
+                    b[5],
+                    b[10],
+                    b[15],
+                    b[4],
+                    b[9],
+                    b[14],
+                    b[3],
+                    b[8],
+                    b[13],
+                    b[2],
+                    b[7],
+                    b[12],
+                    b[1],
+                    b[6],
+                    b[11],
                 ]
 
             def xtime(x):
@@ -307,9 +320,7 @@ int main(int argc, char** argv) {{
                     v |= (out_bits[base + bit] & 1) << bit
                 out_bytes.append(v)
             if out_bytes != ref:
-                raise SystemExit(
-                    f"check failed: got {out_bytes} expected {ref}"
-                )
+                raise SystemExit(f"check failed: got {out_bytes} expected {ref}")
             print("Correctness check: OK")
         result = subprocess.run(
             [str(bench_bin), str(args.iters)],

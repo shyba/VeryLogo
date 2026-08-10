@@ -118,7 +118,9 @@ def _extract_context_bytes(
     lane_base = context_index * blocks_per_ctx
     out = bytearray()
     for lane in range(lane_base, lane_base + blocks_per_ctx):
-        out.extend(_decode_block_from_planes4(words, threads=threads, tid=tid, lane=lane))
+        out.extend(
+            _decode_block_from_planes4(words, threads=threads, tid=tid, lane=lane)
+        )
     return bytes(out[:context_bytes])
 
 
@@ -327,7 +329,9 @@ def _run_mode(
 
     lane_blocks = _build_lane_plaintexts()
     if spec.arg_kind == "masterkey":
-        key0, key_soa_bytes = _build_masterkey_soa(threads=threads, shared_key=shared_key)
+        key0, key_soa_bytes = _build_masterkey_soa(
+            threads=threads, shared_key=shared_key
+        )
         key_soa_arr = _as_u8_array(key_soa_bytes)
     else:
         key0 = bytes(range(16))
@@ -602,7 +606,9 @@ def main() -> int:
         )
         results.append(result)
 
-    print("| mode | regs | occ@best | best block | B eval/s | ns/eval | M ctx/s | ns/ctx | MiB/s | check |")
+    print(
+        "| mode | regs | occ@best | best block | B eval/s | ns/eval | M ctx/s | ns/ctx | MiB/s | check |"
+    )
     print("|---|---:|---:|---:|---:|---:|---:|---:|---:|---|")
     for row in results:
         print(

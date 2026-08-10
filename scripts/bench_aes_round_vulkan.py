@@ -402,9 +402,13 @@ endmodule
             raise SystemExit("Missing rk/out layout info for correctness check")
         rk_off = int(rk_info["lsb"])
         out_off = int(out_info["lsb"]) + 128
-        st_off = int(st_info["lsb"]) if (args.mode == "aes" and st_info is not None) else -1
+        st_off = (
+            int(st_info["lsb"]) if (args.mode == "aes" and st_info is not None) else -1
+        )
         state_out_off = int(out_info["lsb"]) if args.mode == "aes" else -1
-        check_flag = 1 if (args.iters == 1 and host_rounds == 1 and kernel_steps == 1) else 0
+        check_flag = (
+            1 if (args.iters == 1 and host_rounds == 1 and kernel_steps == 1) else 0
+        )
         if check_flag == 0:
             print(
                 "[aes_round] correctness check disabled (requires one host round and one kernel step)",
