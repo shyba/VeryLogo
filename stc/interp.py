@@ -178,21 +178,23 @@ def _canonicalize_nan_bits(width: int, bits: int) -> int:
         return _canonical_nan_bits(width)
     return int(bits)
 
-_INFER_TYPE_CACHE: dict[int, dict[int, Type]] = {}
+
+_INFER_TYPE_CACHE: dict[int, tuple[dict[str, Type], dict[int, tuple[Expr, Type]]]] = {}
 
 
 def infer_type(expr: Expr, ctx: dict[str, Type]) -> Type:
-    ctx_key = id(ctx)
-    cache = _INFER_TYPE_CACHE.get(ctx_key)
-    if cache is None:
-        cache = {}
-        _INFER_TYPE_CACHE[ctx_key] = cache
-    cache_key = id(expr)
-    cached = cache.get(cache_key)
-    if cached is not None:
-        return cached
+    ctx_id = id(ctx)
+    entry = _INFER_TYPE_CACHE.get(ctx_id)
+    if entry is None or entry[0] is not ctx:
+        entry = (ctx, {})
+        _INFER_TYPE_CACHE[ctx_id] = entry
+    cache = entry[1]
+    eid = id(expr)
+    cached = cache.get(eid)
+    if cached is not None and cached[0] is expr:
+        return cached[1]
     t = _infer_type_no_cache(expr, ctx)
-    cache[cache_key] = t
+    cache[eid] = (expr, t)
     return t
 
 

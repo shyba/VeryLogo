@@ -101,7 +101,7 @@ class RegPressureScheduler(BaseScheduler):
 
     @property
     def name(self) -> str:
-        return f"regpressure_{self._max_registers}_{self._mode}"
+        return f"regpressure_{self._max_registers}"
 
     def schedule(
         self,

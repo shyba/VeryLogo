@@ -96,6 +96,16 @@ def compute_depth(expr: Expr, depth_model: DepthModel) -> int:
     return depth_model.op_depth(op_name) + max(child_depths)
 
 
+def compute_ir_depth(ir: TickIR, depth_model: DepthModel) -> int:
+    """Compute maximum expression depth across all output and next-state exprs."""
+    max_depth = 0
+    for expr in list(ir.output_exprs.values()) + list(ir.next_state.values()):
+        d = compute_depth(expr, depth_model)
+        if d > max_depth:
+            max_depth = d
+    return max_depth
+
+
 def and_depth(expr: Expr) -> int:
     """Compute AND-depth (only AND gates count, for FHE/MPC)."""
     if isinstance(expr, And):

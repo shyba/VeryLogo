@@ -278,7 +278,8 @@ def write_tick_ir_bin(ir: TickIR, path: str) -> None:
 
     t0 = time.perf_counter()
     w = BinWriter()
-    w.write_u8(1)  # version
+    w.write_u8(2)  # version
+    w.write_bytes(ir.name.encode("utf-8"))
     _log("header", t0)
     t0 = time.perf_counter()
     nodes, id_map, strings = _assign_nodes_and_strings(ir)
@@ -321,14 +322,18 @@ def read_tick_ir_bin(path: str) -> TickIR:
             print(f"[timing] tick_ir_bin_read:{label}: {elapsed:.3f}s", flush=True)
 
     t0 = time.perf_counter()
-    data = open(path, "rb").read()
+    with open(path, "rb") as f:
+        data = f.read()
     _log("read_file", t0)
     r = BinReader(data)
     t0 = time.perf_counter()
     version = r.read_u8()
-    if version != 1:
+    if version != 2:
         raise ValueError("bad tick ir bin version")
     _log("version", t0)
+    t0 = time.perf_counter()
+    name = r.read_bytes().decode("utf-8")
+    _log("name", t0)
     t0 = time.perf_counter()
     strings = [r.read_bytes().decode("utf-8") for _ in range(r.read_u32())]
     _log("strings", t0)
@@ -344,7 +349,7 @@ def read_tick_ir_bin(path: str) -> TickIR:
     output_exprs = _read_expr_map(r, nodes, strings)
     _log("maps", t0)
     return TickIR(
-        name="tickir",
+        name=name,
         inputs=inputs,
         outputs=outputs,
         state=state,
@@ -547,6 +552,7 @@ def _write_node_payload(
         return
     if isinstance(node, SimdAddMasked) or isinstance(node, SimdSubMasked):
         w.write_u32(ref(node.mask))
+        w.write_u32(ref(node.passthru))
         w.write_u32(ref(node.a))
         w.write_u32(ref(node.b))
         return
@@ -735,9 +741,10 @@ def _read_nodes(r: BinReader, strings: list[str]) -> list[Expr]:
             nodes.append(Delay(x=x, ticks=ticks))
         elif cls in {SimdAddMasked, SimdSubMasked}:
             mask = nodes[r.read_u32()]
+            passthru = nodes[r.read_u32()]
             a = nodes[r.read_u32()]
             b = nodes[r.read_u32()]
-            nodes.append(cls(mask=mask, a=a, b=b))
+            nodes.append(cls(mask=mask, passthru=passthru, a=a, b=b))
         elif cls is SimdBlend:
             mask = nodes[r.read_u32()]
             a = nodes[r.read_u32()]

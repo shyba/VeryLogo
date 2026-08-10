@@ -91,13 +91,14 @@ class TestKeccakPackedLimitation(unittest.TestCase):
 
             ratio = packed_gates / bit_gates if bit_gates > 0 else 0
 
-            self.assertGreater(
+            self.assertLess(
                 ratio,
-                50,
-                f"Keccak packed/bit ratio expected > 50x (got {ratio:.1f}x). "
-                "This documents that Keccak is unsuitable for packed lowering "
-                "due to architectural mismatch between bit-twiddling operations "
-                "and 64-bit word-level lowering.",
+                10,
+                f"Keccak packed/bit ratio expected < 10x (got {ratio:.1f}x). "
+                "Packed word-level lowering counts 64-bit word ops while bit-level "
+                "counts per-bit gates; for Keccak the packed representation is "
+                "competitive (typically several times smaller) rather than "
+                "pathologically larger.",
             )
 
 

@@ -23,7 +23,7 @@ def _key_value(v: object) -> tuple[Any, ...]:
     if isinstance(v, (BoolType, BitVecType, SimdType)):
         return ("type",) + _key_type(v)
     if isinstance(v, EXPR_CLASSES):
-        return _key_expr(v)
+        return ("expr", id(v))
     if isinstance(v, (list, tuple)):
         return ("seq", tuple(_key_value(x) for x in v))
     raise TypeError("unsupported key value")
@@ -86,7 +86,7 @@ def _postorder_exprs(roots: list[Expr]) -> list[Expr]:
     return order
 
 
-def _key_value_fast(v: object, id_map: dict[int, int]) -> tuple[Any, ...]:
+def _key_value_fast(v: object, canon_no: dict[int, int]) -> tuple[Any, ...]:
     if v is None:
         return ("none",)
     if isinstance(v, (bool, int, str)):
@@ -94,24 +94,24 @@ def _key_value_fast(v: object, id_map: dict[int, int]) -> tuple[Any, ...]:
     if isinstance(v, (BoolType, BitVecType, SimdType)):
         return ("type",) + _key_type(v)
     if isinstance(v, EXPR_CLASSES):
-        return ("expr", id_map[id(v)])
+        return ("expr", canon_no[id(v)])
     if isinstance(v, (list, tuple)):
         out: list[Any] = []
         for item in v:
             if isinstance(item, EXPR_CLASSES):
-                out.append(("expr", id_map[id(item)]))
+                out.append(("expr", canon_no[id(item)]))
             else:
-                out.append(_key_value_fast(item, id_map))
+                out.append(_key_value_fast(item, canon_no))
         return ("seq", tuple(out))
     raise TypeError("unsupported key value")
 
 
-def _key_expr_fast(expr: Expr, id_map: dict[int, int]) -> tuple[Any, ...]:
+def _key_expr_fast(expr: Expr, canon_no: dict[int, int]) -> tuple[Any, ...]:
     if not is_dataclass(expr):
         raise TypeError("expr must be dataclass")
     items: list[tuple[Any, ...]] = []
     for f in _get_fields(expr.__class__):
-        items.append((f.name, _key_value_fast(getattr(expr, f.name), id_map)))
+        items.append((f.name, _key_value_fast(getattr(expr, f.name), canon_no)))
     return (expr.__class__.__name__, tuple(items))
 
 
@@ -136,33 +136,33 @@ def _rebuild_expr(expr: Expr, canon_map: dict[int, Expr]) -> Expr:
 
 def hashcons_tick_ir(ir: TickIR) -> TickIR:
     memo: dict[tuple[Any, ...], Expr] = {}
-    roots: list[Expr] = list(ir.reset_state.values()) + list(ir.next_state.values()) + list(
-        ir.output_exprs.values()
+    roots: list[Expr] = (
+        list(ir.reset_state.values())
+        + list(ir.next_state.values())
+        + list(ir.output_exprs.values())
     )
     order = _postorder_exprs(roots)
-    id_map = {id(expr): idx for idx, expr in enumerate(order)}
     canon_map: dict[int, Expr] = {}
+    canon_no: dict[int, int] = {}
+    next_no = 0
     for expr in order:
-        key = _key_expr_fast(expr, id_map)
+        key = _key_expr_fast(expr, canon_no)
         prev = memo.get(key)
         if prev is not None:
             canon = prev
         else:
             canon = _rebuild_expr(expr, canon_map)
             memo[key] = canon
+            canon_no[id(canon)] = next_no
+            next_no += 1
         canon_map[id(expr)] = canon
+        canon_no[id(expr)] = canon_no[id(canon)]
     return TickIR(
         name=ir.name,
         inputs=dict(ir.inputs),
         outputs=dict(ir.outputs),
         state=dict(ir.state),
-        reset_state={
-            k: canon_map[id(v)] for k, v in ir.reset_state.items()
-        },
-        next_state={
-            k: canon_map[id(v)] for k, v in ir.next_state.items()
-        },
-        output_exprs={
-            k: canon_map[id(v)] for k, v in ir.output_exprs.items()
-        },
+        reset_state={k: canon_map[id(v)] for k, v in ir.reset_state.items()},
+        next_state={k: canon_map[id(v)] for k, v in ir.next_state.items()},
+        output_exprs={k: canon_map[id(v)] for k, v in ir.output_exprs.items()},
     )

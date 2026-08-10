@@ -187,11 +187,10 @@ def lower_tick_ir_to_circuit_state(ir: TickIR) -> tuple[CircuitState, PackedLayo
         return bits[0]
 
     def lower_bits(e: Expr) -> list[int]:
-        key = repr(e)
+        key = id(e)
         cached = memo_bits.get(key)
         if cached is not None:
             return cached
-
         t = infer_type(e, ctx_types)
         w = _width(t)
 
