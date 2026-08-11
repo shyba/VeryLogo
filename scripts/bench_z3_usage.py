@@ -46,6 +46,17 @@ from stc.superopt import SuperoptStats, superopt_expr
 
 REPS = 5
 
+FROZEN_THRESHOLDS_MS = {
+    "equiv proof 128-bit (CPU budget 2000ms)": 50.0,
+    "equiv proof 512-bit (CPU budget 2000ms)": 50.0,
+    "superopt mux-min pattern n=5": 200.0,
+    "superopt no-equiv n=5": 200.0,
+    "synthesize bit1 @ 7 gates (60s budget)": 20000.0,
+    "constant_state counter bound=8 (2000ms)": 50.0,
+    "cli --infer-simd --autovec (no backend)": 1000.0,
+    "cli --infer-simd --autovec --superopt": 1000.0,
+}
+
 
 def median(xs):
     return statistics.median(xs)
@@ -150,8 +161,15 @@ def counter_ir():
 
 
 def main() -> int:
+    check = "--check" in sys.argv
     print(f"loadavg={load_avg():.1f}  z3={z3.get_version_string()}")
     print()
+
+    results: dict[str, float] = {}
+
+    def record(name, fn, reps):
+        med = bench(name, fn, reps=reps)
+        results[name] = med * 1000.0
 
     print("== 1. autovec equivalence proofs (CPU budget + retry) ==")
 
@@ -165,8 +183,8 @@ def main() -> int:
         cand = SimdAdd(a=Var("x"), b=Var("y"))
         return _equiv(spec, cand, types, timeout_ms=2000)
 
-    bench("equiv proof 128-bit (CPU budget 2000ms)", w1_128)
-    bench("equiv proof 512-bit (CPU budget 2000ms)", w1_512)
+    record("equiv proof 128-bit (CPU budget 2000ms)", w1_128, REPS)
+    record("equiv proof 512-bit (CPU budget 2000ms)", w1_512, REPS)
 
     print()
     print("== 2. superopt CEGIS ==")
@@ -191,8 +209,8 @@ def main() -> int:
             r = type(e).__name__
         return (r, st.candidates_checked, st.solver_checks)
 
-    bench("superopt mux-min pattern n=5", w2_pattern)
-    bench("superopt no-equiv n=5", w2_hard)
+    record("superopt mux-min pattern n=5", w2_pattern, REPS)
+    record("superopt no-equiv n=5", w2_hard, REPS)
 
     print()
     print("== 3. exact synthesis (marginal-size SAT) ==")
@@ -222,7 +240,7 @@ def main() -> int:
         r = _synthesize_single_fixed_size(bt, 4, 7, 60000)
         return "found" if r else "none"
 
-    bench("synthesize bit1 @ 7 gates (60s budget)", w3, reps=3)
+    record("synthesize bit1 @ 7 gates (60s budget)", w3, 3)
 
     print()
     print("== 4. bounded reachability / constant-state (200ms) ==")
@@ -232,7 +250,7 @@ def main() -> int:
         r = constant_state_within_bound(counter_ir(), 8, timeout_ms=2000)
         return sorted(r.items())
 
-    bench("constant_state counter bound=8 (2000ms)", w4)
+    record("constant_state counter bound=8 (2000ms)", w4, REPS)
 
     print()
     print("== 5. CLI pipeline with --autovec / --superopt ==")
@@ -257,11 +275,24 @@ def main() -> int:
     def w5_superopt():
         return run_cli(["--infer-simd", "--autovec", "--superopt"])
 
-    bench("cli --infer-simd --autovec (no backend)", w5_autovec, reps=3)
-    bench("cli --infer-simd --autovec --superopt", w5_superopt, reps=3)
+    record("cli --infer-simd --autovec (no backend)", w5_autovec, 3)
+    record("cli --infer-simd --autovec --superopt", w5_superopt, 3)
 
     print()
-    print("done")
+    print("== frozen baseline check ==")
+    failures = []
+    for name, med_ms in results.items():
+        threshold = FROZEN_THRESHOLDS_MS.get(name)
+        if threshold is None:
+            continue
+        ok = med_ms <= threshold
+        print(f"  {name:44s} {med_ms:9.1f}ms <= {threshold:8.0f}ms  {'OK' if ok else 'FAIL'}")
+        if not ok:
+            failures.append(name)
+    if failures:
+        print("FROZEN BASELINE FAILURES:", ", ".join(failures))
+        return 1
+    print("all frozen baselines OK")
     return 0
 
 
