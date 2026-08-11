@@ -158,12 +158,12 @@ def main() -> int:
     def w1_128():
         spec, types = make_spec(16, 8)
         cand = SimdAdd(a=Var("x"), b=Var("y"))
-        return _equiv(spec, cand, types, timeout_ms=200)
+        return _equiv(spec, cand, types, timeout_ms=2000)
 
     def w1_512():
         spec, types = make_spec(32, 16)
         cand = SimdAdd(a=Var("x"), b=Var("y"))
-        return _equiv(spec, cand, types, timeout_ms=200)
+        return _equiv(spec, cand, types, timeout_ms=2000)
 
     bench("equiv proof 128-bit (CPU budget 2000ms)", w1_128)
     bench("equiv proof 512-bit (CPU budget 2000ms)", w1_512)
@@ -174,7 +174,7 @@ def main() -> int:
     def w2_pattern():
         spec, types = make_mux_min_spec(8, 4)
         st = SuperoptStats()
-        r = superopt_expr(spec, types, max_nodes=5, timeout_ms=200, stats=st)
+        r = superopt_expr(spec, types, max_nodes=5, timeout_ms=2000, stats=st)
         return (
             type(r).__name__ if r else None,
             st.candidates_checked,
@@ -185,7 +185,7 @@ def main() -> int:
         spec, types = make_no_equiv_spec(8, 4)
         st = SuperoptStats()
         try:
-            superopt_expr(spec, types, max_nodes=5, timeout_ms=200, stats=st)
+            superopt_expr(spec, types, max_nodes=5, timeout_ms=2000, stats=st)
             r = "found"
         except Exception as e:
             r = type(e).__name__
@@ -229,7 +229,7 @@ def main() -> int:
     from stc.reachability import constant_state_within_bound
 
     def w4():
-        r = constant_state_within_bound(counter_ir(), 8, timeout_ms=200)
+        r = constant_state_within_bound(counter_ir(), 8, timeout_ms=2000)
         return sorted(r.items())
 
     bench("constant_state counter bound=8 (2000ms)", w4)
