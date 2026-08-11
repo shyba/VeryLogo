@@ -20,12 +20,11 @@ Opcodes counted (per 512-bit instruction):
 
 Results on this 9950X3D (Zen 5, see bench/zen5_mixed_vector_results.md):
   pure VPDPBUSD / VFMADD231PS: ~1.83 vec-ops/cyc each (near the 2/cyc peak)
-  alternating 4:4 mix: ~3.66 vec-ops/cyc = sum of the singles (full overlap)
-  grouped 4:4 or skewed 6:2/2:6: ~1.82 vec-ops/cyc (time-shared)
-  alternating VNNI + BF16: ~2.66 vec-ops/cyc (partial overlap)
-  => The overlap is driven by INSTRUCTION ALTERNATION, not the ratio.
-     True interleaving lets VNNI and FP32-FMA run concurrently on this
-     silicon; bursts of one type serialize at the single-stream rate.
+  VNNI + FMA mix (any pattern): ~1.82 vec-ops/cyc total = full contention
+  => VNNI and FP32-FMA share the P01/P01 execution resources exactly as
+     Agner's Zen 5 pipe model assigns them; they time-share, not overlap.
+  (An earlier "full overlap" reading was a 2x op-counting bug: the mix
+     kernels run 8 ops/iteration, not 16.)
 
 Usage:
   python scripts/bench_zen5_mixed_vector.py [--cpu N] [--iters N] [--reps N]
@@ -348,8 +347,8 @@ def main() -> int:
         "vnni8": 8,
         "fma32": 8,
         "bf16": 8,
-        "mix_vnni_fma": 16,
-        "mix_vnni_bf16": 16,
+        "mix_vnni_fma": 8,
+        "mix_vnni_bf16": 8,
     }
 
     with tempfile.TemporaryDirectory() as d:

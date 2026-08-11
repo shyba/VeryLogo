@@ -34,19 +34,26 @@ and perf instruction counts.
 vfmadd231ps rows sit at ~0.91 of Agner's 2.0 - the consistent small deficit
 of the accumulator kernels (loop-carried chains), not a pipe difference.
 
-## Documented conflicts (measured faster than Agner)
+## Resolved via chain sweep (scripts/bench_avx512_chains.py)
 
-Both are verified clean loops (8 ops/iteration confirmed by disassembly and
-perf instruction counts; no register-copy noise; core cycles from hardware
-counters). The discrepancies are flagged, not adjudicated:
+An 8-accumulator loop is a *lower bound*, not the execution rate: with N
+loop-carried chains of latency L the throughput cannot exceed N/L, so
+8 chains pin VDPBF16PS to 8/6 = 1.33 and (with latency 2) VPTERNLOGD to
+8/2 = 4.0 regardless of the true execution rate. Sweeping the chain count
+resolves the real rates (all measurements perf-counted, codegen verified):
 
-- **VDPBF16PS: 1.33 ops/cyc vs Agner RT=3 (0.333)** - exactly 4x. This SKU
-  retires 2.4G vdpbf16ps in 1.8G cycles (implied freq 5.3 GHz, sane).
-- **VPTERNLOGD: 2.53 ops/cyc vs Agner RT=1 (1.0)** - 2.5x. 8 independent
-  accumulator chains at imm 0x96 (xor3); loop verified in objdump.
+- **VDPBF16PS: 1.33 (8ch) -> 1.85 (12ch) -> 2.00 (16ch) = 2.0 ops/cyc.**
+  Agner's RT=3 (0.333) is falsified; the true rate is 6x faster. The
+  measured latency 6.02 matches Agner's 6.
+- **VPTERNLOGD: 2.53 (8ch) -> 3.38 (12ch), latency 2.01 (not 3).**
+  Agner's RT=1 is falsified; the true rate is at least ~3.4 ops/cyc
+  (the 12-chain ceiling is 12/2 = 6.0, so 3.38 is still a lower bound;
+  16+ chains are needed to test the 4/cyc P0123 hypothesis, but the
+  inline-asm operand limit blocks 16 single-block chains).
 
-A plausible explanation would need port-level counters or Agner's raw
-measurements; the benchmark records the silicon as measured.
+Both latency measurements (2.01 for VPTERNLOGD vs Agner's 3) are direct
+single-chain probes; the rest of the instruction set's latencies validate
+Agner within rounding.
 
 ## Provenance
 
