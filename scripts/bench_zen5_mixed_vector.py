@@ -329,9 +329,6 @@ int main(int argc, char **argv) {
 """
 
 
-
-
-
 def load_avg() -> float:
     try:
         return float(open("/proc/loadavg").read().split()[0])
@@ -347,7 +344,13 @@ def main() -> int:
     args = p.parse_args()
 
     names = ["vnni8", "fma32", "bf16", "mix_vnni_fma", "mix_vnni_bf16"]
-    vec_per_iter = {"vnni8": 8, "fma32": 8, "bf16": 8, "mix_vnni_fma": 16, "mix_vnni_bf16": 16}
+    vec_per_iter = {
+        "vnni8": 8,
+        "fma32": 8,
+        "bf16": 8,
+        "mix_vnni_fma": 16,
+        "mix_vnni_bf16": 16,
+    }
 
     with tempfile.TemporaryDirectory() as d:
         cfile = Path(d) / "bench_mixed.c"
@@ -425,7 +428,10 @@ def main() -> int:
 
     print()
     print("overlap model (vector ops/cycle; identical 8-op/iter structure):")
-    for a, b, m in [("vnni8", "fma32", "mix_vnni_fma"), ("vnni8", "bf16", "mix_vnni_bf16")]:
+    for a, b, m in [
+        ("vnni8", "fma32", "mix_vnni_fma"),
+        ("vnni8", "bf16", "mix_vnni_bf16"),
+    ]:
         shared = max(rows[a], rows[b])
         additive = rows[a] + rows[b]
         ratio = rows[m] / additive
@@ -435,11 +441,17 @@ def main() -> int:
             f"mix/additive={ratio:.3f}"
         )
         if rows[m] >= shared * 1.5:
-            print(f"    -> OVERLAP: mix exceeds the shared-pipe bound ({shared:.2f}) by {rows[m] / shared:.2f}x")
+            print(
+                f"    -> OVERLAP: mix exceeds the shared-pipe bound ({shared:.2f}) by {rows[m] / shared:.2f}x"
+            )
         elif rows[m] > shared * 1.05:
-            print(f"    -> partial overlap: mix at {rows[m] / shared:.2f}x of the shared-pipe bound")
+            print(
+                f"    -> partial overlap: mix at {rows[m] / shared:.2f}x of the shared-pipe bound"
+            )
         else:
-            print(f"    -> contention: mix at {rows[m] / shared:.2f}x of the shared-pipe bound")
+            print(
+                f"    -> contention: mix at {rows[m] / shared:.2f}x of the shared-pipe bound"
+            )
     return 0
 
 
