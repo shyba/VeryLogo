@@ -1,0 +1,28 @@
+instruction,operands,ops,latency,rt_cycles,pipes,notes,family
+PACKSS/USWB/DW,"v,v",1,2,0.5,P12,,pack
+PUNPCKH/LBW/WD/DQ,"v,v",1,2,0.25,P0123,,unpack
+PSHUFB,"v,v",1,2,0.5,P12,,shuffle
+VPBLENDM B/W/D/Q,"v{k},v,v",1,2,0.25,P0123,,blend
+VPERMD,"xy,xy,xy",1,4,0.5,P12,,permute
+VPERMD,"z,z,z",1,5,0.5,P12,,permute
+PADD/SUBB/W/D/Q,"v,v",1,2,0.25,P0123,,add/sub
+PADD/SUBB/W/D/Q,"v,m",1,,0.5,,,add/sub
+VPCMPEQ/GT B/W/D/Q,"k,x,x",1,3,0.5,P12,,cmp-int
+VPCMPEQ/GT B/W/D/Q,"k,y,y",1,4,0.5,P12,,cmp-int
+VPCMPEQ/GT B/W/D/Q,"k,z,z",1,6,0.5,P12,,cmp-int
+PMULLW PMULHW PMULHUW PMULLD PMULDQ PMULUDQ,"v,v,v",1,3,0.5,P01,,mul
+PMADDWD/UBSW,"v,v,v",1,3,0.5,P01,,madd
+PMIN/MAX SB/SW/ SD UB/UW/UD,"v,v,v",1,2,0.25,P0123,,minmax
+VPDPBUSD(S),"v,v,v",1,4,0.5,P01,avx512vnni,vnni8
+VPDPWSSD(S),"v,v,v",1,4,0.5,P01,avx512vnni,vnni16
+PAND PANDN POR PXOR,"v,v,v",1,2,0.25,P0123,,bitwise
+PSLL/RL W/D/Q PSRAW/D,"v,v,v",1,2,0.5,P01,,shift-var
+VPSLL/RL W/D/Q VPSRAW/D,"v,v,i",1,2,0.5,P23,,shift-imm
+VPTERNLOG D/Q,"v,v,v",1,3,1,P0123,,ternary
+ADDSS/D SUBSS/D,"v,v,v",1,2,0.5,P23,,add-fp
+(V)MULPS/PD,"v,v,v",1,3,0.5,P01,,mul-fp
+VCMPPS/PD,"k,x,x,i",1,3,0.5,P12,,cmp-fp
+VCMPPS/PD,"k,y,y,i",1,4,0.5,P12,,cmp-fp
+VCMPPS/PD,"k,z,z,i",1,6,0.5,P12,,cmp-fp
+VDPBF16PS,"v,v,v",1,6,3,P01,AVX512BF16,bf16
+VFMADD...PS/PD,"v,v,v",1,4,0.5,P01,FMA3,fma
