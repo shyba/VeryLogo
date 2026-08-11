@@ -40,6 +40,7 @@ from stc.tick_ir import (
 )
 from stc.tick_ir_validate import iter_vars, type_equal
 from stc.z3_encode import encode_expr
+from stc.z3_util import CpuBudget, check_with_budget, make_solver
 
 
 @dataclass(frozen=True)
@@ -68,45 +69,52 @@ def _equiv(
     spec_z = encode_expr(spec, types, z3_vars)
     cand_z = encode_expr(cand, types, z3_vars)
     diff = spec_z != cand_z
-    solver = z3.Solver()
-    solver.set(timeout=timeout_ms)
+    solver = make_solver()
     solver.add(diff)
-    return solver.check() == z3.unsat
+    return check_with_budget(solver, CpuBudget(timeout_ms)) == z3.unsat
 
 
-def _cex(
-    spec: Expr,
-    cand: Expr,
-    types: dict[str, Type],
-    used_vars: list[str],
-    *,
-    timeout_ms: int,
-) -> dict[str, int | bool] | None:
-    z3_vars: dict[str, z3.ExprRef] = {}
-    spec_z = encode_expr(spec, types, z3_vars)
-    cand_z = encode_expr(cand, types, z3_vars)
-    solver = z3.Solver()
-    solver.set(timeout=timeout_ms)
-    solver.add(spec_z != cand_z)
-    r = solver.check()
-    if r == z3.unsat:
-        return None
-    if r == z3.unknown:
-        raise SuperoptError("z3 returned unknown")
-    model = solver.model()
-    env: dict[str, int | bool] = {}
-    for name in used_vars:
-        z = z3_vars.get(name)
-        if z is None:
-            raise SuperoptError("model missing var")
-        v = model.eval(z, model_completion=True)
-        t = types[name]
-        if isinstance(t, BoolType):
-            env[name] = bool(z3.is_true(v))
-        else:
-            assert isinstance(v, z3.BitVecNumRef)
-            env[name] = int(v.as_long())
-    return env
+class _CegChecker:
+    def __init__(
+        self,
+        spec: Expr,
+        types: dict[str, Type],
+        used_vars: list[str],
+        timeout_ms: int,
+    ) -> None:
+        self._z3_vars: dict[str, z3.ExprRef] = {}
+        self._spec_z = encode_expr(spec, types, self._z3_vars)
+        self._solver = make_solver()
+        self._types = types
+        self._used_vars = used_vars
+        self._timeout_ms = timeout_ms
+
+    def cex(self, cand: Expr) -> dict[str, int | bool] | None:
+        cand_z = encode_expr(cand, self._types, self._z3_vars)
+        self._solver.push()
+        self._solver.add(self._spec_z != cand_z)
+        r = check_with_budget(self._solver, CpuBudget(self._timeout_ms))
+        if r == z3.unsat:
+            self._solver.pop()
+            return None
+        if r == z3.unknown:
+            self._solver.pop()
+            raise SuperoptError("z3 returned unknown")
+        model = self._solver.model()
+        env: dict[str, int | bool] = {}
+        for name in self._used_vars:
+            z = self._z3_vars.get(name)
+            if z is None:
+                raise SuperoptError("model missing var")
+            v = model.eval(z, model_completion=True)
+            t = self._types[name]
+            if isinstance(t, BoolType):
+                env[name] = bool(z3.is_true(v))
+            else:
+                assert isinstance(v, z3.BitVecNumRef)
+                env[name] = int(v.as_long())
+        self._solver.pop()
+        return env
 
 
 def superopt_expr(
@@ -201,6 +209,7 @@ def superopt_expr(
 
     best = None
     best_cost = None
+    checker = _CegChecker(spec, types, used_vars, timeout_ms)
 
     for cand in by_size.get((out_t, 1), []):
         if stats is not None:
@@ -218,7 +227,7 @@ def superopt_expr(
                 continue
         if stats is not None:
             stats.solver_checks += 1
-        ce = _cex(spec, cand, types, used_vars, timeout_ms=timeout_ms)
+        ce = checker.cex(cand)
         if ce is None:
             c = expr_cost(cand, types)
             if best is None or best_cost is None or c < best_cost:
@@ -368,7 +377,7 @@ def superopt_expr(
                     continue
             if stats is not None:
                 stats.solver_checks += 1
-            ce = _cex(spec, cand, types, used_vars, timeout_ms=timeout_ms)
+            ce = checker.cex(cand)
             if ce is None:
                 c = expr_cost(cand, types)
                 if best is None or best_cost is None or c < best_cost:

@@ -9,6 +9,7 @@ from stc.replace import replace_vars
 from stc.tick_ir import BitVecType, BoolType, SimdType, TickIR, Var
 from stc.tick_ir_validate import validate_tick_ir
 from stc.z3_encode import encode_expr
+from stc.z3_util import CpuBudget, check_with_budget, make_solver
 
 
 @dataclass(frozen=True)
@@ -40,8 +41,8 @@ def constant_state_within_bound(
         for name, ty in ir.inputs.items():
             types[f"{name}__in_{t}"] = ty
 
-    solver = z3.Solver()
-    solver.set(timeout=timeout_ms)
+    solver = make_solver()
+    budget = CpuBudget(timeout_ms)
 
     init = reset_state(ir)
     for name, ty in ir.state.items():
@@ -72,7 +73,7 @@ def constant_state_within_bound(
             st = encode_expr(Var(f"{name}__st_{t}"), types)
             diffs.append(st != s0)
         solver.add(z3.Or(diffs))
-        res = solver.check()
+        res = check_with_budget(solver, budget)
         solver.pop()
         if res == z3.unknown:
             continue

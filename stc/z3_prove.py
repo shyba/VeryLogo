@@ -6,6 +6,7 @@ import z3
 
 from stc.tick_ir import Expr, Type
 from stc.z3_encode import encode_expr
+from stc.z3_util import CpuBudget, check_with_budget, make_solver
 
 
 @dataclass(frozen=True)
@@ -22,10 +23,9 @@ def prove_equiv(
     z3_vars: dict[str, z3.ExprRef] = {}
     spec_z = encode_expr(spec, types, z3_vars)
     cand_z = encode_expr(cand, types, z3_vars)
-    solver = z3.Solver()
-    solver.set(timeout=timeout_ms)
+    solver = make_solver()
     solver.add(spec_z != cand_z)
-    r = solver.check()
+    r = check_with_budget(solver, CpuBudget(timeout_ms))
     if r == z3.unknown:
         raise Z3ProveError("z3 returned unknown")
     return r == z3.unsat
@@ -37,10 +37,9 @@ def prove_not_equiv(
     z3_vars: dict[str, z3.ExprRef] = {}
     spec_z = encode_expr(spec, types, z3_vars)
     cand_z = encode_expr(cand, types, z3_vars)
-    solver = z3.Solver()
-    solver.set(timeout=timeout_ms)
+    solver = make_solver()
     solver.add(spec_z != cand_z)
-    r = solver.check()
+    r = check_with_budget(solver, CpuBudget(timeout_ms))
     if r == z3.unknown:
         raise Z3ProveError("z3 returned unknown")
     return r == z3.sat

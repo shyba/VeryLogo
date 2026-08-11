@@ -57,10 +57,10 @@ def run_pipeline(
     bound: int = 8,
     infer_simd: bool = False,
     autovec: bool = False,
-    autovec_timeout_ms: int = 200,
+    autovec_timeout_ms: int = 2000,
     superopt: bool = False,
     superopt_max_nodes: int = 6,
-    superopt_timeout_ms: int = 200,
+    superopt_timeout_ms: int = 2000,
     no_backend: bool = False,
     use_synth: bool = False,
     use_abc_lut3: bool = False,
@@ -247,6 +247,7 @@ def run_pipeline(
                 ):
                     max_live_pressure = abc_lut3_aggressive_max_live_pressure
     if infer_simd or autovec:
+        autovec = autovec or infer_simd
         t0 = time.perf_counter()
         tick_ir = infer_simd_types(tick_ir)
         _log_timing("infer_simd_types", t0)
@@ -652,10 +653,10 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument("--bound", type=int, default=8)
     p.add_argument("--infer-simd", action="store_true", default=False)
     p.add_argument("--autovec", action="store_true", default=False)
-    p.add_argument("--autovec-timeout-ms", type=int, default=200)
+    p.add_argument("--autovec-timeout-ms", type=int, default=2000)
     p.add_argument("--superopt", action="store_true", default=False)
     p.add_argument("--superopt-max-nodes", type=int, default=6)
-    p.add_argument("--superopt-timeout-ms", type=int, default=200)
+    p.add_argument("--superopt-timeout-ms", type=int, default=2000)
     p.add_argument("--no-backend", action="store_true", default=False)
     p.add_argument(
         "--use-synth",

@@ -134,6 +134,7 @@ def _synthesize_single_fixed_size(
 
     solver = z3.Solver()
     solver.set("timeout", timeout_ms)
+    solver.set("random_seed", 0)
 
     OP_XOR = 0
     OP_AND = 1
@@ -150,6 +151,16 @@ def _synthesize_single_fixed_size(
         solver.add(gate_left[g] >= 0, gate_left[g] < num_avail)
         solver.add(gate_right[g] >= 0, gate_right[g] < num_avail)
         solver.add(gate_left[g] <= gate_right[g])
+
+    for g in range(num_gates - 1):
+        uses = [
+            z3.Or(
+                gate_left[j] == input_bits + g,
+                gate_right[j] == input_bits + g,
+            )
+            for j in range(g + 1, num_gates)
+        ]
+        solver.add(z3.Or(uses))
 
     def get_node_val(idx: int, g: int) -> z3.BitVecRef:
         if idx < input_bits:
@@ -178,15 +189,7 @@ def _synthesize_single_fixed_size(
             z3.Implies(gate_op[g] == OP_OR, gate_val[g] == (left_val | right_val))
         )
 
-    output_sel = z3.Int("out")
-    total_nodes = input_bits + num_gates
-    solver.add(output_sel >= 0, output_sel < total_nodes)
-
-    output_val = z3.BitVec("out_val", num_entries)
-    for i in range(total_nodes):
-        nv = get_node_val(i, num_gates)
-        solver.add(z3.Implies(output_sel == i, output_val == nv))
-
+    output_val = gate_val[num_gates - 1]
     target_bv = z3.BitVecVal(target, num_entries)
     inv_target = z3.BitVecVal(target ^ ((1 << num_entries) - 1), num_entries)
     invert_output = z3.Bool("inv")
@@ -227,7 +230,7 @@ def _synthesize_single_fixed_size(
             expr = Not(x=And(a=Not(x=node_exprs[li]), b=Not(x=node_exprs[ri])))
         node_exprs.append(expr)
 
-    out_idx = get_int(output_sel)
+    out_idx = input_bits + num_gates - 1
     result_expr = node_exprs[out_idx]
     if get_bool(invert_output):
         result_expr = Not(x=result_expr)

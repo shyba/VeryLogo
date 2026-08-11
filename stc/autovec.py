@@ -38,6 +38,7 @@ from stc.tick_ir import (
 )
 from stc.tick_ir_validate import type_equal
 from stc.z3_encode import encode_expr
+from stc.z3_util import CpuBudget, check_with_budget, make_solver
 
 
 @dataclass(frozen=True)
@@ -52,10 +53,9 @@ def _equiv(spec: Expr, cand: Expr, types: dict[str, Type], *, timeout_ms: int) -
     z3_vars: dict[str, z3.ExprRef] = {}
     spec_z = encode_expr(spec, types, z3_vars)
     cand_z = encode_expr(cand, types, z3_vars)
-    solver = z3.Solver()
-    solver.set(timeout=timeout_ms)
+    solver = make_solver()
     solver.add(spec_z != cand_z)
-    return solver.check() == z3.unsat
+    return check_with_budget(solver, CpuBudget(timeout_ms)) == z3.unsat
 
 
 def _bitcast_var(expr: Expr, total_width: int) -> str | None:
