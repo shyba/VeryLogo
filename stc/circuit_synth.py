@@ -39,11 +39,22 @@ def synthesize_single_output(
     input_bits: int = 8,
     max_gates: int = 50,
     timeout_ms: int = 30000,
+    require_minimal: bool = False,
 ) -> tuple[Expr, int] | None:
     """
     Synthesize a boolean circuit for a single-output function.
     Uses iterative deepening to find smallest circuit.
     """
+    if not require_minimal and input_bits <= 4:
+        result = synthesize_single_output_greedy(
+            table,
+            input_bits,
+            max_gates=max_gates,
+            timeout_ms=min(timeout_ms, 2500),
+        )
+        if result is not None:
+            return result
+
     start_cpu, start_wall = _synth_start()
     deadline = _synth_deadline(start_cpu, timeout_ms)
 

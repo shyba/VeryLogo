@@ -52,6 +52,7 @@ FROZEN_THRESHOLDS_MS = {
     "superopt mux-min pattern n=5": 200.0,
     "superopt no-equiv n=5": 200.0,
     "synthesize bit1 @ 7 gates (60s budget)": 20000.0,
+    "synthesize 4-bit sbox (multi_output)": 3000.0,
     "constant_state counter bound=8 (2000ms)": 50.0,
     "cli --infer-simd --autovec (no backend)": 1000.0,
     "cli --infer-simd --autovec --superopt": 1000.0,
@@ -234,13 +235,20 @@ def main() -> int:
     ]
     bt = [(sbox[i] >> 1) & 1 for i in range(16)]
 
-    from stc.circuit_synth import _synthesize_single_fixed_size
+    from stc.circuit_synth import _synthesize_single_fixed_size, synthesize_multi_output
 
     def w3():
         r = _synthesize_single_fixed_size(bt, 4, 7, 60000)
         return "found" if r else "none"
 
+    def w3_multi():
+        r = synthesize_multi_output(
+            sbox, input_bits=4, output_bits=4, max_gates=60, timeout_ms=60000
+        )
+        return f"gates={r.gate_count}" if r else "none"
+
     record("synthesize bit1 @ 7 gates (60s budget)", w3, 3)
+    record("synthesize 4-bit sbox (multi_output)", w3_multi, 3)
 
     print()
     print("== 4. bounded reachability / constant-state (200ms) ==")
@@ -286,7 +294,9 @@ def main() -> int:
         if threshold is None:
             continue
         ok = med_ms <= threshold
-        print(f"  {name:44s} {med_ms:9.1f}ms <= {threshold:8.0f}ms  {'OK' if ok else 'FAIL'}")
+        print(
+            f"  {name:44s} {med_ms:9.1f}ms <= {threshold:8.0f}ms  {'OK' if ok else 'FAIL'}"
+        )
         if not ok:
             failures.append(name)
     if failures:
