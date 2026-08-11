@@ -75,3 +75,16 @@ it performs two BF16 multiplies per lane.
 - Inline asm is required: gcc's register allocator inserts `vmovdqa32`
   copies around `vpdpbusd` at 16 accumulators, and 16-op loops cap at
   1.0 ops/cyc — both would corrupt a naive measurement.
+- **BF16 conflict with Agner's tables**: Agner's Zen 5 tables list VDPBF16PS
+  at 0.333/cyc (RT 3); this machine measures 1.332/cyc (verified: the loop
+  retires exactly 8 vdpbf16ps/iter on independent accumulators, and perf
+  counted 3.30G instructions for 300M iterations). The 4x gap is not
+  explained by TSC/frequency effects (core cycles from hardware counters)
+  or loop structure. The Agner entry could not be re-fetched to confirm
+  (download 404s), so this is flagged unresolved rather than adjudicated.
+- **Grouped-vs-alternating anomaly**: alternating VNNI+FMA reaches the
+  additive rate while any grouped arrangement sits at the shared rate.
+  With an out-of-order window large enough to see 8 independent ops, both
+  orders should converge if the pipe assignment were static; they do not.
+  This is not explained by Agner's published P01/P01 model either way and
+  would need port-level counters to resolve. Recorded as-is.
