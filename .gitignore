@@ -43,11 +43,3 @@ debug_*.c
 paper.pdf
 
 .claude/
-
-CLAUDE.md
-LOWERING_CHOICE_REPORT.md
-PR6_INTEGRATION_REPORT.md
-PR_SUMMARY.md
-QUICK_REFERENCE.md
-SCHEDULING_PLAN.md
-benchmark_ternary_mapping.md
