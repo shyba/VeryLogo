@@ -3,7 +3,7 @@
 
 Small core-AI component: INT8 (VPDPBUSD, 128 MACs/cyc peak) and BF16
 (VDPBF16PS, 64 MACs/cyc peak) dense matmuls. The micro-kernel structure is
-derived from stc/aggen.py (Agner Zen 5 AVX-512 table + locally measured
+derived from inference/aggen.py (Agner Zen 5 AVX-512 table + locally measured
 corrections):
 
 - FMA-class ops run 2/cyc on P01 (Agner rt 0.5; measured 2.0/cyc).
@@ -22,7 +22,7 @@ Layouts (K-major, N-interleaved):
   B[32c..32c+1][t*NR+j] (BF16). Lane j then accumulates output (i, t*NR+j).
 
 Usage:
-  python scripts/bench_gemm_avx512.py [--tiles 16x32] [--reps 7]
+  python inference/inference/results/bench_gemm_avx512.py [--tiles 16x32] [--reps 7]
 """
 
 from __future__ import annotations
@@ -33,8 +33,8 @@ import sys
 import tempfile
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from stc.aggen import get_machine  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # repo root
+from inference.aggen import get_machine  # noqa: E402
 
 
 def int8_kernel(mr: int, nr: int) -> str:
@@ -495,7 +495,7 @@ def main() -> int:
         )
         exe = Path(d) / "gemm"
         if not args.intrinsic:
-            from stc.gemm_asm import emit_gemm_kernel
+            from inference.gemm_asm import emit_gemm_kernel
 
             asm = "\n\n".join(
                 emit_gemm_kernel(fam, mr, nr)

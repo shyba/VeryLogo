@@ -20,11 +20,11 @@ re-packed per step (O(S*D), ~12% at B=8); real serving implementations
 pack incrementally.
 
 All GEMMs on the hand-scheduled bf16 8x32 kernel (stc.gemm_asm) with the
-SIMD fp32 helpers from scripts/llm_c_common.py. Reference: numpy fp32
+SIMD fp32 helpers from inference/llm_c_common.py. Reference: numpy fp32
 (OpenBLAS sgemm, 1 thread).
 
 Usage:
-  python scripts/bench_decode_avx512.py [--seq-init 128] [--steps 128]
+  python inference/inference/results/bench_decode_avx512.py [--seq-init 128] [--steps 128]
       [--batch 8] [--d 128] [--layers 6] [--hm 4]
 """
 
@@ -38,9 +38,9 @@ import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from stc.gemm_asm import emit_gemm_kernel  # noqa: E402
-from llm_c_common import COMMON_C  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # repo root
+from inference.gemm_asm import emit_gemm_kernel  # noqa: E402
+from inference.llm_c_common import COMMON_C  # noqa: E402
 
 
 def gen_c(s_init: int, steps: int, batch: int, d: int, hm: int, layers: int) -> str:

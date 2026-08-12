@@ -1,6 +1,6 @@
 # Zen 5 MLP Block + Full Decoder Layer (bf16), vs OpenBLAS/numpy
 
-`scripts/bench_decoder_avx512.py`, Ryzen 9 9950X3D, single thread. The
+`inference/inference/results/bench_decoder_avx512.py`, Ryzen 9 9950X3D, single thread. The
 components above GEMM, in order:
 
 1. **MLP block** (transformer FFN):

@@ -9,12 +9,12 @@ The complete decoder-only LLM forward (prefill / prompt processing):
   logits = x . E^T                   (tied embeddings, LM head over V)
 
 All GEMMs run on the hand-scheduled bf16 micro-kernel (stc.gemm_asm) with
-the SIMD fp32 layernorm/GELU/softmax from scripts/llm_c_common.py (shared
+the SIMD fp32 layernorm/GELU/softmax from inference/llm_c_common.py (shared
 with the decoder benchmark, property-tested). Reference: numpy fp32
 (OpenBLAS sgemm, 1 thread) on the same core.
 
 Usage:
-  python scripts/bench_llm_prefill_avx512.py [--seq 512] [--d 128]
+  python inference/inference/results/bench_llm_prefill_avx512.py [--seq 512] [--d 128]
       [--layers 6] [--vocab 16384]
 """
 
@@ -28,9 +28,9 @@ import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from stc.gemm_asm import emit_gemm_kernel  # noqa: E402
-from llm_c_common import COMMON_C  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # repo root
+from inference.gemm_asm import emit_gemm_kernel  # noqa: E402
+from inference.llm_c_common import COMMON_C  # noqa: E402
 
 
 def gen_c(seq: int, d: int, hm: int, layers: int, vocab: int) -> str:

@@ -1,6 +1,6 @@
 # Zen 5 Full Transformer Prefill (bf16), the layer above the decoder
 
-`scripts/bench_llm_prefill_avx512.py`, Ryzen 9 9950X3D, single thread. The
+`inference/inference/results/bench_llm_prefill_avx512.py`, Ryzen 9 9950X3D, single thread. The
 complete decoder-only LLM forward pass (prefill / prompt processing):
 
     x      = embed(ids)        gather rows of the VxD bf16 embedding table
@@ -11,7 +11,7 @@ complete decoder-only LLM forward pass (prefill / prompt processing):
 
 Every GEMM runs on the hand-scheduled bf16 micro-kernel (stc.gemm_asm);
 layernorm/GELU/softmax/exp are the SIMD fp32 helpers from
-scripts/llm_c_common.py (shared with the decoder benchmark,
+inference/llm_c_common.py (shared with the decoder benchmark,
 property-tested). Reference: numpy fp32 (OpenBLAS sgemm, 1 thread) on the
 same core, best-of-5 RDTSC with CPU pinning.
 
@@ -40,7 +40,7 @@ accumulation, exact per the reference within bf16 rounding.
 
 ## Build notes
 
-scripts/llm_c_common.py holds the shared C helpers; the prefill gen_c is
+inference/llm_c_common.py holds the shared C helpers; the prefill gen_c is
 self-contained and compiles the same asm kernel + helper set as the decoder
 benchmark. The same driver bugs guarded elsewhere (strided q/k/v split,
 transpose pack for QK^T, residual vs LN buffer, exp polynomial order,

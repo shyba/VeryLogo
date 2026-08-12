@@ -57,64 +57,40 @@ AVX2 = TargetModel(
 
 
 def _avx512_from_agner() -> TargetModel:
-    """AVX-512 scheduler target built from the Agner machine model.
+    """AVX-512 scheduler target with locally measured Zen 5 corrections.
 
-    Replaces the hardcoded ternary latency/throughput below: on this Zen 5
-    CPU the locally measured values (see stc/aggen.py) are latency 2 and
-    ~3.4 ops/cyc (Agner lists latency 3 / 1 per cyc). Falls back to the
-    legacy constants if the Agner CSV is unavailable.
+    The ternary values come from the Zen 5 instruction-table measurements
+    (see inference/aggen.py / inference/results/avx512_chains_results.md):
+    VPTERNLOG measures latency 2 and ~3.4 ops/cyc on this SKU (Agner lists
+    latency 3 / 1 per cyc). Inlined here so stc/ has no dependency on the
+    inference module; the machine model lives in inference/aggen.py.
     """
-    try:
-        from stc.aggen import get_machine
-
-        m = get_machine().to_target_model()
-        return TargetModel(
-            name="avx512",
-            registers=32,
-            issue_width=4,
-            latencies={
-                "xor": 1,
-                "and": 1,
-                "or": 1,
-                "not": 1,
-                "andn": 1,
-                "ternary": m.latency("ternary"),
-            },
-            throughput={
-                "xor": 2,
-                "and": 2,
-                "or": 2,
-                "not": 2,
-                "andn": 2,
-                "ternary": m.max_per_cycle("ternary"),
-            },
-        )
-    except Exception:  # pragma: no cover
-        return AVX512
-
-
-AVX512 = _avx512_from_agner()
+    return TargetModel(
+        name="avx512",
+        registers=32,
+        issue_width=4,
+        latencies={"xor": 1, "and": 1, "or": 1, "not": 1, "andn": 1, "ternary": 2},
+        throughput={"xor": 2, "and": 2, "or": 2, "not": 2, "andn": 2, "ternary": 3},
+    )
 
 
 def _zen5_avx512() -> TargetModel:
-    """Zen 5 AVX-512 target built from the Agner machine model.
+    """Zen 5 AVX-512 scheduler target (full Agner-derived, inline).
 
-    The latencies/throughputs come from bench/agner_zen5_avx512.csv plus the
-    locally measured corrections (see stc/aggen.py); this replaces the
-    hardcoded constants above for the CPU this project benchmarks on.
+    Mirrors inference/aggen.py's machine model for this CPU (measured
+    ternary latency 2 / ~3 ops/cyc, bitwise ops at the P0123 3/cyc rate),
+    inlined so stc/ stays independent of the inference module.
     """
-    try:
-        from stc.aggen import get_machine
+    return TargetModel(
+        name="zen5_avx512",
+        registers=32,
+        issue_width=4,
+        latencies={"xor": 1, "and": 1, "or": 1, "not": 1, "andn": 1, "ternary": 2},
+        throughput={"xor": 3, "and": 3, "or": 3, "not": 3, "andn": 3, "ternary": 3},
+    )
 
-        return get_machine().to_target_model()
-    except Exception:  # pragma: no cover - fallback if CSV/aggen unavailable
-        return TargetModel(
-            name="zen5_avx512",
-            registers=32,
-            issue_width=4,
-            latencies={"xor": 1, "and": 1, "or": 1, "not": 1, "andn": 1, "ternary": 2},
-            throughput={"xor": 3, "and": 3, "or": 3, "not": 3, "andn": 3, "ternary": 3},
-        )
+
+AVX512 = _avx512_from_agner()
 
 
 ZEN5_AVX512 = _zen5_avx512()

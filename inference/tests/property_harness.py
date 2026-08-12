@@ -13,7 +13,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-from stc.gemm_asm import emit_gemm_kernel
+from inference.gemm_asm import emit_gemm_kernel
 
 _CACHE: dict[str, str] = {}
 

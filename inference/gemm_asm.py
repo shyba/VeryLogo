@@ -29,7 +29,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from stc.aggen import get_machine
+from inference.aggen import get_machine
 
 # K elements consumed per 32-bit lane per instruction (i.e. per K-chunk).
 K_PER_CHUNK = {"vnni8": 4, "bf16": 2}
@@ -64,7 +64,7 @@ def emit_gemm_kernel(
          for vnni8 and K % 4 == 0 for bf16 with the default unroll=2).
     Bp:  K/K_PER_CHUNK chunks x NR dwords; dword j of chunk c holds the
          K-chunk's bytes/pair for output column j (see pack_b_* in
-         scripts/bench_gemm_avx512.py)
+         inference/inference/results/bench_gemm_avx512.py)
     C:   MR x N (tile rows at stride N)
 
     unroll: K-loop unroll factor (amortizes the pointer-advance and loop

@@ -14,7 +14,7 @@ OpenBLAS 0.3.34 (scipy-openblas, sgemm, single-threaded) - i.e. real tuned
 existing code running on the same CPU.
 
 Usage:
-  python scripts/bench_attention_avx512.py [--seq 2048] [--d 128]
+  python inference/inference/results/bench_attention_avx512.py [--seq 2048] [--d 128]
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ import tempfile
 import time
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
-from stc.gemm_asm import emit_gemm_kernel  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))  # repo root
+from inference.gemm_asm import emit_gemm_kernel  # noqa: E402
 
 
 def gen_c(seq: int, d: int) -> str:

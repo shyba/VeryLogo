@@ -1,20 +1,20 @@
 """Agner-driven x86 machine model for STC scheduling and codegen.
 
-Loads the Zen 5 AVX-512 instruction table (bench/agner_zen5_avx512.csv,
+Loads the Zen 5 AVX-512 instruction table (inference/results/agner_zen5_avx512.csv,
 extracted from Agner Fog's instruction_tables.ods, Zen 5 sheet) and applies
-the corrections measured locally (see bench/avx512_chains_results.md):
+the corrections measured locally (see inference/results/avx512_chains_results.md):
 
   measured                        Agner
   VDPBF16PS  rt 0.5 (2.0/cyc)     rt 3     (too pessimistic)
   VPTERNLOG  rt ~0.29 (>=3.4/cyc) rt 1     (too pessimistic)
   VPTERNLOG  latency 2            latency 3 (too pessimistic)
 
-The rest of the table validates within rounding (see bench/avx512_vs_agner_results.md:
+The rest of the table validates within rounding (see inference/results/avx512_vs_agner_results.md:
 29 of 31 rows within +-15%).
 
 This module is the single source of truth for instruction timing used by:
   - stc/sched/target.py (scheduler TargetModel for the AVX-512 backend),
-  - scripts/bench_gemm_avx512.py (GEMM micro-kernel design: tile selection,
+  - inference/inference/results/bench_gemm_avx512.py (GEMM micro-kernel design: tile selection,
     predicted cycles, peak MACs/cyc oracle).
 """
 
@@ -25,7 +25,7 @@ import math
 from dataclasses import dataclass
 from pathlib import Path
 
-AGNER_CSV = Path(__file__).resolve().parent.parent / "bench" / "agner_zen5_avx512.csv"
+AGNER_CSV = Path(__file__).resolve().parent / "results" / "agner_zen5_avx512.csv"
 
 # Locally measured corrections: family -> (rt_cycles, latency, note).
 # rt_cycles is reciprocal throughput; 0.5 == 2 instructions/cycle.
@@ -98,7 +98,7 @@ class Machine:
     ) -> float:
         """Predicted steady-state cycles for one K-chunk of an MR x NR tile.
 
-        Model (validated in bench/bench_gemm_avx512_results.md):
+        Model (validated in inference/results/bench_gemm_avx512_results.md):
         - the FMA-class op saturates its pipes (P01, 2/cyc),
         - broadcast/loads of A operands run on the load pipes (2/cyc),
         - both happen concurrently (independent pipes), so the chunk time is
@@ -118,16 +118,16 @@ class Machine:
     def best_tile(self, family: str) -> tuple[int, int]:
         """Largest MR x NR tile that stc.gemm_asm can actually emit.
 
-        Must agree with stc/gemm_asm.py's fixed-register allocation: at most
+        Must agree with inference/gemm_asm.py's fixed-register allocation: at most
         8 row pointers (MR <= 8), accumulators on zmm0-7+zmm16-23 (16 max),
         B vectors at zmm24+, and unroll*2 broadcast temps at zmm28+. Any
         tile whose FMA-ops/cycle does not exceed the op's pipe rate and
         whose loads fit the load pipes predicts the same peak MACs/cyc, so
         the optimal choice is the largest such tile: it amortizes the tile
         prologue/epilogue and loop overhead over the most work. Measured
-        best on Zen 5 is 8x32 (see bench/bench_gemm_avx512_results.md).
+        best on Zen 5 is 8x32 (see inference/results/bench_gemm_avx512_results.md).
         """
-        import stc.gemm_asm as ga
+        import inference.gemm_asm as ga
 
         unroll = 2
         k_per_chunk = ga.K_PER_CHUNK[family]
@@ -164,7 +164,7 @@ class Machine:
     ) -> float:
         """Predicted total core cycles for a full M x N x K GEMM.
 
-        Matches the micro-kernel structure in scripts/bench_gemm_avx512.py:
+        Matches the micro-kernel structure in inference/inference/results/bench_gemm_avx512.py:
         the K-loop runs one chunk per k_per_chunk elements (INT8: 4, BF16: 2,
         i.e. one per-lane group per instruction), and every chunk issues
         MR*NR/macs FMA-class ops plus MR A-broadcasts and NR/16 B loads.
@@ -177,29 +177,6 @@ class Machine:
         chunk_cyc = self.gemm_tile_cycles_per_chunk(family, mr, nr, k_per_chunk)
         tiles = (m / mr) * (n / nr)
         return tiles * chunks * chunk_cyc
-
-    # -- scheduler integration -------------------------------------------
-    def to_target_model(self):
-        """Build the stc.sched TargetModel for the AVX-512 backend."""
-        from stc.sched.target import TargetModel
-
-        latencies = {}
-        throughput = {}
-        for fam, spec in self.specs.items():
-            op = {"add/sub": "add", "bitwise": "xor", "ternary": "ternary"}.get(
-                fam, fam
-            )
-            latencies[op] = spec.latency
-            # scheduler throughput is int instructions/cycle; floor is fine
-            # for the logic-heavy AVX-512 backend workloads (>=2/cyc rows).
-            throughput[op] = max(1, int(spec.per_cycle))
-        return TargetModel(
-            name=self.name,
-            registers=self.registers,
-            issue_width=self.issue_width,
-            latencies=latencies,
-            throughput=throughput,
-        )
 
     def __repr__(self) -> str:
         return f"<Machine {self.name}: {len(self.specs)} instruction families>"

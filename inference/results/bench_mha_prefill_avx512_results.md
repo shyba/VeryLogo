@@ -1,6 +1,6 @@
 # Zen 5 Multi-Head GQA Prefill (bf16), the complete model at the real architecture
 
-`scripts/bench_mha_prefill_avx512.py`, Ryzen 9 9950X3D, single thread. The
+`inference/inference/results/bench_mha_prefill_avx512.py`, Ryzen 9 9950X3D, single thread. The
 full decoder-only LLM forward (prefill) with grouped-query multi-head
 attention - the single-head prefill from bench_llm_prefill_avx512.py with
 the attention replaced by the reviewed multi-head layer from

@@ -40,7 +40,7 @@ hypothesis 6.165.3 and pytest 9 were added to `.venv` for this.
 - Failure found: `stc.aggen.best_tile` returned (12, 32) for both vnni8 and
   bf16, but `stc.gemm_asm.emit_gemm_kernel` rejects MR > 8 ("8 GPR row
   pointers"). The model's tile suggestion was not emittable.
-- Fix: `stc/aggen.py` best_tile is now constrained to the generator's
+- Fix: `inference/aggen.py` best_tile is now constrained to the generator's
   fixed-register allocation (MR <= 8, <= 16 accumulators, B-vector + temp
   budget) and returns 8x32 - the measured best tile. The test is now a
   hard property and passes.
@@ -59,7 +59,7 @@ hypothesis 6.165.3 and pytest 9 were added to `.venv` for this.
   (shows XFAIL with the mismatch). Direct harness:
   `.venv/bin/python -c "import sys; sys.path.insert(0,'tests'); import test_properties_gemm as t; from property_harness import run_check; print(run_check(t._i8_bin(), [8,32,8,1,1]))"`
   -> prints `FAIL 0 0 ...` (the 8x16 kernel on the 32-packed buffer).
-- Impact: in `scripts/bench_gemm_avx512.py`, `pack_b_i8_%d`/`pack_b_bf16_%d`
+- Impact: in `inference/inference/results/bench_gemm_avx512.py`, `pack_b_i8_%d`/`pack_b_bf16_%d`
   in main pack `Bp8`/`Bp16` once with the LAST tile's NR, while each
   `run_i8_MRxNR` kernel reads its own NR layout. Running mixed-NR tiles
   (e.g. `--tiles 8x32,8x16`) therefore times garbage while verify passes

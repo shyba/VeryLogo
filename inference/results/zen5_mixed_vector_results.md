@@ -1,6 +1,6 @@
 # Zen 5 Mixed-Precision Vector Overlap Results
 
-Experiment: `scripts/bench_zen5_mixed_vector.py`.
+Experiment: `inference/inference/results/bench_zen5_mixed_vector.py`.
 
 Question: on the AMD Ryzen 9 9950X3D (Zen 5), do AVX-512 VNNI (INT8 dot)
 and FP32 FMA instructions execute concurrently on the FP/vector backend, or
@@ -39,8 +39,8 @@ unambiguous contention.
 
 The VDPBF16PS 8-chain number (1.332) sits exactly on the dependency ceiling
 8/6 = 1.333 (latency 6) and is therefore a *lower bound*, not the execution
-throughput; the chain sweep in `scripts/bench_avx512_chains.py` resolves the
-true rate to 2.0 ops/cyc (see `bench/avx512_vs_agner_results.md`).
+throughput; the chain sweep in `inference/inference/results/bench_avx512_chains.py` resolves the
+true rate to 2.0 ops/cyc (see `inference/results/avx512_vs_agner_results.md`).
 
 ## Practical consequence
 

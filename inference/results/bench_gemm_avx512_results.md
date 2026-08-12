@@ -1,13 +1,13 @@
 # Zen 5 GEMM Micro-Kernels (INT8 + BF16), designed from the Agner model
 
-`scripts/bench_gemm_avx512.py`, on the Ryzen 9 9950X3D (Zen 5). The kernels
+`inference/inference/results/bench_gemm_avx512.py`, on the Ryzen 9 9950X3D (Zen 5). The kernels
 are small core-AI components: dense INT8 (VPDPBUSD) and BF16 (VDPBF16PS)
 matmuls, correctness-checked against a naive reference and timed
 best-of-N RDTSC.
 
 ## Hand-scheduled assembly (no compiler in the hot loop)
 
-By default the micro-kernels are emitted by `stc/gemm_asm.py` as **GAS with a
+By default the micro-kernels are emitted by `inference/gemm_asm.py` as **GAS with a
 fixed register assignment and instruction order** (`python -m stc.gemm_asm
 --family vnni8 --tile 8x32`), assembled with `gcc -c` and linked into the
 driver. The compiler does not see the hot loop, so it cannot reorder, spill,
@@ -21,7 +21,7 @@ Verified by disassembly: per 2 K-chunks the 8x32 loop is exactly
 with zero vmovdqa spill traffic. `--intrinsic` re-enables the gcc path for
 comparison.
 
-## Design is derived from stc/aggen.py (Agner Zen 5 AVX-512 table + measured corrections)
+## Design is derived from inference/aggen.py (Agner Zen 5 AVX-512 table + measured corrections)
 
 - VNNI/BF16/FMA-class ops: 2/cyc on P01 (Agner rt 0.5; measured 2.0/cyc).
 - Latency 4 (VNNI) / 6 (BF16) => >= 8 / >= 12 independent accumulator
@@ -76,7 +76,7 @@ the tick count depends on the boost state); bf16 pred 32768 vs 28078.
 
 ## Pipeline integration
 
-- `stc/aggen.py`: machine description from `bench/agner_zen5_avx512.csv`
+- `inference/aggen.py`: machine description from `inference/results/agner_zen5_avx512.csv`
   with locally measured corrections (VDPBF16PS rt 3 -> 0.5, VPTERNLOG
   rt 1 -> ~0.29 and latency 3 -> 2). Provides the GEMM peak oracle, tile
   selection, and predicted cycles used above.

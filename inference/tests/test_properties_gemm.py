@@ -22,8 +22,8 @@ import pytest
 from hypothesis import given, settings
 from hypothesis import strategies as st
 
-from stc.aggen import get_machine
-from stc.gemm_asm import emit_gemm_kernel
+from inference.aggen import get_machine
+from inference.gemm_asm import emit_gemm_kernel
 
 from property_harness import (
     EDGE_BF16,
@@ -350,7 +350,7 @@ def test_best_tile_acceptable_to_generator(fam):
     """aggen.best_tile output must be emittable by stc.gemm_asm.
 
     Was a strict xfail (best_tile returned mr=12, which the fixed-register
-    generator rejects); stc/aggen.py now constrains best_tile to what the
+    generator rejects); inference/aggen.py now constrains best_tile to what the
     generator can emit, so this is a hard property.
     """
     mach = _machine()
