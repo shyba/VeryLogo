@@ -43,3 +43,4 @@ debug_*.c
 paper.pdf
 
 .claude/
+.pi/
