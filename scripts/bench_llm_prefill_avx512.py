@@ -116,7 +116,10 @@ int main(void) {
     for (int i = 0; i < S; i++)
         for (int j = 0; j < D; j++)
             xbuf[i*D + j] = (float)b2f(E[ids[i]*D + j]);
-    /* timing: full prefill (embed + L layers + final LN + head) best-of-N */
+    /* timing, best-of-N: embed gather runs before t0 (it is tiny and not part
+       of the GEMM-bound work); cyc_layers covers L layers + final LN + bf16
+       conversion; cyc_total additionally covers the LM-head GEMM. */
+    uint64_t embed_cyc = 0; (void)embed_cyc;
     uint64_t best_total = ~0ULL, best_layers = ~0ULL;
     for (int r = 0; r < 5; r++) {
         for (int i = 0; i < S; i++)
@@ -321,7 +324,7 @@ def main() -> int:
         f"ours:   {L} layers {layers_ms:6.2f} ms ({layers_ms/L:6.2f} ms/layer) + head "
         f"{total_ms-layers_ms:6.2f} ms = {total_ms:6.2f} ms total"
     )
-    print(f"        {S/total_ms*1e3:8.1f} tokens/s  ({S*total_ms/1e6:5.2f} ms/token)")
+    print(f"        {S/total_ms*1e3:8.1f} tokens/s  ({total_ms/S:5.3f} ms/token)")
     print(
         f"numpy:  {ref['t_layer']*1e3:6.2f} ms total  ({ref['t_layer']/(total_ms/1e3):5.1f}x slower)"
     )

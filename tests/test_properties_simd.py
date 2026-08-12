@@ -42,6 +42,7 @@ static inline float b2f(uint16_t b) {
 }
 static inline __m512 exp_ps(__m512 x) {
     __m512 t = _mm512_mul_ps(x, _mm512_set1_ps(1.4426950408889634f));
+    t = _mm512_min_ps(_mm512_max_ps(t, _mm512_set1_ps(-126.0f)), _mm512_set1_ps(127.0f));
     __m512i n = _mm512_cvtps_epi32(_mm512_roundscale_ps(t, 0));
     __m512 r = _mm512_sub_ps(t, _mm512_cvtepi32_ps(n));
     __m512 p = _mm512_set1_ps(0.001333355815f);

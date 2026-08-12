@@ -31,11 +31,12 @@ accumulation, exact per the reference within bf16 rounding.
 - The LM head (S x D x V, tied embedding) is ~45% of the prefill at
   S=512: for small D the vocabulary projection dominates - the standard
   reason LLMs use head-pooling / larger D for the embedding.
-- The decoder layer cost scales with S^2 through attention (0.32 ms at
-  S=256 -> 0.79 ms at S=512, ~4x for 4x the tokens); the per-layer MLP is
-  constant in S.
-- numpy's reference is 10x slower; its GELU/softmax elementwise ops
-  dominate its own time, not the GEMMs.
+- The decoder layer cost grows with S^2 through attention: 0.32 ms/layer at
+  S=256 -> 0.79 ms/layer at S=512 (2x the tokens, 2.5x the cost; attention
+  is S^2 while QKV/out-proj/MLP are linear in S, so the mix is sub-S^2).
+- numpy's reference is ~10x slower; the decoder benchmark measured numpy's
+  GELU/softmax elementwise ops as its dominant cost at S=2048 (inherited
+  claim; the prefill script does not time numpy per-op).
 
 ## Build notes
 
