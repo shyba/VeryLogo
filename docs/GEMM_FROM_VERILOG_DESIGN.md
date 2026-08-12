@@ -46,64 +46,93 @@ Verified facts:
 | GEMM-structure recognition (K-loop dot + packed layout + accumulator chains) | the bench generator | only pattern `mul+add -> madd` for i16 |
 | instruction-spec-driven schedule (>= 2*latency chains) | `inference/aggen.py` best_tile / predicted cycles | scheduler target has latencies but no GEMM scheduling |
 
-## 3. Design (minimal change set, in dependency order)
+## 3. Design (chosen: component-as-primitive, not recognize-passes)
 
-### Phase 0 — frontend: accept arithmetic cells
-- Add `$mul` (and `$macc`, `$div` for later) to `stc/subset.py`, and map them
-  in the yosys-JSON -> Tick-IR path to `Mul`/`Add` (the `$add` path already
-  proves the mechanism). Constrain by `mul_div_max_width` as today.
-- Result check: `a * b` survives to `reduced_tick_ir.bin` as `Mul`, and the
-  avx512 backend emits a correct (if gated) result.
+Rationale: per-kernel `xpto_recognize` passes do not scale - one pass per
+kernel class, fragile against code shape. Instead the GEMM is a
+**first-class component** (a primitive in the technology library), matched
+by interface identity, lowered per target, and instantiated by ordinary
+Verilog hierarchy. This maps onto existing machinery:
 
-### Phase 1 — IR: the two new ops + BF16 type
-- `SimdDotS8(a, b)` — i8 lanes, 4-element dot -> i32 lane (VPDPBUSD). Encode
-  the **verified operand semantics**: AT&T `vpdpbusd src1, src2` has src1
-  signed, src2 unsigned; for the uint8-A x int8-B GEMM, A must be the second
-  source (`inference/results/bench_gemm_avx512_results.md`).
-- `SimdFmaBF16(a, b, c)` — bf16 lane pairs -> fp32 accumulator (VDPBF16PS);
-  pair layout (2 bf16 per 32-bit lane) is part of the type contract.
-- `FloatType(subformat=bf16)` or a `Bf16Type(16, mantissa=8)`; `FloatConst`
-  rounding via the f2b nearest-even function already property-tested in
-  `inference/tests/`.
+- `stc/tech.py` already defines `Primitive` + `Technology` (per-target
+  primitives with cost/depth models and `is_legal(expr)`) - the primitive
+  library exists; a `Gemm` primitive slots in.
+- The frontend keeps module names in the cell graph; submodules are
+  currently rejected (`SubsetError: submodule instantiation not
+  supported`). A *known* module name (the GEMM component) is lifted to a
+  Tick-IR primitive instead of being flattened - the same mechanism, with
+  an allowlist of primitive module names instead of a rejection.
+- The instruction specs (`inference/aggen.py`) drive the primitive's
+  per-target lowering (op choice, tile, accumulator-chain count).
 
-### Phase 2 — recognition/lowering: the GEMM pass
-- A `gemm_recognize` pass on the Tick-IR: given the Verilog MAC structure
-  (a `$macc`-shaped expression or a K-iterated mul+add), rewrite the
-  dot-product chain into `SimdDotS8` / `SimdFmaBF16` + the fp32 accumulator
-  sum, and emit the N-interleaved packing (reuse `SimdUnpack/Pack` or a
-  packing loop) + the K-loop.
-- **Schedule from the specs**: the pass reads `inference/aggen.py`
-  (latency/rt/pipes) to choose the accumulator-chain count
-  (>= 2 * latency -> >= 8 chains for VNNI, >= 12 for BF16) and the tile, so
-  the emitted loop reaches the measured 2 ops/cyc. This is the existing
-  "compiler pipeline uses the instruction specs" integration, now for GEMM.
+### 3.1 The GEMM component (the interface contract)
 
-### Phase 3 — backends
-- `stc/backend_x86_avx512.py`: `SimdDotS8 -> _mm512_dpbusd_epi32(src, a, b)`
-  with the A-unsigned/B-signed operand order; `SimdFmaBF16` in
-  `stc/backend_x86_avx512_float.py` -> `_mm512_dpbf16_ps` + the f2b
-  conversion for bf16 constants (helpers exist in the inference stack and are
-  property-tested — copy them into the backend or a shared place).
+```systemverilog
+module gemm #(parameter M = 64, N = 64, K = 64, W = 8, ACCW = 32)
+  (input  wire [W-1:0] a[M*K],   // row-major A
+   input  wire [W-1:0] b[K*N],   // row-major B
+   output wire [ACCW-1:0] c[M*N]); // row-major C, zero-init accumulate
+endmodule
+```
 
-### Phase 4 — verification
-- Extend `stc/z3_encode.py` / `stc/bounded_equiv.py` to prove
-  `SimdDotS8(a, b) ==` the bit-level i8 dot (the z3 machinery already
-  encodes the other Simd ops), and `SimdFmaBF16` against an fp32-FMA
-  reference on bf16-rounded inputs with tolerance.
-- The acceptance property is the same as the inference tests: emitted kernel
-  == naive reference over random shapes (reuse the hypothesis harness ideas
-  from `inference/tests/`).
+The module declares the *interface*; the body is either a real RTL MAC loop
+(used for the bit-level reference / fallback target) or empty (opaque
+primitive). The frontend matches the module by **name + exact port
+signatures** (like a hardened macro in a standard-cell flow): a
+`gemm`-named module with these ports lifts to the Tick-IR `Gemm` primitive.
+Strict matching avoids accidental collisions; a Verilog attribute
+(`(* verylogo_primitive = "gemm" *)`) can make the intent explicit.
 
-## 4. The fp/bf16 part ("change a lot")
+### 3.2 The Tick-IR primitive + verification
 
-- **Entry point**: Verilog fp arithmetic needs float cells; the pragmatic
-  path is to enter fp at the Tick-IR level (FloatType already exists, the
-  float backend already emits `_mm512_fmadd_ps`), and add a `FloatType(
-  bf16)` variant + `SimdFmaBF16` + the f2b const rounding. A pure-Verilog
-  bf16 GEMM would additionally need Yosys float synthesis or a bf16 cell
-  library — flagged for a separate exploration.
-- The fp32 accumulate (SimdFAdd chain) exists; the bf16-specific parts are
-  the input rounding, the lane-pair layout, and the op semantics.
+- A `Gemm(a, b, M, N, K, W, ACCW)` expr (or a `GemmOp` with typed ports);
+  a BF16 variant uses a new `FloatType(subformat=bf16)` on the ports.
+- Verification is the pipeline's own machinery: `bounded_equiv` / `z3_encode`
+  prove the primitive equals the bit-level reference (the RTL MAC body) -
+  so "compiles naturally" is not a trust-me shortcut. The property tests
+  from `inference/tests/` are the reference harness.
+
+### 3.3 Per-target lowering (the Technology)
+
+- `Technology.primitives()` declares the GEMM primitive per target:
+  - Zen 5 AVX-512: lower to the VPDPBUSD/VDPBF16PS kernel, scheduling
+    accumulator chains and the 8x32 tile from `inference/aggen.py`
+    (>= 2*latency chains, packed K-major/N-interleaved layout). This is
+    the existing "pipeline uses the instruction specs" integration.
+  - PTX: dp4a / bf16.fma; generic: gates fallback (the RTL body).
+- `is_legal` gates the choice; `cost_model`/`depth_model` let the
+  optimizer schedule around it.
+
+### 3.4 "Compile naturally" vs "force with inline tick"
+
+- **Natural**: the frontend lifts a `gemm` module instance to the
+  primitive; higher-level Verilog (a decoder layer, the transformer)
+  instantiates the component like any module - no composition passes.
+- **Force with inline tick** (the bridge, also useful long-term): lower
+  the GEMM to a **tick-sequenced program** using the pipeline's existing
+  tick machinery (`TickIR` steps, `fuse_ticks`, the scheduled backend's
+  `circuit_steps_shared`): the K-loop is a K-tick accumulation, the
+  component's ports are the tick inputs/outputs. This is the right model
+  for variable-K decode and for getting the primitive working before the
+  frontend plumbing is complete.
+
+### 3.5 The next layer instantiates
+
+A decoder-layer Verilog module instantiates `gemm` instances (QKV, scores,
+PV, out-proj, MLP) plus elementwise primitives (layernorm/softmax as their
+own components or the existing SIMD fp ops). The frontend lifts the known
+instances, composes, and the backends emit per-target code. One primitive
+per kernel class; everything else is hierarchy.
+
+## 4. The fp/bf16 part ("change a lot", localized by the component model)
+
+- A `FloatType(subformat=bf16)` (16-bit, 8-bit mantissa) on the component's
+  data ports; `FloatConst` rounding via the property-tested f2b.
+- The fp32 accumulator (SimdFAdd / SimdFFma already emit).
+- The new primitive's per-target lowering (vdpbf16ps) - the fp support is
+  localized to the type + the primitive, not spread across recognition
+  passes. A pure-Verilog bf16 GEMM body for the fallback/verification path
+  needs Yosys float cells or a bf16 cell library (flagged).
 
 ## 5. Acceptance ("the same result")
 
