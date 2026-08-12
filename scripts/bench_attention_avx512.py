@@ -8,8 +8,8 @@ Attention is the core transformer component that is *larger than a GEMM*:
 
 Both GEMMs run on the hand-scheduled bf16 micro-kernel emitted by
 stc.gemm_asm (VPDPBF16PS, 2/cyc on P01 -> 64 MACs/cyc peak), with the same
-K-major/N-interleaved packing. Softmax is a scalar fp32 pass (memory-bound;
-<~5% at S=2048). The reference is numpy's matmul on this box, which is
+K-major/N-interleaved packing. Softmax is a SIMD fp32 pass (poly-exp; memory-bound,
+~10% of the head at S=2048). The reference is numpy's matmul on this box, which is
 OpenBLAS 0.3.34 (scipy-openblas, sgemm, single-threaded) - i.e. real tuned
 existing code running on the same CPU.
 
@@ -49,6 +49,16 @@ static inline float b2f(uint16_t b) {{
     uint32_t u = (uint32_t)b << 16; float f; memcpy(&f, &u, 4); return f;
 }}
 /* pack B (KxN, row-major) into the K-major/N-interleaved layout */
+static void pack_b_bf16_32_T(const uint16_t* B, int32_t* Bp, int K, int N) {{
+    for (int n0 = 0; n0 < N; n0 += 32)
+        for (int c = 0; c < K/2; c++)
+            for (int j = 0; j < 32; j++) {{
+                uint32_t v = 0; int col = n0 + j;
+                for (int t = 0; t < 2; t++)
+                    v |= (uint32_t)B[col*K + (2*c + t)] << (16*t);
+                Bp[((n0/32)*(K/2) + c)*32 + j] = v;
+            }}
+}}
 static void pack_b_bf16_32(const uint16_t* B, int32_t* Bp, int K, int N) {{
     for (int n0 = 0; n0 < N; n0 += 32)
         for (int c = 0; c < K/2; c++)
@@ -72,6 +82,7 @@ static void gemm(const uint16_t* A, const int32_t* Bp, float* C, int M, int N, i
  * 2^r by degree-5 minimax, scale by 2^n via exponent arithmetic. */
 static inline __m512 exp_ps(__m512 x) {{
     __m512 t = _mm512_mul_ps(x, _mm512_set1_ps(1.4426950408889634f));
+    t = _mm512_min_ps(_mm512_max_ps(t, _mm512_set1_ps(-126.0f)), _mm512_set1_ps(127.0f));
     __m512i n = _mm512_cvtps_epi32(_mm512_roundscale_ps(t, 0));
     __m512 r = _mm512_sub_ps(t, _mm512_cvtepi32_ps(n));
     __m512 p = _mm512_set1_ps(0.001333355815f);
@@ -118,7 +129,7 @@ int main(void) {{
         V[i] = f2b(q);
     }}
     /* GEMM1: scores = Q . Kt  (Kt is K^T: D x S) */
-    pack_b_bf16_32(Kt, Bp1, D, S);
+    pack_b_bf16_32_T(Kt, Bp1, D, S);  /* Kt stored SxD -> pack the transpose */
     uint64_t t0 = __rdtsc();
     gemm(Q, Bp1, scores, S, S, D);
     uint64_t t1 = __rdtsc();
@@ -193,16 +204,25 @@ def run_c(seq: int, d: int) -> dict:
     return res
 
 
-def numpy_reference(seq: int, d: int) -> dict:
+def _bf16_np(f):
+    """Round fp32 to bf16 exactly like the C's f2b (nearest-even at bit 16)."""
     import numpy as np
 
+    u = f.astype(np.float32).view(np.uint32)
+    r = (u + 0x7FFF + ((u >> 16) & 1)) >> 16
+    return (r.astype(np.uint32) << 16).view(np.float32)
+
+
+def numpy_reference(seq: int, d: int) -> dict:
     os.environ["OPENBLAS_NUM_THREADS"] = "1"
-    # identical data to the C kernel: q = ((i*7)%1001)/1000 - 0.5, etc.
+    import numpy as np
+
+    # identical data to the C kernel, bf16-quantized like the C's f2b inputs
     i = np.arange(seq * d)
     base = ((i * 7) % 1001) / 1000.0 - 0.5
-    q = (base * 0.1).astype(np.float32).reshape(seq, d)
-    kt = (base * 0.1).astype(np.float32).reshape(seq, d)
-    v = base.astype(np.float32).reshape(seq, d)
+    q = _bf16_np(base * 0.1).reshape(seq, d)
+    kt = _bf16_np(base * 0.1).reshape(seq, d)
+    v = _bf16_np(base).reshape(seq, d)
 
     t0 = time.perf_counter()
     scores = q @ kt.T

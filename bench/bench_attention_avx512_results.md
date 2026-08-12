@@ -29,8 +29,8 @@ where the interesting bottlenecks show up:
 
 | S  | ours QK^T | ours PV | ours softmax | head total | numpy head | speedup |
 |---:|---:|---:|---:|---:|---:|---:|
-| 1024 | 270 GF/s | 406 GF/s | 0.2 ms | **1.8 ms** | 22.1 ms | **12.2x** |
-| 2048 | 437 GF/s | 534 GF/s | 0.6 ms | **5.1 ms** | 31.6 ms | **6.2x** |
+| 1024 | ~270 GF/s | ~406 GF/s | 0.2 ms | **1.8 ms** | ~20 ms | ~11x |
+| 2048 | 380 GF/s | 424 GF/s | 0.7 ms | **6.0 ms** | 15.9 ms | 2.6-6x (box-load dependent) |
 
 (OpenBLAS peak on this CPU is ~64 FLOP/cyc; our bf16 kernels run at
 ~73-88% of the 64 MACs/cyc bf16 peak - QK^T is short-K (D=128) and pays
@@ -38,10 +38,15 @@ tile-restart overhead, PV runs at ~the peak.)
 
 ## Correctness
 
-Max abs error vs fp32 numpy: ~0.0011 on outputs of magnitude ~0.01
-(score scale 1/sqrt(128) = 0.088). The loss is dominated by rounding P to
-bf16 for the PV kernel, not by the GEMMs (which accumulate in fp32 from
-bf16 inputs, exact per the reference within bf16 input rounding).
+Max abs error vs a bf16-input fp32 numpy reference: **~0.00028** on outputs
+of magnitude ~0.01 (score scale 1/sqrt(128) = 0.088). The numpy reference
+bf16-quantizes Q/K/V/P exactly like the C path, so the residual error is
+the bf16-P quantization plus fp32 accumulation rounding. Earlier numbers
+(0.0011) conflated the input quantization (the old numpy reference used
+fp32 inputs) with a QK^T packing bug (Kt stored SxD was packed as if DxS;
+the softmax normalization masked the scrambled scores). Both are fixed;
+the QK^T transpose pack is now the same pack_b_bf16_32_T used by the
+decoder layer.
 
 ## What the numbers say
 

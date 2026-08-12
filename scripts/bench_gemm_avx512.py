@@ -475,6 +475,12 @@ def main() -> int:
         "MACs/cyc",
     )
     S = args.size
+    if len({nr for _, nr in tiles}) > 1:
+        raise SystemExit(
+            "mixed-NR tiles in one run are invalid: Bp is packed once with a "
+            "single NR layout but each kernel reads its own (see "
+            "tests/PROPERTY_TEST_NOTES.md). Run one NR per invocation."
+        )
     pred = {}
     for mr, nr in tiles:
         pred[(mr, nr)] = (

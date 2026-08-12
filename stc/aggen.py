@@ -116,24 +116,30 @@ class Machine:
         return max(fma_cycles, load_cycles)
 
     def best_tile(self, family: str) -> tuple[int, int]:
-        """Largest MR x NR tile that fits the register budget (32 zmm).
+        """Largest MR x NR tile that stc.gemm_asm can actually emit.
 
-        Registers: MR accumulators + NR/16 B vectors + ~2 temps + loop state.
-        Any tile whose FMA-ops/cycle does not exceed the op's pipe rate and
+        Must agree with stc/gemm_asm.py's fixed-register allocation: at most
+        8 row pointers (MR <= 8), accumulators on zmm0-7+zmm16-23 (16 max),
+        B vectors at zmm24+, and unroll*2 broadcast temps at zmm28+. Any
+        tile whose FMA-ops/cycle does not exceed the op's pipe rate and
         whose loads fit the load pipes predicts the same peak MACs/cyc, so
         the optimal choice is the largest such tile: it amortizes the tile
-        prologue/epilogue and loop overhead over the most work.
+        prologue/epilogue and loop overhead over the most work. Measured
+        best on Zen 5 is 8x32 (see bench/bench_gemm_avx512_results.md).
         """
-        budget = 28  # leave headroom for addresses/loop state
-        k_per_chunk = {  # k elements consumed per instruction lane chunk
-            "vnni8": 4,
-            "bf16": 2,
-        }.get(family, 4)
+        import stc.gemm_asm as ga
+
+        unroll = 2
+        k_per_chunk = ga.K_PER_CHUNK[family]
         best: tuple[int, int] = (0, 0)
         best_area = 0
         for nr in (16, 32, 64):
-            for mr in range(4, 34):
-                if mr * (nr // 16) + nr // 16 + 2 > budget:
+            for mr in range(4, 9):  # 8 GPR row pointers in the emitted kernel
+                nb = nr // 16
+                nacc = mr * nb
+                if nacc > 16:  # zmm0-7 + zmm16-23
+                    continue
+                if 24 + unroll * nb + unroll > 32:  # B vecs + broadcast temps
                     continue
                 macs_per_chunk = mr * nr * k_per_chunk
                 fma_ops = macs_per_chunk / self.specs[family].macs

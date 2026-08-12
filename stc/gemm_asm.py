@@ -58,7 +58,10 @@ def emit_gemm_kernel(
     C signature:
       void NAME(const uint8_t* A, const int32_t* Bp, <int32_t|float>* C,
                 int K, int N)
-    A:   MR rows x K (K multiple of K_PER_CHUNK)
+    A:   MR rows x K; K must be a multiple of K_PER_CHUNK * unroll
+         (the loop exits on pointer equality after advancing unroll chunks
+         per iteration: K % (K_PER_CHUNK * unroll) == 0, i.e. K % 8 == 0
+         for vnni8 and K % 4 == 0 for bf16 with the default unroll=2).
     Bp:  K/K_PER_CHUNK chunks x NR dwords; dword j of chunk c holds the
          K-chunk's bytes/pair for output column j (see pack_b_* in
          scripts/bench_gemm_avx512.py)

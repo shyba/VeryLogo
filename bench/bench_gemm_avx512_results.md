@@ -61,9 +61,12 @@ timebase-independent.
 | 128x128x128 | 16x32 | 99.8 | 62.2% | 69.9 | 86.9% (spills) |
 
 The hand-scheduled asm kernels measure at parity with the gcc -O3
-intrinsics (85-87% i8, 93% bf16 at 128^3; both are at the P01 dpbusd bound
-once the TSC/core ratio is accounted for), with the asm version immune to
-codegen variation. The residual gap is tile prologue/epilogue (zero 16 accs,
+intrinsics (85-87% i8, 93% bf16 at 128^3 relative to the same-run
+standalone reference; the standalone 16-chain loop hits the P01 dpbusd
+bound, the GEMMs reach 85-93% of it), with the asm version immune to
+codegen variation. Tiles with different NR must be benchmarked in separate
+invocations: Bp is packed with a single NR layout but each kernel reads its
+own, so a mixed-NR run times garbage (caught by a property test). The residual gap is tile prologue/epilogue (zero 16 accs,
 16 stores, addressing) and loop control, which shrink as the GEMM grows
 (64^3 -> 78%, 128^3 -> 85%).
 
