@@ -14,7 +14,7 @@ The rest of the table validates within rounding (see inference/results/avx512_vs
 
 This module is the single source of truth for instruction timing used by:
   - stc/sched/target.py (scheduler TargetModel for the AVX-512 backend),
-  - inference/inference/results/bench_gemm_avx512.py (GEMM micro-kernel design: tile selection,
+  - inference/bench/bench_gemm_avx512.py (GEMM micro-kernel design: tile selection,
     predicted cycles, peak MACs/cyc oracle).
 """
 
@@ -164,7 +164,7 @@ class Machine:
     ) -> float:
         """Predicted total core cycles for a full M x N x K GEMM.
 
-        Matches the micro-kernel structure in inference/inference/results/bench_gemm_avx512.py:
+        Matches the micro-kernel structure in inference/bench/bench_gemm_avx512.py:
         the K-loop runs one chunk per k_per_chunk elements (INT8: 4, BF16: 2,
         i.e. one per-lane group per instruction), and every chunk issues
         MR*NR/macs FMA-class ops plus MR A-broadcasts and NR/16 B loads.

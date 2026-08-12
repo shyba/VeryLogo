@@ -1,6 +1,6 @@
 # Zen 5 KV-Cache Decode (bf16), the layer after prefill
 
-`inference/inference/results/bench_decode_avx512.py`, Ryzen 9 9950X3D, single thread. The
+`inference/bench/bench_decode_avx512.py`, Ryzen 9 9950X3D, single thread. The
 token-generation loop: at each step B token embeddings are projected to
 Q/K/V, K/V are appended to the per-layer caches, and the next hidden state
 is computed against the growing cache (QK^T over the cache, softmax, PV,

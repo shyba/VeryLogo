@@ -13,13 +13,13 @@ bench_llm_prefill_avx512.py:
     x      = layernorm(x)
     logits = x . E^T                     (LM head, tied embeddings)
 
-The layer is the reviewed layer_mha from inference/inference/results/bench_mha_avx512.py
+The layer is the reviewed layer_mha from inference/bench/bench_mha_avx512.py
 (multi-head structural overhead measured there); the head is the tied
 embedding transpose from the prefill. Reference: numpy fp32 (OpenBLAS,
 1 thread).
 
 Usage:
-  python inference/inference/results/bench_mha_prefill_avx512.py [--seq 512] [--d 128]
+  python inference/bench/bench_mha_prefill_avx512.py [--seq 512] [--d 128]
       [--heads 4] [--kv-heads 2] [--hm 4] [--layers 6] [--vocab 16384]
 """
 

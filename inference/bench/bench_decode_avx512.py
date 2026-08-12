@@ -24,7 +24,7 @@ SIMD fp32 helpers from inference/llm_c_common.py. Reference: numpy fp32
 (OpenBLAS sgemm, 1 thread).
 
 Usage:
-  python inference/inference/results/bench_decode_avx512.py [--seq-init 128] [--steps 128]
+  python inference/bench/bench_decode_avx512.py [--seq-init 128] [--steps 128]
       [--batch 8] [--d 128] [--layers 6] [--hm 4]
 """
 

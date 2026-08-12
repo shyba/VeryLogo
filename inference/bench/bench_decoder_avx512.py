@@ -20,7 +20,7 @@ Everything runs on the hand-scheduled bf16 micro-kernel from stc.gemm_asm
 numpy fp32 implementation (OpenBLAS sgemm for the GEMMs) on the same core.
 
 Usage:
-  python inference/inference/results/bench_decoder_avx512.py [--seq 2048] [--d 128] [--hm 4]
+  python inference/bench/bench_decoder_avx512.py [--seq 2048] [--d 128] [--hm 4]
 """
 
 from __future__ import annotations

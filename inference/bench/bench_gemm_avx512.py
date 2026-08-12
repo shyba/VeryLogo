@@ -22,7 +22,7 @@ Layouts (K-major, N-interleaved):
   B[32c..32c+1][t*NR+j] (BF16). Lane j then accumulates output (i, t*NR+j).
 
 Usage:
-  python inference/inference/results/bench_gemm_avx512.py [--tiles 16x32] [--reps 7]
+  python inference/bench/bench_gemm_avx512.py [--tiles 16x32] [--reps 7]
 """
 
 from __future__ import annotations

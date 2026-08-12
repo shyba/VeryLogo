@@ -59,9 +59,11 @@ Verilog hierarchy. This maps onto existing machinery:
   library exists; a `Gemm` primitive slots in.
 - The frontend keeps module names in the cell graph; submodules are
   currently rejected (`SubsetError: submodule instantiation not
-  supported`). A *known* module name (the GEMM component) is lifted to a
-  Tick-IR primitive instead of being flattened - the same mechanism, with
-  an allowlist of primitive module names instead of a rejection.
+  supported`, subset.py:94-98). A *known* module name (the GEMM
+  component) is lifted to a Tick-IR primitive instead of being flattened:
+  the allowlist change is small, but the lift itself is new code in
+  stc/extract.py (`expr_for_cell_output`, `width_of_expr`), a new expr
+  class + registries in stc/tick_ir.py, and ~10 downstream consumers.
 - The instruction specs (`inference/aggen.py`) drive the primitive's
   per-target lowering (op choice, tile, accumulator-chain count).
 
@@ -140,7 +142,9 @@ Strict matching avoids accidental collisions; a Verilog attribute
 
 ### 3.3 Per-target lowering (the Technology)
 
-- `Technology.primitives()` declares the GEMM primitive per target:
+- `Technology.primitives()` (NOTE: `is_legal` is never called and no
+  lowering dispatcher exists yet - the per-target consumer is net-new)
+  would declare the GEMM primitive per target:
   - Zen 5 AVX-512: lower to the VPDPBUSD/VDPBF16PS kernel, scheduling
     accumulator chains and the 8x32 tile from `inference/aggen.py`
     (>= 2*latency chains, packed K-major/N-interleaved layout). This is

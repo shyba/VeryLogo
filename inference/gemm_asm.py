@@ -20,8 +20,8 @@ local measurements):
   the per-chunk issue rate is 2 MACs per accumulator-vector per P01 pipe.
 
 Usage:
-  python -m stc.gemm_asm --family vnni8 --tile 8x32   # print GAS to stdout
-  python -m stc.gemm_asm --family bf16 --tile 8x32 -o gemm.S
+  python -m inference.gemm_asm --family vnni8 --tile 8x32   # print GAS to stdout
+  python -m inference.gemm_asm --family bf16 --tile 8x32 -o gemm.S
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ def emit_gemm_kernel(
          for vnni8 and K % 4 == 0 for bf16 with the default unroll=2).
     Bp:  K/K_PER_CHUNK chunks x NR dwords; dword j of chunk c holds the
          K-chunk's bytes/pair for output column j (see pack_b_* in
-         inference/inference/results/bench_gemm_avx512.py)
+         inference/bench/bench_gemm_avx512.py)
     C:   MR x N (tile rows at stride N)
 
     unroll: K-loop unroll factor (amortizes the pointer-advance and loop

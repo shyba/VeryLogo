@@ -1,6 +1,6 @@
 # Zen 5 Full Transformer Prefill (bf16), the layer above the decoder
 
-`inference/inference/results/bench_llm_prefill_avx512.py`, Ryzen 9 9950X3D, single thread. The
+`inference/bench/bench_llm_prefill_avx512.py`, Ryzen 9 9950X3D, single thread. The
 complete decoder-only LLM forward pass (prefill / prompt processing):
 
     x      = embed(ids)        gather rows of the VxD bf16 embedding table

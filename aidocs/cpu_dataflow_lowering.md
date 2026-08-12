@@ -154,11 +154,12 @@ Layout contract (shared by every driver):
 - The GEMM driver: `for n0 in steps of 32: for m0 in steps of 8:
   gemm_bf16_8x32_asm(A+m0*K, Bp+(n0/32)*(K/2)*32, C+m0*N+n0, K, N)` — note
   the **C row stride is N** (the GEMM's N), which caused a head-scatter
-  bug (§6.5). Constraints: M%8==0, N%32==0, K%2==0; the K-loop also
+  bug (§5 item 11). Constraints: M%8==0, N%32==0, K%2==0; the K-loop also
   requires **K % (kpc × unroll) == 0** (8 for vnni8, 4 for bf16).
 
-Measured kernel rates (single thread): ~85–95% of the instruction ceiling
-at 128³–1024³; best tile 8×32 (16 accs + B vecs + temps ≤ 32 zmm; 16×32
+Measured kernel rates (single thread): 85.2% i8 / 93.0% bf16 at 128³
+and 79.2%/87.3% at 64³ of the instruction ceiling (128³ and 64³ are the
+measured sizes in inference/results/bench_gemm_avx512_results.md); best tile 8×32 (16 accs + B vecs + temps ≤ 32 zmm; 16×32
 spills and loses ~20% — `best_tile` in aggen enforces the register
 budget and MR≤8).
 
@@ -220,7 +221,7 @@ multi-NR Bp packing defect.
 4. **QK^T needs pack_T**: K is stored S×D; packing it as if D×S
    scrambles the scores. The softmax normalization masks the damage, so
    the correctness check still "passes" — the error attribution was
-   wrong until fixed (attention err 0.00103 → 0.00028 after the fix + an
+   wrong until fixed (attention err ~0.0011 → 0.00028 after the fix + an
    honest bf16-quantized numpy reference).
 5. **Residual vs LN buffer**: the residual `x += o` must use the *pre-LN*
    input; LN mutates its buffer in place.
@@ -320,26 +321,36 @@ endmodule
 Body = either a real RTL MAC loop (bit-level reference / fallback target)
 or empty (opaque primitive). Frontend matches by name + exact ports; a
 Verilog attribute (`(* verylogo_primitive = "gemm" *)`) can make intent
-explicit. A BF16 variant uses `FloatType(subformat=bf16)` on the ports.
+explicit. A BF16 variant needs a NEW element type: `FloatType` only supports
+widths 32/64 with no subformat knob (tick_ir.py:40-52).
 
 ### 6.5 Mechanism (mapped onto existing pipeline)
 
 1. **Frontend**: allow known primitive module names in `stc/subset.py`
-   (currently ALL submodules are rejected); lift a `gemm` instance to a
-   Tick-IR `Gemm(a, b, M, N, K, W, ACCW)` expr instead of flattening.
+   (currently ALL submodules are rejected at subset.py:94-98); the lift
+   itself is new code in `stc/extract.py` (the `expr_for_cell_output`
+   dispatch and `width_of_expr`), a new expr class + its registries in
+   `stc/tick_ir.py`, and ~10 downstream consumer cases - name the exact
+   hooks, don't expect a one-line change.
 2. **IR**: `Gemm` expr (or a `GemmOp`); the two new SIMD ops
    `SimdDotS8` (→ VPDPBUSD, with the §2 operand semantics) and
    `SimdFmaBF16` (→ VDPBF16PS); a BF16 element type
    (`FloatType(subformat=bf16)`); `FloatConst` bf16 rounding (f2b).
-3. **Technology**: `stc/tech.py` `Technology.primitives()` declares the
-   GEMM per target: Zen 5 → the 8×32 kernel scheduled from aggen
-   (tile, ≥2×latency chains, packed K-major/N-interleaved layout);
-   PTX → dp4a / bf16.fma; generic → gates (the RTL body).
+3. **Technology**: `stc/tech.py` has `Primitive`/`Technology` but
+   **`is_legal` is never called and there is no lowering dispatcher
+   today** (verified: grep finds only the tech.py definitions) - the
+   per-target lowering consumer is net-new. It would declare the GEMM per
+   target: Zen 5 → the 8×32 kernel scheduled from aggen (tile, ≥2×latency
+   chains, packed layout); PTX → dp4a / bf16.fma; generic → gates.
 4. **"Inline tick"** (the bridge, and the right model for variable-K
-   decode): lower the GEMM to a K-tick program using the existing tick
-   machinery (`TickIR` steps, `fuse_ticks`, the scheduled backend's
-   `circuit_steps_shared`): K ticks of MAC into the accumulator state,
-   ports as tick inputs/outputs.
+   decode): lower the GEMM to a K-tick program. CAVEAT (verified by
+   review): this is NOT a free ride on existing machinery - the
+   word-level SIMD backends REJECT designs with state
+   (backend_x86_avx512.py:106-108, backend_x86_avx512_float.py:71-72),
+   and the tick-stepping emitter (`circuit_steps_shared`, emitted from
+   stc/sched/emit/avx512.py / avx512_u64.py / packed_region_emit.py, not
+   backend_sched.py) uses one in_io for all ticks. A stateful word-level
+   emit is net-new work.
 5. **Verification**: `bounded_equiv` / `z3_encode` prove the primitive
    equals the RTL body; the inference property harness is the reference.
 6. **Next layer instantiates**: a decoder-layer Verilog module
@@ -370,12 +381,16 @@ explicit. A BF16 variant uses `FloatType(subformat=bf16)` on the ports.
 ## 7. Verification and tooling conventions
 
 - **VeryLogo tests**: `.venv/bin/python -m unittest discover -s tests`
-  (1008 tests pass; the pressure-scheduler test depends on the AVX512
-  target's xor throughput being 2 — do not raise it).
+  (1008 pass, 19 skipped — verified by running on 2026-08-12; the
+  pressure-scheduler test needs xor throughput >= 2 on the AVX512 target,
+  so keep it at 2 rather than raising it to the measured 3).
 - **Inference tests**: `.venv/bin/python -m pytest inference/tests/`
-  (17 pass + 1 xfail; requires avx512_vnni + avx512_bf16; the SIMD
-  checker C is compiled once per process; BUFSZ bug: the checker buffers
-  are `buf[65536]` — don't reference an undefined BUFSZ).
+  (17 pass + 1 xfail — verified by running on 2026-08-12; requires
+  avx512_vnni + avx512_bf16; the SIMD checker C is compiled once per
+  process; checker buffers are `buf[65536]` — don't reference an
+  undefined BUFSZ. NOTE: the split_qkv round-trip property is mode 6 in
+  the checker (mode 3 is softmax_rect) — a past duplicate made it
+  unreachable).
 - **Running a benchmark**: `cd repo-root; .venv/bin/python
   inference/bench/bench_mha_prefill_avx512.py --seq 512 --layers 6`
   (the scripts insert the repo root on sys.path and import the

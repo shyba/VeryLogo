@@ -1,6 +1,6 @@
 # Zen 5 GEMM Micro-Kernels (INT8 + BF16), designed from the Agner model
 
-`inference/inference/results/bench_gemm_avx512.py`, on the Ryzen 9 9950X3D (Zen 5). The kernels
+`inference/bench/bench_gemm_avx512.py`, on the Ryzen 9 9950X3D (Zen 5). The kernels
 are small core-AI components: dense INT8 (VPDPBUSD) and BF16 (VDPBF16PS)
 matmuls, correctness-checked against a naive reference and timed
 best-of-N RDTSC.
@@ -8,7 +8,7 @@ best-of-N RDTSC.
 ## Hand-scheduled assembly (no compiler in the hot loop)
 
 By default the micro-kernels are emitted by `inference/gemm_asm.py` as **GAS with a
-fixed register assignment and instruction order** (`python -m stc.gemm_asm
+fixed register assignment and instruction order** (`python -m inference.gemm_asm
 --family vnni8 --tile 8x32`), assembled with `gcc -c` and linked into the
 driver. The compiler does not see the hot loop, so it cannot reorder, spill,
 or reshape the intended sequence - all of which gcc demonstrably does to the

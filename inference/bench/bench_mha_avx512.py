@@ -20,7 +20,7 @@ per-head softmax, plus the GQA kv-sharing saving. Reference: numpy fp32
 (OpenBLAS, 1 thread).
 
 Usage:
-  python inference/inference/results/bench_mha_avx512.py [--seq 512] [--d 128] [--heads 4]
+  python inference/bench/bench_mha_avx512.py [--seq 512] [--d 128] [--heads 4]
       [--kv-heads 2] [--hm 4] [--layers 2]
 """
 

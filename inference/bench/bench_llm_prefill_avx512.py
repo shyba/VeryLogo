@@ -14,7 +14,7 @@ with the decoder benchmark, property-tested). Reference: numpy fp32
 (OpenBLAS sgemm, 1 thread) on the same core.
 
 Usage:
-  python inference/inference/results/bench_llm_prefill_avx512.py [--seq 512] [--d 128]
+  python inference/bench/bench_llm_prefill_avx512.py [--seq 512] [--d 128]
       [--layers 6] [--vocab 16384]
 """
 

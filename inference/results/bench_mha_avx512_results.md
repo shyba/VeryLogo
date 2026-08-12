@@ -1,6 +1,6 @@
 # Zen 5 Multi-Head GQA Attention + Decoder Layer (bf16)
 
-`inference/inference/results/bench_mha_avx512.py`, Ryzen 9 9950X3D, single thread. The decoder
+`inference/bench/bench_mha_avx512.py`, Ryzen 9 9950X3D, single thread. The decoder
 layer from bench_decoder_avx512.py with the single-head attention replaced
 by grouped-query attention: H_q query heads of head-dim D_head = D / H_q,
 H_kv key/value heads shared by H_q/H_kv query heads, per-head QK^T/softmax/

@@ -1,6 +1,6 @@
 # AVX-512 Chain-Sweep and Interference Results (corrected)
 
-`inference/inference/results/bench_avx512_chains.py` and `inference/inference/results/bench_zen5_mixed_vector.py`,
+`inference/bench/bench_avx512_chains.py` and `inference/bench/bench_zen5_mixed_vector.py`,
 perf-counted core cycles on this AMD Ryzen 9 9950X3D (Zen 5), loadavg ~3.
 
 ## Correction
@@ -38,7 +38,7 @@ vmovdqa copies at 18 live zmm); 8/12-chain values are clean inline asm.
   (16-45 vmovdqa copies per kernel; the inline-asm route hits gcc's
   30-operand limit at >13 accumulators). These need hand-scheduled assembly
   or a register-asm-local encoding. The published values in
-  `inference/inference/results/bench_avx512_chains.py` for these kernels are flagged INVALID by
+  `inference/bench/bench_avx512_chains.py` for these kernels are flagged INVALID by
   the vmov-noise check and must not be cited.
 
 ## Net result vs Agner

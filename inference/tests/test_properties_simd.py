@@ -230,7 +230,7 @@ int main(int argc, char** argv) {
         printf("OK\n");
         return 0;
     }
-    if (mode == 3) {  /* split_qkv round-trip: concat(split(x)) == x */
+    if (mode == 6) {  /* split_qkv round-trip: concat(split(x)) == x */
         for (int i = 0; i < S*3*D; i++) buf[i] = rndf();
         static float q[65536], k[65536], v[65536];
         split_qkv(buf, q, k, v, S, D);
@@ -329,7 +329,7 @@ def test_softmax_rect_properties(s, seed):
 @settings(max_examples=15, deadline=None)
 @given(S, D, SEED)
 def test_split_qkv_roundtrip(s, d, seed):
-    out = run_check(_simd_bin(), [3, seed, s, d])
+    out = run_check(_simd_bin(), [6, seed, s, d])
     assert out == "OK", f"split_qkv S={s} D={d} seed={seed}: {out}"
 
 

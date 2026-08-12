@@ -1,6 +1,6 @@
 # Zen 5 Attention Head (bf16), the piece above GEMM
 
-`inference/inference/results/bench_attention_avx512.py`, on the Ryzen 9 9950X3D (Zen 5),
+`inference/bench/bench_attention_avx512.py`, on the Ryzen 9 9950X3D (Zen 5),
 single thread. Single-head attention forward:
 
     scores = Q . K^T / sqrt(D)     GEMM1 (SxS), hand-scheduled bf16 kernel

@@ -1,6 +1,6 @@
 # AVX-512 Throughput vs Agner's Zen 5 Tables
 
-`inference/inference/results/bench_avx512_vs_agner.py` measures single-stream 512-bit instruction
+`inference/bench/bench_avx512_vs_agner.py` measures single-stream 512-bit instruction
 throughput on this machine (AMD Ryzen 9 9950X3D, Zen 5) for the instructions
 STC's x86 backends emit, and compares against Agner Fog's published Zen 5
 reciprocal-throughput values (`inference/results/agner_zen5_avx512.csv`, extracted from
@@ -34,7 +34,7 @@ and perf instruction counts.
 vfmadd231ps rows sit at ~0.91 of Agner's 2.0 - the consistent small deficit
 of the accumulator kernels (loop-carried chains), not a pipe difference.
 
-## Resolved via chain sweep (inference/inference/results/bench_avx512_chains.py)
+## Resolved via chain sweep (inference/bench/bench_avx512_chains.py)
 
 An 8-accumulator loop is a *lower bound*, not the execution rate: with N
 loop-carried chains of latency L the throughput cannot exceed N/L, so
