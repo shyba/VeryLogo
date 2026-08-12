@@ -103,8 +103,7 @@ int main(void) {
     static float xbuf[@BD@], wbuf[@BD@], f_qkv[@B3D@], f_scores[@BSP@], f_o[@BD@];
     static float f_up[@BH@], f_g[@BD@], fq[@BD@], fk[@BD@], fv[@BD@];
     static uint16_t b_q[@BD@], b_k[@BD@], b_v[@BD@], b_o[@BD@], b_up[@BH@];
-    static uint16_t b_p[@BSP@], b_x[@BD@];
-    static float logits_buf[@BD@];
+    static uint16_t b_p[@BSP@];
     for (int l = 0; l < NLAY; l++) {
         for (int i = 0; i < DIM*3*DIM; i++) { float v = ((i * 17 + l * 7) % 401) / 400.0f - 0.5f; Wqkv[l*DIM*3*DIM + i] = f2b(v * 0.05f); }
         for (int i = 0; i < DIM*DIM; i++) { float v = ((i * 7 + l * 3) % 1001) / 1000.0f - 0.5f; Wo[l*DIM*DIM + i] = f2b(v * 0.05f); }
@@ -137,7 +136,7 @@ int main(void) {
                 xbuf[i*DIM + j] = 0.05f * (float)((ids[i] + j) % 7 - 3);
         uint64_t t0 = __rdtsc();
         for (int t = 0; t < TSTEPS; t++) {
-            int spad = ((scur + 31) / 32) * 32;
+            int spad = ((scur + BATCH + 31) / 32) * 32;  /* incl. the appends below */
             for (int l = 0; l < NLAY; l++) {
                 /* LN1 -> QKV */
                 for (int i = 0; i < BATCH*DIM; i++) wbuf[i] = xbuf[i];
@@ -157,7 +156,7 @@ int main(void) {
                 pack_b_bf16_32_T(Kc + l*SMAX*DIM, Bpk, DIM, spad);
                 gemm(b_q, Bpk, f_scores, BATCH, spad, DIM);
                 for (int i = 0; i < BATCH; i++)
-                    for (int j = scur; j < spad; j++)
+                    for (int j = scur + BATCH; j < spad; j++)
                         f_scores[i*spad + j] = -INFINITY;
                 for (int i = 0; i < BATCH*spad; i++) f_scores[i] *= 1.0f / sqrtf((float)DIM);
                 softmax_rect(f_scores, BATCH, spad);
@@ -185,7 +184,9 @@ int main(void) {
         uint64_t t1 = __rdtsc();
         uint64_t d = t1 - t0;
         if (d < best) best = d;
-        if (scur + BATCH > SMAX) break;  /* keep the cache in bounds across reps */
+        /* no break: all reps run the same deterministic decode over the same
+           cache rows (appends overwrite identical values), so best-of-5 is a
+           true min over warm reps */
     }
     /* clean pass for correctness: reset ids and caches past S0 (the timed
        loop left stale K/V appends that the check would otherwise read),
@@ -202,14 +203,9 @@ int main(void) {
         for (int j = 0; j < DIM; j++)
             xbuf[i*DIM + j] = 0.05f * (float)((ids[i] + j) % 7 - 3);
     for (int t = 0; t < CHECK; t++) {
-        int spad = ((scur + 31) / 32) * 32;
+        int spad = ((scur + BATCH + 31) / 32) * 32;  /* incl. the appends below */
         for (int l = 0; l < NLAY; l++) {
             for (int i = 0; i < BATCH*DIM; i++) wbuf[i] = xbuf[i];
-            if (t == 0 && l == 0) {
-                /* after QK^T, dump scores before softmax */
-                static int dumped = 0;
-                if (!dumped) { dumped = 1; }
-            }
             layernorm(wbuf, BATCH, DIM);
             to_bf16(wbuf, b_q, BATCH*DIM);
             gemm(b_q, Bpq + l*@SQ@, f_qkv, BATCH, 3*DIM, DIM);
@@ -224,14 +220,9 @@ int main(void) {
             pack_b_bf16_32_T(Kc + l*SMAX*DIM, Bpk, DIM, spad);
             gemm(b_q, Bpk, f_scores, BATCH, spad, DIM);
             for (int i = 0; i < BATCH; i++)
-                for (int j = scur; j < spad; j++)
+                for (int j = scur + BATCH; j < spad; j++)
                     f_scores[i*spad + j] = -INFINITY;
             for (int i = 0; i < BATCH*spad; i++) f_scores[i] *= 1.0f / sqrtf((float)DIM);
-            if (t == 0 && l == 0) {
-                FILE* f = fopen("scores.bin","wb"); fwrite(f_scores,4,BATCH*spad,f); fclose(f);
-                FILE* g = fopen("q.bin","wb"); fwrite(fq,4,BATCH*DIM,g); fclose(g);
-                FILE* h = fopen("kc0.bin","wb"); fwrite(Kc + 0,2,S0*DIM,h); fclose(h);
-            }
             softmax_rect(f_scores, BATCH, spad);
             to_bf16(f_scores, b_p, BATCH*spad);
             pack_b_bf16_32(Vc + l*SMAX*DIM, Bpv, spad, DIM);

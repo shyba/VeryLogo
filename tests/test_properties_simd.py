@@ -75,6 +75,28 @@ static void softmax(float* x, int S) {
             _mm512_storeu_ps(r + 16*j, _mm512_mul_ps(_mm512_loadu_ps(r + 16*j), iv));
     }
 }
+/* rectangular softmax (B x C): decode attention; same math as softmax */
+static void softmax_rect(float* x, int rows, int cols) {
+    const int V = cols / 16;
+    for (int i = 0; i < rows; i++) {
+        float* r = x + i*cols;
+        __m512 mx = _mm512_loadu_ps(r);
+        for (int j = 1; j < V; j++)
+            mx = _mm512_max_ps(mx, _mm512_loadu_ps(r + 16*j));
+        float m = _mm512_reduce_max_ps(mx);
+        __m512 mvec = _mm512_set1_ps(m);
+        __m512 sum = _mm512_setzero_ps();
+        for (int j = 0; j < V; j++) {
+            __m512 e = exp_ps(_mm512_sub_ps(_mm512_loadu_ps(r + 16*j), mvec));
+            _mm512_storeu_ps(r + 16*j, e);
+            sum = _mm512_add_ps(sum, e);
+        }
+        float inv = 1.0f / _mm512_reduce_add_ps(sum);
+        __m512 iv = _mm512_set1_ps(inv);
+        for (int j = 0; j < V; j++)
+            _mm512_storeu_ps(r + 16*j, _mm512_mul_ps(_mm512_loadu_ps(r + 16*j), iv));
+    }
+}
 static void layernorm(float* x, int S, int D) {
     const int V = D / 16;
     for (int i = 0; i < S; i++) {
@@ -167,6 +189,27 @@ int main(int argc, char** argv) {
         softmax(buf2, S);
         for (int i = 0; i < S*S; i++)
             if (fabsf(buf[i] - buf2[i]) > 1e-5f) { printf("FAIL shift-invariance at %d: %.8f vs %.8f\n", i, buf[i], buf2[i]); return 0; }
+        printf("OK\n");
+        return 0;
+    }
+    if (mode == 3) {  /* softmax_rect: B x C rows sum to 1, argmax preserved */
+        int B = S, C = S * 2;  /* non-square: 8 x 16 etc. */
+        if (C > 4096) C = 4096;  /* buf[65536] floats */
+        for (int i = 0; i < B*C; i++) buf[i] = rndf() * 3.0f;
+        memcpy(buf2, buf, sizeof(float) * B * C);
+        softmax_rect(buf, B, C);
+        for (int i = 0; i < B; i++) {
+            double s = 0;
+            for (int j = 0; j < C; j++) s += buf[i*C + j];
+            if (fabs(s - 1.0) > 1e-4) { printf("FAIL softmax_rect row %d sum %.6f\n", i, s); return 0; }
+        }
+        for (int i = 0; i < B; i++) {
+            int mi = 0;
+            for (int j = 1; j < C; j++) if (buf2[i*C + j] > buf2[i*C + mi]) mi = j;
+            int mo = 0;
+            for (int j = 1; j < C; j++) if (buf[i*C + j] > buf[i*C + mo]) mo = j;
+            if (mi != mo) { printf("FAIL softmax_rect argmax row %d\n", i); return 0; }
+        }
         printf("OK\n");
         return 0;
     }
@@ -272,6 +315,15 @@ def test_softmax_properties(s, seed):
 def test_layernorm_properties(s, d, seed):
     out = run_check(_simd_bin(), [2, seed, s, d])
     assert out == "OK", f"layernorm S={s} D={d} seed={seed}: {out}"
+
+
+@settings(max_examples=15, deadline=None)
+@given(S, SEED)
+def test_softmax_rect_properties(s, seed):
+    """Rectangular B x C softmax used by KV-cache decode: rows sum to 1,
+    argmax preserved (non-square B != C)."""
+    out = run_check(_simd_bin(), [3, seed, s, s])
+    assert out == "OK", f"softmax_rect S={s} seed={seed}: {out}"
 
 
 @settings(max_examples=15, deadline=None)
