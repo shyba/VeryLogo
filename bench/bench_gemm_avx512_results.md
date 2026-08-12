@@ -5,6 +5,22 @@ are small core-AI components: dense INT8 (VPDPBUSD) and BF16 (VDPBF16PS)
 matmuls, correctness-checked against a naive reference and timed
 best-of-N RDTSC.
 
+## Hand-scheduled assembly (no compiler in the hot loop)
+
+By default the micro-kernels are emitted by `stc/gemm_asm.py` as **GAS with a
+fixed register assignment and instruction order** (`python -m stc.gemm_asm
+--family vnni8 --tile 8x32`), assembled with `gcc -c` and linked into the
+driver. The compiler does not see the hot loop, so it cannot reorder, spill,
+or reshape the intended sequence - all of which gcc demonstrably does to the
+equivalent intrinsics at >= 26 live zmm (the old 16x32 tile spilled and lost
+~20%; the register-budget guard in the generator now rejects that tile
+outright instead of silently degrading).
+
+Verified by disassembly: per 2 K-chunks the 8x32 loop is exactly
+4 vmovdqu64 (B), 16 vpbroadcastd (A), 32 vpdpbusd, 8 pointer-adds + cmp/jne,
+with zero vmovdqa spill traffic. `--intrinsic` re-enables the gcc path for
+comparison.
+
 ## Design is derived from stc/aggen.py (Agner Zen 5 AVX-512 table + measured corrections)
 
 - VNNI/BF16/FMA-class ops: 2/cyc on P01 (Agner rt 0.5; measured 2.0/cyc).
@@ -41,13 +57,15 @@ timebase-independent.
 | 64x64x64 | 8x32  | 126.9 | 79.2% | 71.0 | 87.3% |
 | 64x64x64 | 16x32 |  95.8 | 59.8% | 64.1 | 78.9% (spills) |
 | 64x64x64 | 8x16  | 106.9 | 66.8% | 51.1 | 62.9% |
-| 128x128x128 | 8x32 | 140.1 | 87.3% | 74.7 | 92.8% |
+| 128x128x128 | 8x32 | 138.7 | 85.2% | 74.9 | 93.0% |
 | 128x128x128 | 16x32 | 99.8 | 62.2% | 69.9 | 86.9% (spills) |
 
-At 128^3 the 8x32 i8 kernel runs at ~2.2 dpbusd/TSC-tick, i.e. at the P01
-dpbusd bound once the TSC/core ratio is accounted for; the residual gap is
-tile prologue/epilogue (zero 16 accs, 16 stores, addressing) and loop
-control, which shrink as the GEMM grows (64^3 -> 79%, 128^3 -> 87%).
+The hand-scheduled asm kernels measure at parity with the gcc -O3
+intrinsics (85-87% i8, 93% bf16 at 128^3; both are at the P01 dpbusd bound
+once the TSC/core ratio is accounted for), with the asm version immune to
+codegen variation. The residual gap is tile prologue/epilogue (zero 16 accs,
+16 stores, addressing) and loop control, which shrink as the GEMM grows
+(64^3 -> 78%, 128^3 -> 85%).
 
 Predicted cycles (from the aggen model) vs measured at 128^3, 8x32:
 i8 pred 16384 vs 14964 TSC ticks (the GEMM is at/below the FMA-pipe bound;

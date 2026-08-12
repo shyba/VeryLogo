@@ -196,7 +196,11 @@ def pack_b_bf16(nr: int) -> str:
 
 
 def gen_c(
-    tiles: list[tuple[int, int]], pred: dict, reps: int = 7, size: int = 64
+    tiles: list[tuple[int, int]],
+    pred: dict,
+    reps: int = 7,
+    size: int = 64,
+    asm_mode: bool = False,
 ) -> str:
     parts = []
     parts.append(
@@ -210,7 +214,20 @@ def gen_c(
             for mr, nr in tiles
         )
     )
-    parts.append("\n".join(int8_kernel(mr, nr) for mr, nr in tiles))
+    if asm_mode:
+        # hand-scheduled kernels come from stc.gemm_asm (assembled separately);
+        # the C driver only declares them - no compiler in the hot loop.
+        parts.append(
+            "\n".join(
+                "extern void gemm_vnni8_%dx%d_asm(const uint8_t* A, const int32_t* Bp, int32_t* C, int K, int N);"
+                % (mr, nr)
+                + "\nextern void gemm_bf16_%dx%d_asm(const uint16_t* A, const int32_t* Bp, float* C, int K, int N);"
+                % (mr, nr)
+                for mr, nr in tiles
+            )
+        )
+    else:
+        parts.append("\n".join(int8_kernel(mr, nr) for mr, nr in tiles))
     parts.append(
         "static inline __m512bh bh_from_i(__m512i v) "
         "{ union { __m512i i; __m512bh h; } u; u.i = v; return u.h; }\n"
@@ -223,7 +240,8 @@ def gen_c(
         "    uint32_t u = (uint32_t)b << 16; float f; memcpy(&f, &u, 4); return f;\n"
         "}\n"
     )
-    parts.append("\n".join(bf16_kernel(mr, nr) for mr, nr in tiles))
+    if not asm_mode:
+        parts.append("\n".join(bf16_kernel(mr, nr) for mr, nr in tiles))
     parts.append(
         """static uint64_t stand_dpbusd(uint64_t iters, int seed) {
     __m512i a[16];
@@ -260,11 +278,24 @@ static uint64_t stand_dpbf16(uint64_t iters, int seed) {
 
     for mr, nr in tiles:
 
+        k8 = (
+            "gemm_vnni8_%dx%d_asm" % (mr, nr)
+            if asm_mode
+            else "gemm_i8_%dx%d" % (mr, nr)
+        )
+        k16 = (
+            "gemm_bf16_%dx%d_asm" % (mr, nr)
+            if asm_mode
+            else "gemm_bf16_%dx%d" % (mr, nr)
+        )
+
         def F(t: str) -> str:
             return (
                 t.replace("@MR@", str(mr))
                 .replace("@NR@", str(nr))
                 .replace("@NR2@", str(nr))
+                .replace("@K8@", k8)
+                .replace("@K16@", k16)
             )
 
         parts.append(
@@ -272,7 +303,7 @@ static uint64_t stand_dpbf16(uint64_t iters, int seed) {
                 """static uint64_t run_i8_@MR@x@NR@(const uint8_t* A, const int32_t* Bp, int32_t* C, int M, int N, int K) {
     for (int n0 = 0; n0 < N; n0 += @NR@)
         for (int m0 = 0; m0 < M; m0 += @MR@)
-            gemm_i8_@MR@x@NR@(A + m0*K, Bp + (n0/@NR@)*(K/4)*@NR@, C + m0*N + n0, K, N);
+            @K8@(A + m0*K, Bp + (n0/@NR@)*(K/4)*@NR@, C + m0*N + n0, K, N);
     uint64_t chk = 0;
     for (int i = 0; i < M*N; i++) chk += (uint32_t)C[i];
     return chk;
@@ -280,7 +311,7 @@ static uint64_t stand_dpbf16(uint64_t iters, int seed) {
 static uint64_t run_bf16_@MR@x@NR@(const uint16_t* A, const int32_t* Bp, float* C, int M, int N, int K) {
     for (int n0 = 0; n0 < N; n0 += @NR@)
         for (int m0 = 0; m0 < M; m0 += @MR@)
-            gemm_bf16_@MR@x@NR@(A + m0*K, Bp + (n0/@NR@)*(K/2)*@NR@, C + m0*N + n0, K, N);
+            @K16@(A + m0*K, Bp + (n0/@NR@)*(K/2)*@NR@, C + m0*N + n0, K, N);
     uint64_t chk = 0;
     for (int i = 0; i < M*N; i++) chk += (uint64_t)(C[i] != 0.0f);
     return chk;
@@ -422,6 +453,11 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--tiles", default="8x32", help="comma list MRxNR")
     ap.add_argument("--size", type=int, default=64, help="M=N=K (multiple of 64)")
+    ap.add_argument(
+        "--intrinsic",
+        action="store_true",
+        help="use gcc-compiled intrinsics instead of the hand-scheduled .S kernels",
+    )
     args = ap.parse_args()
     tiles = []
     for t in args.tiles.split(","):
@@ -448,21 +484,56 @@ def main() -> int:
     rep = {"64": 7}.get(str(S), 5)
     with tempfile.TemporaryDirectory() as d:
         cfile = Path(d) / "gemm.c"
-        cfile.write_text(gen_c(tiles, pred, reps=rep, size=S))
-        exe = Path(d) / "gemm"
-        r = subprocess.run(
-            [
-                "gcc",
-                "-O3",
-                "-march=native",
-                "-funroll-loops",
-                "-o",
-                str(exe),
-                str(cfile),
-            ],
-            capture_output=True,
-            text=True,
+        cfile.write_text(
+            gen_c(tiles, pred, reps=rep, size=S, asm_mode=not args.intrinsic)
         )
+        exe = Path(d) / "gemm"
+        if not args.intrinsic:
+            from stc.gemm_asm import emit_gemm_kernel
+
+            asm = "\n\n".join(
+                emit_gemm_kernel(fam, mr, nr)
+                for fam in ("vnni8", "bf16")
+                for mr, nr in tiles
+            )
+            asm_file = Path(d) / "gemm.S"
+            asm_file.write_text(asm)
+            r = subprocess.run(
+                ["gcc", "-c", str(asm_file), "-o", str(Path(d) / "gemm.o")],
+                capture_output=True,
+                text=True,
+            )
+            if r.returncode != 0:
+                print(r.stderr)
+                return 1
+            r = subprocess.run(
+                [
+                    "gcc",
+                    "-O3",
+                    "-march=native",
+                    "-funroll-loops",
+                    "-o",
+                    str(exe),
+                    str(cfile),
+                    str(Path(d) / "gemm.o"),
+                ],
+                capture_output=True,
+                text=True,
+            )
+        else:
+            r = subprocess.run(
+                [
+                    "gcc",
+                    "-O3",
+                    "-march=native",
+                    "-funroll-loops",
+                    "-o",
+                    str(exe),
+                    str(cfile),
+                ],
+                capture_output=True,
+                text=True,
+            )
         if r.returncode != 0:
             print(r.stderr)
             return 1
