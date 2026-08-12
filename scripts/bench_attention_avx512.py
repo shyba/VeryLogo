@@ -74,12 +74,12 @@ static inline __m512 exp_ps(__m512 x) {{
     __m512 t = _mm512_mul_ps(x, _mm512_set1_ps(1.4426950408889634f));
     __m512i n = _mm512_cvtps_epi32(_mm512_roundscale_ps(t, 0));
     __m512 r = _mm512_sub_ps(t, _mm512_cvtepi32_ps(n));
-    __m512 p = _mm512_set1_ps(1.000000000000f);
-    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(0.693147180560f));
-    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(0.240226506959f));
-    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(0.055504108665f));
+    __m512 p = _mm512_set1_ps(0.001333355815f);
     p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(0.009618129108f));
-    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(0.001333355815f));
+    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(0.055504108665f));
+    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(0.240226506959f));
+    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(0.693147180560f));
+    p = _mm512_fmadd_ps(p, r, _mm512_set1_ps(1.000000000000f));
     __m512i e = _mm512_slli_epi32(_mm512_add_epi32(n, _mm512_set1_epi32(127)), 23);
     return _mm512_mul_ps(p, _mm512_castsi512_ps(e));
 }}
