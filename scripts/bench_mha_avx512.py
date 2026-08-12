@@ -64,8 +64,9 @@ extern void gemm_bf16_8x32_asm(const uint16_t* A, const int32_t* Bp, float* C, i
 #define DH @DH@
 static void layer_mha(
     float* xbuf, float* wbuf,
-    uint16_t* b_q, uint16_t* b_k, uint16_t* b_v, uint16_t* b_o, uint16_t* b_p,
-    uint16_t* b_up, float* f_qkv, float* f_scores, float* f_o, float* o_h,
+    uint16_t* b_q, uint16_t* b_k, uint16_t* b_v, uint16_t* b_qh,
+    uint16_t* b_o, uint16_t* b_p, uint16_t* b_up,
+    float* f_qkv, float* f_scores, float* f_o, float* o_h,
     float* f_up, float* f_g, float* fq, float* fk, float* fv,
     const int32_t* Bpq, const int32_t* Bpo, const int32_t* Bp1, const int32_t* Bp2,
     int32_t* Bpk, int32_t* Bpv) {
@@ -86,8 +87,8 @@ static void layer_mha(
         /* query heads that share this kv group */
         for (int h = g; h < HQ; h += HKV) {
             for (int r = 0; r < S; r++)
-                for (int j = 0; j < DH; j++) b_q[r*DH + j] = f2b(fq[r*D + h*DH + j]);
-            gemm(b_q, Bpk + g*@BK1@, f_scores, S, S, DH);
+                for (int j = 0; j < DH; j++) b_qh[r*DH + j] = f2b(fq[r*D + h*DH + j]);
+            gemm(b_qh, Bpk + g*@BK1@, f_scores, S, S, DH);
             for (int i = 0; i < S*S; i++) f_scores[i] *= 1.0f / sqrtf((float)DH);
             softmax(f_scores, S);
             to_bf16(f_scores, b_p, S*S);
@@ -99,7 +100,6 @@ static void layer_mha(
         }
     }
     /* concat heads are already in f_o column blocks; out projection */
-    { FILE* f = fopen("o.bin","wb"); fwrite(f_o,4,S*D,f); fclose(f); }
     to_bf16(f_o, b_o, S*D);
     gemm(b_o, Bpo, f_o, S, D, D);
     for (int i = 0; i < S*D; i++) xbuf[i] += f_o[i];
@@ -122,7 +122,7 @@ int main(void) {
     static float xbuf[@S2@], wbuf[@S2@], f_qkv[@S3D@], f_scores[@SS@], f_o[@S2@];
     static float f_up[@SH@], f_g[@S2@], fq[@S2@], fk[@S2@], fv[@S2@];
     static float o_h[@SDH@];  /* per-head PV output, contiguous S x DH */
-    static uint16_t b_q[@SD@], b_k[@SDH@], b_v[@SDH@], b_o[@S2@], b_p[@SS@], b_up[@SH@];
+    static uint16_t b_q[@S2@], b_k[@SDH@], b_v[@SDH@], b_qh[@SDH@], b_o[@S2@], b_p[@SS@], b_up[@SH@];
     for (int l = 0; l < L; l++) {
         for (int i = 0; i < D*3*D; i++) { float v = ((i * 17 + l * 7) % 401) / 400.0f - 0.5f; Wqkv[l*D*3*D + i] = f2b(v * 0.05f); }
         for (int i = 0; i < D*D; i++) { float v = ((i * 7 + l * 3) % 1001) / 1000.0f - 0.5f; Wo[l*D*D + i] = f2b(v * 0.05f); }
@@ -135,12 +135,13 @@ int main(void) {
         pack_b_bf16_32(W1 + l*D*H, Bp1 + l*@SU@, D, H);
         pack_b_bf16_32(W2 + l*H*D, Bp2 + l*@SDW@, H, D);
     }
-    for (int i = 0; i < S*D; i++) xbuf[i] = 0.05f * (float)((i % 1001) / 1000.0f - 0.5f);
+    for (int i = 0; i < S*D; i++)
+        xbuf[i] = (float)b2f(f2b(0.05f * (float)((i % 1001) / 1000.0f - 0.5f)));
     uint64_t best = ~0ULL;
     for (int rep = 0; rep < 5; rep++) {
         uint64_t t0 = __rdtsc();
         for (int l = 0; l < L; l++)
-            layer_mha(xbuf, wbuf, b_q, b_k, b_v, b_o, b_p, b_up,
+            layer_mha(xbuf, wbuf, b_q, b_k, b_v, b_qh, b_o, b_p, b_up,
                       f_qkv, f_scores, f_o, o_h, f_up, f_g, fq, fk, fv,
                       Bpq + l*@SQ@, Bpo + l*@SO@, Bp1 + l*@SU@, Bp2 + l*@SDW@,
                       Bpk, Bpv);
@@ -149,9 +150,10 @@ int main(void) {
         if (d < best) best = d;
     }
     /* clean pass for the correctness dump */
-    for (int i = 0; i < S*D; i++) xbuf[i] = 0.05f * (float)((i % 1001) / 1000.0f - 0.5f);
+    for (int i = 0; i < S*D; i++)
+        xbuf[i] = (float)b2f(f2b(0.05f * (float)((i % 1001) / 1000.0f - 0.5f)));
     for (int l = 0; l < L; l++)
-        layer_mha(xbuf, wbuf, b_q, b_k, b_v, b_o, b_p, b_up,
+        layer_mha(xbuf, wbuf, b_q, b_k, b_v, b_qh, b_o, b_p, b_up,
                   f_qkv, f_scores, f_o, o_h, f_up, f_g, fq, fk, fv,
                   Bpq + l*@SQ@, Bpo + l*@SO@, Bp1 + l*@SU@, Bp2 + l*@SDW@,
                   Bpk, Bpv);
@@ -319,6 +321,10 @@ def main() -> int:
     args = ap.parse_args()
     S, D, H, L = args.seq, args.d, args.d * args.hm, args.layers
     HQ, HKV, DH = args.heads, args.kv_heads, args.d // args.heads
+    if HQ * DH != args.d:
+        raise SystemExit("heads * (D/heads) != D: heads must divide D")
+    if HQ % HKV != 0:
+        raise SystemExit("kv-heads must divide heads (GQA)")
     tsc = 3.7e9
 
     print(
