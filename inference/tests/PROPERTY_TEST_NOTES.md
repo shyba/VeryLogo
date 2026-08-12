@@ -59,7 +59,7 @@ hypothesis 6.165.3 and pytest 9 were added to `.venv` for this.
   (shows XFAIL with the mismatch). Direct harness:
   `.venv/bin/python -c "import sys; sys.path.insert(0,'tests'); import test_properties_gemm as t; from property_harness import run_check; print(run_check(t._i8_bin(), [8,32,8,1,1]))"`
   -> prints `FAIL 0 0 ...` (the 8x16 kernel on the 32-packed buffer).
-- Impact: in `inference/inference/results/bench_gemm_avx512.py`, `pack_b_i8_%d`/`pack_b_bf16_%d`
+- Impact: in `inference/bench/bench_gemm_avx512.py`, `pack_b_i8_%d`/`pack_b_bf16_%d`
   in main pack `Bp8`/`Bp16` once with the LAST tile's NR, while each
   `run_i8_MRxNR` kernel reads its own NR layout. Running mixed-NR tiles
   (e.g. `--tiles 8x32,8x16`) therefore times garbage while verify passes

@@ -3,7 +3,7 @@ attention/decoder C drivers (exp_ps, softmax, layernorm, split_qkv,
 f2b/b2f).
 
 The functions under test are copied verbatim from the current
-inference/inference/results/bench_decoder_avx512.py template so the tests validate the real
+inference/bench/bench_decoder_avx512.py template so the tests validate the real
 implementations. hypothesis drives (mode, seed, S, D); the C checker
 generates its own data from the seed and prints OK / FAIL + detail.
 
@@ -31,7 +31,7 @@ SIMD_CHECKER_C = r"""
 #include <string.h>
 #include <math.h>
 #include <immintrin.h>
-/* --- functions under test, copied from inference/inference/results/bench_decoder_avx512.py --- */
+/* --- functions under test, copied from inference/bench/bench_decoder_avx512.py --- */
 static inline uint16_t f2b(float f) {
     uint32_t u; memcpy(&u, &f, 4);
     uint32_t r = (u + 0x7FFF + ((u >> 16) & 1)) >> 16;
