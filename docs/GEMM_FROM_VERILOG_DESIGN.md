@@ -65,7 +65,53 @@ Verilog hierarchy. This maps onto existing machinery:
 - The instruction specs (`inference/aggen.py`) drive the primitive's
   per-target lowering (op choice, tile, accumulator-chain count).
 
-### 3.1 The GEMM component (the interface contract)
+### 3.0 Precedent: what the AES/SHA experiments proved
+
+- **AES worked** by exactly this shape: the S-box is a *primitive* with a
+  known optimal implementation (Boyar-Peralta, 32 AND gates - see
+  docs/sboxgates.md), synthesized once by a targeted technique (superopt),
+  then bitsliced - **instances as lane width** (BP128 = 128 parallel
+  instances packed into the vector lanes) - then composed in the round/
+  encryption hierarchy. The BP128 dynamic family
+  (docs/AES_BP128_DYNAMIC_FAMILY.md) generates parameterized variants
+  (key_bits / ctr_group / key_source axes) from the proven kernel lineage -
+  the same shape as a parameterized GEMM component
+  (#(M, N, K, W, ACCW)).
+- **Keccak/SHA3 was the dead-end boundary**: the generic bit-level path
+  explodes (40k gates for Keccak - scripts/analyze_keccak_gate_explosion.py
+  exists precisely because of this); the packed path is 0.14x smaller. The
+  designs that "generated megabytes of spaghetti" went through generic
+  lowering without the primitive decomposition; the ones that worked
+  (AES) decomposed into compact primitives first.
+- Conclusion: the GEMM gets the S-box treatment - a primitive with a
+  target-specific optimal implementation, composed, not pattern-recognized.
+
+### 3.0.1 The device floor (the FPGA/DSP analogy, made concrete)
+
+FPGAs express dataflow in Verilog and let the router place it on the
+device floor (DSP blocks + LUTs) knowing the floor's timing. Our "device"
+is the vector-ALU core, and the floor is:
+
+- **width = the independent ALUs**: a zmm is 16 independent 32-bit ALUs
+  (64 i8 lanes / 32 bf16 lanes). This is the spatial dimension - the
+  parallel MACs per instruction, like DSP blocks in parallel on an FPGA.
+- **length = time**: the K-loop cycles plus the accumulation depth. The
+  op latency (from aggen) sets the minimum chain length; throughput
+  (2/cyc) sets the steady-state rate.
+- **piece repetition = instruction timing**: to sustain 2 ops/cyc a stream
+  needs >= 2*latency independent accumulator chains (aggen: VNNI latency
+  4 -> >= 8 chains, BF16 latency 6 -> >= 12), and the tile's accumulator
+  vectors are the repeated "pieces" - exactly how an FPGA floorplanner
+  instantiates enough DSP pipeline stages to meet timing.
+
+So the backend's lowering of the GEMM primitive is a **placement**: map
+the RTL dataflow's MACs onto (lane, cycle, chain) coordinates using the
+aggen timing model as the floor's timing tables. The emitted C is the
+placed netlist, and it is compact by construction - the primitive is never
+gate-blasted, just as the S-box's specialized circuit never goes through
+naive synthesis. This is the "compiles naturally" claim made rigorous.
+
+## 3.1 The GEMM component (the interface contract)
 
 ```systemverilog
 module gemm #(parameter M = 64, N = 64, K = 64, W = 8, ACCW = 32)
