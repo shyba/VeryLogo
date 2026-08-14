@@ -16,12 +16,14 @@ from stc.sched import (
     InstructionForm,
     RegisterFileSpec,
     ResourceSpec,
+    avx512_memory_model,
     cpu_from_agner_csv,
     circuit_to_floor_program,
     emit_circuit_x86_64_asm,
     emit_x86_64_asm,
     plan_circuit_floor,
     plan_floor,
+    x86_encoding,
 )
 from stc.circuit_synth import CircuitState
 from stc.mir import Binary, MIRFunction, VReg
@@ -48,6 +50,145 @@ def _cpu(*, register_count: int = 32):
 
 
 class TestFloorPlanner(unittest.TestCase):
+    def test_v2_encoding_contract_rejects_wrong_form_before_emission(self):
+        program = FloorProgram(
+            inputs=(0, 1),
+            outputs=(2,),
+            operations=(
+                FloorOp(
+                    0,
+                    "vnni8",
+                    (0, 1),
+                    2,
+                    operands="v,v,v",
+                    asm_mnemonic="vpxorq",
+                    encoding=x86_encoding("vpxorq"),
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(FloorPlannerError, "does not match form family"):
+            plan_floor(program, _cpu())
+
+    def test_v2_emitter_rejects_legacy_opcode_override_mismatch(self):
+        program = FloorProgram(
+            inputs=(0, 1),
+            outputs=(2,),
+            operations=(
+                FloorOp(
+                    0,
+                    "vnni8",
+                    (0, 1),
+                    2,
+                    operands="v,v,v",
+                    asm_mnemonic="vpxorq",
+                ),
+            ),
+        )
+        schedule = plan_floor(program, _cpu())
+        with self.assertRaisesRegex(FloorPlannerError, "scheduled form"):
+            emit_x86_64_asm(program, schedule)
+
+    def test_v2_encoding_carries_isa_requirement(self):
+        cpu = cpu_from_agner_csv(
+            TABLE,
+            name="no-avx512-floor-test",
+            issue_width=4,
+            resources=tuple(ResourceSpec(f"P{i}") for i in range(4)),
+            register_files=(RegisterFileSpec("zmm", 32, 512),),
+            features=(),
+        )
+        program = FloorProgram(
+            inputs=(0, 1),
+            outputs=(2,),
+            operations=(
+                FloorOp(
+                    0,
+                    "bitwise",
+                    (0, 1),
+                    2,
+                    operands="v,v,v",
+                    asm_mnemonic="vpxorq",
+                    encoding=x86_encoding("vpxorq"),
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(FloorPlannerError, "avx512f"):
+            plan_floor(program, cpu)
+
+    def test_v2_memory_envelope_accounts_for_abi_traffic(self):
+        cpu = cpu_from_agner_csv(
+            TABLE,
+            name="zen5-floor-memory-test",
+            issue_width=4,
+            resources=tuple(ResourceSpec(f"P{i}") for i in range(4)),
+            register_files=(RegisterFileSpec("zmm", 32, 512),),
+            features=("avx512f",),
+            memory=avx512_memory_model(),
+        )
+        program = FloorProgram(
+            inputs=(0, 1, 2, 3),
+            outputs=(6,),
+            operations=(
+                FloorOp(
+                    0, "bitwise", (0, 1), 4, operands="v,v,v", asm_mnemonic="vpxorq"
+                ),
+                FloorOp(
+                    1, "bitwise", (2, 3), 5, operands="v,v,v", asm_mnemonic="vpandq"
+                ),
+                FloorOp(
+                    2, "bitwise", (4, 5), 6, operands="v,v,v", asm_mnemonic="vporq"
+                ),
+            ),
+        )
+        schedule = plan_floor(program, cpu)
+
+        self.assertEqual(schedule.core_start, 5)
+        self.assertEqual(schedule.placement(0).cycle, 5)
+        self.assertEqual(schedule.placement(2).cycle, 7)
+        self.assertEqual(schedule.total_cycles, 10)
+        self.assertEqual(
+            [(item.kind, item.slot, item.cycle) for item in schedule.memory_placements],
+            [
+                ("load", 0, 0),
+                ("load", 1, 0),
+                ("load", 2, 1),
+                ("load", 3, 1),
+                ("store", 0, 9),
+            ],
+        )
+        assembly = emit_x86_64_asm(program, schedule, function_name="memory_floor_v2")
+        self.assertIn("# floor load cycle 1", assembly)
+        self.assertIn("# floor store cycle 9", assembly)
+        if shutil.which("as") is None or shutil.which("ld") is None:
+            self.skipTest("GNU assembler and linker are required")
+        with tempfile.TemporaryDirectory(prefix="stc_floor_memory_v2_") as directory:
+            root = Path(directory)
+            source = root / "memory.s"
+            object_file = root / "memory.o"
+            shared = root / "memory.so"
+            source.write_text(assembly, encoding="utf-8")
+            subprocess.run(
+                ["as", "--64", "-o", str(object_file), str(source)], check=True
+            )
+            subprocess.run(
+                ["ld", "-shared", "-o", str(shared), str(object_file)], check=True
+            )
+            vector_type = ctypes.c_uint64 * 8
+            input_type = ctypes.c_uint64 * (8 * 4)
+            inputs = input_type(*range(1, 33))
+            output = vector_type()
+            expected = [
+                (inputs[i] ^ inputs[8 + i]) | (inputs[16 + i] & inputs[24 + i])
+                for i in range(8)
+            ]
+            function = ctypes.CDLL(os.fspath(shared)).memory_floor_v2
+            function.argtypes = [
+                ctypes.POINTER(ctypes.c_uint64),
+                ctypes.POINTER(ctypes.c_uint64),
+            ]
+            function(inputs, output)
+            self.assertEqual(list(output), expected)
+
     def test_circuit_state_bitwise_subset_reaches_direct_assembly(self):
         circuit = CircuitState(
             input_bits=4,
@@ -58,7 +199,9 @@ class TestFloorPlanner(unittest.TestCase):
         )
 
         program = circuit_to_floor_program(circuit)
-        assembly = emit_circuit_x86_64_asm(circuit, _cpu(), function_name="circuit_floor_v1")
+        assembly = emit_circuit_x86_64_asm(
+            circuit, _cpu(), function_name="circuit_floor_v1"
+        )
 
         self.assertEqual(program.outputs, (6,))
         self.assertIn("circuit_floor_v1:", assembly)
@@ -82,8 +225,14 @@ class TestFloorPlanner(unittest.TestCase):
         self.assertEqual(program.operations[0].tied_input, 0)
         self.assertEqual(program.operations[1].immediate, 0xCA)
         self.assertEqual(program.operations[2].immediate, 0x96)
-        self.assertEqual(schedule.registers.value_to_register[6], schedule.registers.value_to_register[0])
-        self.assertEqual(schedule.registers.value_to_register[7], schedule.registers.value_to_register[1])
+        self.assertEqual(
+            schedule.registers.value_to_register[6],
+            schedule.registers.value_to_register[0],
+        )
+        self.assertEqual(
+            schedule.registers.value_to_register[7],
+            schedule.registers.value_to_register[1],
+        )
 
     def test_mir_bitwise_subset_has_a_gcc_free_path(self):
         mir = MIRFunction(
@@ -276,21 +425,28 @@ class TestFloorPlanner(unittest.TestCase):
             ),
         )
         with self.assertRaisesRegex(FloorPlannerError, "avx512vnni"):
-            plan_floor(program, cpu_from_agner_csv(
-                TABLE,
-                issue_width=4,
-                resources=tuple(ResourceSpec(f"P{i}") for i in range(4)),
-                register_files=(RegisterFileSpec("zmm", 32, 512),),
-                features=("avx512f",),
-            ))
+            plan_floor(
+                program,
+                cpu_from_agner_csv(
+                    TABLE,
+                    issue_width=4,
+                    resources=tuple(ResourceSpec(f"P{i}") for i in range(4)),
+                    register_files=(RegisterFileSpec("zmm", 32, 512),),
+                    features=("avx512f",),
+                ),
+            )
 
     def test_register_pressure_is_a_hard_error_in_v1(self):
         program = FloorProgram(
             inputs=(0, 1, 2, 3),
             outputs=(4, 5),
             operations=(
-                FloorOp(0, "bitwise", (0, 1), 4, operands="v,v,v", asm_mnemonic="vpxorq"),
-                FloorOp(1, "bitwise", (2, 3), 5, operands="v,v,v", asm_mnemonic="vpxorq"),
+                FloorOp(
+                    0, "bitwise", (0, 1), 4, operands="v,v,v", asm_mnemonic="vpxorq"
+                ),
+                FloorOp(
+                    1, "bitwise", (2, 3), 5, operands="v,v,v", asm_mnemonic="vpxorq"
+                ),
             ),
         )
         with self.assertRaisesRegex(FloorPlannerError, "register pressure"):
@@ -306,9 +462,15 @@ class TestFloorPlanner(unittest.TestCase):
             inputs=(0, 1, 2, 3),
             outputs=(6,),
             operations=(
-                FloorOp(0, "bitwise", (0, 1), 4, operands="v,v,v", asm_mnemonic="vpxorq"),
-                FloorOp(1, "bitwise", (2, 3), 5, operands="v,v,v", asm_mnemonic="vpandq"),
-                FloorOp(2, "bitwise", (4, 5), 6, operands="v,v,v", asm_mnemonic="vporq"),
+                FloorOp(
+                    0, "bitwise", (0, 1), 4, operands="v,v,v", asm_mnemonic="vpxorq"
+                ),
+                FloorOp(
+                    1, "bitwise", (2, 3), 5, operands="v,v,v", asm_mnemonic="vpandq"
+                ),
+                FloorOp(
+                    2, "bitwise", (4, 5), 6, operands="v,v,v", asm_mnemonic="vporq"
+                ),
             ),
         )
         schedule = plan_floor(program, _cpu())
@@ -323,8 +485,12 @@ class TestFloorPlanner(unittest.TestCase):
             object_file = root / "floor.o"
             shared = root / "floor.so"
             source.write_text(assembly, encoding="utf-8")
-            subprocess.run(["as", "--64", "-o", str(object_file), str(source)], check=True)
-            subprocess.run(["ld", "-shared", "-o", str(shared), str(object_file)], check=True)
+            subprocess.run(
+                ["as", "--64", "-o", str(object_file), str(source)], check=True
+            )
+            subprocess.run(
+                ["ld", "-shared", "-o", str(shared), str(object_file)], check=True
+            )
 
             vector_type = ctypes.c_uint64 * 8
             input_type = ctypes.c_uint64 * (8 * 4)
@@ -336,7 +502,10 @@ class TestFloorPlanner(unittest.TestCase):
             ]
             library = ctypes.CDLL(os.fspath(shared))
             function = library.floor_v1
-            function.argtypes = [ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64)]
+            function.argtypes = [
+                ctypes.POINTER(ctypes.c_uint64),
+                ctypes.POINTER(ctypes.c_uint64),
+            ]
             function.restype = None
             function(inputs, output)
             self.assertEqual(list(output), expected)
@@ -392,8 +561,12 @@ class TestFloorPlanner(unittest.TestCase):
             object_file = root / "floor.o"
             shared = root / "floor.so"
             source.write_text(assembly, encoding="utf-8")
-            subprocess.run(["as", "--64", "-o", str(object_file), str(source)], check=True)
-            subprocess.run(["ld", "-shared", "-o", str(shared), str(object_file)], check=True)
+            subprocess.run(
+                ["as", "--64", "-o", str(object_file), str(source)], check=True
+            )
+            subprocess.run(
+                ["ld", "-shared", "-o", str(shared), str(object_file)], check=True
+            )
 
             vector_type = ctypes.c_uint64 * 8
             input_type = ctypes.c_uint64 * (8 * 7)
@@ -421,7 +594,10 @@ class TestFloorPlanner(unittest.TestCase):
             ]
             library = ctypes.CDLL(os.fspath(shared))
             function = library.ternary_floor_v1
-            function.argtypes = [ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64)]
+            function.argtypes = [
+                ctypes.POINTER(ctypes.c_uint64),
+                ctypes.POINTER(ctypes.c_uint64),
+            ]
             function.restype = None
             function(inputs, output)
             self.assertEqual(list(output), expected[0] + expected[1] + expected[2])

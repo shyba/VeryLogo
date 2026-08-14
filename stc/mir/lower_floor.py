@@ -1,11 +1,18 @@
-"""Lower the explicit boolean subset of MIR to the floor-planner v1 IR."""
+"""Lower the explicit boolean subset of MIR to the floor-planner v2 IR."""
 
 from __future__ import annotations
 
 from stc.mir import Binary, MIRFunction, Mux, Ternary, Unary, VReg
-from stc.sched.floor_planner import FloorOp, FloorPlannerError, FloorProgram, FloorSchedule, plan_floor
+from stc.sched.floor_planner import (
+    FloorOp,
+    FloorPlannerError,
+    FloorProgram,
+    FloorSchedule,
+    plan_floor,
+)
 from stc.sched.cpu_model import CpuModel
 from stc.sched.emit_x86_asm import emit_x86_64_asm
+from stc.sched.x86_encodings import x86_encoding
 
 
 _BITWISE_ASM = {
@@ -20,7 +27,7 @@ def mir_to_floor_program(mir: MIRFunction) -> FloorProgram:
     """Lower the supported boolean MIR instructions to machine-planner nodes.
 
     The function rejects operations whose register constraints or instruction
-    expansions are not represented by floor-planner v1.  Rejecting them here
+    expansions are not represented by floor-planner v2.  Rejecting them here
     is important: passing them through would produce a schedule that cannot be
     emitted without a compiler taking over again.
     """
@@ -32,7 +39,7 @@ def mir_to_floor_program(mir: MIRFunction) -> FloorProgram:
         if isinstance(instruction, Binary):
             if instruction.op not in _BITWISE_ASM:
                 raise FloorPlannerError(
-                    f"MIR binary operation {instruction.op!r} is outside floor-planner v1"
+                    f"MIR binary operation {instruction.op!r} is outside floor-planner v2"
                 )
             dst = _vreg_id(instruction.dst, f"instruction {op_id} destination")
             left = _vreg_id(instruction.a, f"instruction {op_id} input")
@@ -45,6 +52,7 @@ def mir_to_floor_program(mir: MIRFunction) -> FloorProgram:
                     output=dst,
                     operands="v,v,v",
                     asm_mnemonic=_BITWISE_ASM[instruction.op],
+                    encoding=x86_encoding(_BITWISE_ASM[instruction.op]),
                 )
             )
             continue
@@ -61,6 +69,7 @@ def mir_to_floor_program(mir: MIRFunction) -> FloorProgram:
                     asm_mnemonic="vpternlogq",
                     immediate=0x01,
                     tied_input=0,
+                    encoding=x86_encoding("vpternlogq"),
                 )
             )
             continue
@@ -80,6 +89,7 @@ def mir_to_floor_program(mir: MIRFunction) -> FloorProgram:
                     asm_mnemonic="vpternlogq",
                     immediate=instruction.imm8,
                     tied_input=0,
+                    encoding=x86_encoding("vpternlogq"),
                 )
             )
             continue
@@ -99,12 +109,13 @@ def mir_to_floor_program(mir: MIRFunction) -> FloorProgram:
                     asm_mnemonic="vpternlogq",
                     immediate=0xCA,
                     tied_input=0,
+                    encoding=x86_encoding("vpternlogq"),
                 )
             )
             continue
         raise FloorPlannerError(
             f"MIR instruction {op_id} ({type(instruction).__name__}) "
-            "is outside floor-planner v1"
+            "is outside floor-planner v2"
         )
     return FloorProgram(inputs=inputs, outputs=outputs, operations=tuple(operations))
 
@@ -130,9 +141,7 @@ def emit_mir_x86_64_asm(
 ) -> str:
     """Lower, schedule, and emit a MIR boolean function as GNU-as text."""
 
-    program, schedule = plan_mir_floor(
-        mir, cpu, register_file=register_file
-    )
+    program, schedule = plan_mir_floor(mir, cpu, register_file=register_file)
     return emit_x86_64_asm(program, schedule, function_name=function_name)
 
 

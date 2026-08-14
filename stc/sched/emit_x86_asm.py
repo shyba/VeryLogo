@@ -1,15 +1,23 @@
-"""Direct GNU-as x86-64 emission for the floor-planner v1 IR.
+"""Direct GNU-as x86-64 emission for the floor-planner v2 IR.
 
 This emitter intentionally returns assembly text rather than C or intrinsics.
 The system assembler is the only tool needed to turn the result into an
-object; GCC is not part of this path.  v1 supports non-destructive integer
-bitwise forms and the destructive ``VPTERNLOG`` form when its tied destination
-constraint is explicit.
+object; GCC is not part of this path.  The emitter validates concrete
+encodings, ISA requirements, and optional memory placements before emitting
+non-destructive integer bitwise forms and destructive ``VPTERNLOG`` forms.
 """
 
 from __future__ import annotations
 
-from stc.sched.floor_planner import FloorOp, FloorPlannerError, FloorProgram, FloorSchedule
+from stc.sched.cpu_model import CpuModelError, InstructionEncoding
+from stc.sched.floor_planner import (
+    FloorOp,
+    FloorPlacement,
+    FloorPlannerError,
+    FloorProgram,
+    FloorSchedule,
+)
+from stc.sched.x86_encodings import x86_encoding, x86_memory_encoding
 
 
 _DEFAULT_MNEMONICS = {
@@ -50,12 +58,34 @@ def emit_x86_64_asm(
         f"{function_name}:",
     ]
 
-    for input_index, value in enumerate(program.inputs):
-        if value not in assignment:
-            continue
-        lines.append(
-            f"    vmovdqu64 {input_index * 64}(%rdi), %zmm{_reg(assignment, value)}"
+    load_placements = tuple(
+        placement
+        for placement in schedule.memory_placements
+        if placement.kind == "load"
+    )
+    if load_placements:
+        load_accesses = sorted(
+            load_placements, key=lambda placement: (placement.cycle, placement.slot)
         )
+        for placement in load_accesses:
+            if placement.value not in assignment:
+                continue
+            encoding = _validate_x86_memory_encoding("load", placement, schedule)
+            lines.append(f"    # floor load cycle {placement.cycle}")
+            lines.append(
+                f"    {encoding.mnemonic} {placement.slot * 64}(%rdi), "
+                f"%zmm{_reg(assignment, placement.value)}"
+            )
+    else:
+        encoding = _validate_x86_memory_encoding("load", None, schedule)
+        for input_index, value in enumerate(program.inputs):
+            if value not in assignment:
+                continue
+            lines.append("    # floor load cycle 0")
+            lines.append(
+                f"    {encoding.mnemonic} {input_index * 64}(%rdi), "
+                f"%zmm{_reg(assignment, value)}"
+            )
 
     operations = sorted(
         program.operations,
@@ -63,22 +93,45 @@ def emit_x86_64_asm(
     )
     for op in operations:
         placement = schedule.placement(op.id)
+        encoding = _validate_x86_encoding(op, placement, schedule)
         dst = _reg(assignment, op.output)
         sources = [_reg(assignment, value) for value in op.inputs]
-        lines.extend(_emit_operation(op, dst, sources))
+        lines.append(f"    # floor core cycle {placement.cycle}")
+        lines.extend(_emit_operation(op, dst, sources, encoding.mnemonic))
 
-    for output_index, value in enumerate(program.outputs):
-        lines.append(
-            f"    vmovdqu64 %zmm{_reg(assignment, value)}, "
-            f"{output_index * 64}(%rsi)"
+    store_placements = tuple(
+        placement
+        for placement in schedule.memory_placements
+        if placement.kind == "store"
+    )
+    if store_placements:
+        store_accesses = sorted(
+            store_placements, key=lambda placement: (placement.cycle, placement.slot)
         )
+        for placement in store_accesses:
+            output_index = placement.slot
+            value = placement.value
+            encoding = _validate_x86_memory_encoding("store", placement, schedule)
+            lines.append(f"    # floor store cycle {placement.cycle}")
+            lines.append(
+                f"    {encoding.mnemonic} %zmm{_reg(assignment, value)}, "
+                f"{output_index * 64}(%rsi)"
+            )
+    else:
+        encoding = _validate_x86_memory_encoding("store", None, schedule)
+        for output_index, value in enumerate(program.outputs):
+            lines.append(f"    # floor store cycle {schedule.total_cycles}")
+            lines.append(
+                f"    {encoding.mnemonic} %zmm{_reg(assignment, value)}, "
+                f"{output_index * 64}(%rsi)"
+            )
 
     lines.extend(
         [
             "    vzeroupper",
             "    ret",
             f".size {function_name}, .-{function_name}",
-            ".section .note.GNU-stack,\"\",@progbits",
+            '.section .note.GNU-stack,"",@progbits',
             "",
         ]
     )
@@ -95,8 +148,107 @@ def _reg(assignment: dict[int, int] | object, value: int) -> int:
     return register
 
 
-def _emit_operation(op: FloorOp, dst: int, sources: list[int]) -> list[str]:
-    mnemonic = op.asm_mnemonic or _DEFAULT_MNEMONICS.get(op.family)
+def _validate_x86_encoding(
+    op: FloorOp, placement: FloorPlacement, schedule: FloorSchedule
+) -> InstructionEncoding:
+    """Validate the concrete opcode against the scheduled machine form."""
+
+    form = placement.form
+    requested = placement.encoding
+    mnemonic = op.asm_mnemonic or (
+        requested.mnemonic if requested is not None else None
+    )
+    if mnemonic is None:
+        mnemonic = _DEFAULT_MNEMONICS.get(op.family)
+    if mnemonic is None:
+        raise FloorPlannerError(
+            f"operation {op.id} ({op.family}) has no direct x86-64 encoding"
+        )
+    try:
+        concrete = x86_encoding(mnemonic)
+    except CpuModelError as exc:
+        raise FloorPlannerError(str(exc)) from exc
+    if concrete.family.casefold() != form.family.casefold():
+        raise FloorPlannerError(
+            f"operation {op.id} emits {concrete.mnemonic}, but the scheduled form "
+            f"is {form.family}"
+        )
+    if concrete.operands is not None and _normalize_operands(
+        concrete.operands
+    ) != _normalize_operands(form.operands):
+        raise FloorPlannerError(
+            f"operation {op.id} emits {concrete.mnemonic}, but its operand form "
+            f"is {form.operands}"
+        )
+    if concrete.source_count != len(op.inputs):
+        raise FloorPlannerError(
+            f"operation {op.id} emits {concrete.mnemonic} with the wrong source count"
+        )
+    if concrete.tied_input != op.tied_input:
+        raise FloorPlannerError(
+            f"operation {op.id} emits {concrete.mnemonic} with the wrong tied input"
+        )
+    if concrete.requires_immediate != (op.immediate is not None):
+        raise FloorPlannerError(
+            f"operation {op.id} emits {concrete.mnemonic} with the wrong immediate contract"
+        )
+    if requested is not None and requested != concrete:
+        raise FloorPlannerError(
+            f"operation {op.id} placement encoding does not match emitted {concrete.mnemonic}"
+        )
+    missing = sorted(
+        feature
+        for feature in concrete.required_features
+        if feature not in schedule.cpu_features
+    )
+    if missing:
+        raise FloorPlannerError(
+            f"operation {op.id} emits {concrete.mnemonic} without ISA features: "
+            f"{', '.join(missing)}"
+        )
+    return concrete
+
+
+def _normalize_operands(value: str) -> str:
+    return ",".join(part.strip() for part in value.split(","))
+
+
+def _validate_x86_memory_encoding(
+    kind: str, placement: object, schedule: FloorSchedule
+) -> InstructionEncoding:
+    concrete = x86_memory_encoding(kind)
+    requested = getattr(placement, "encoding", None)
+    if requested is not None and requested != concrete:
+        raise FloorPlannerError(
+            f"memory {kind} placement encoding does not match {concrete.mnemonic}"
+        )
+    form = getattr(placement, "form", None)
+    if form is not None:
+        if form.family.casefold() != concrete.family.casefold():
+            raise FloorPlannerError(
+                f"memory {kind} emits {concrete.mnemonic}, but the scheduled form "
+                f"is {form.family}"
+            )
+        if form.operands != concrete.operands:
+            raise FloorPlannerError(
+                f"memory {kind} emits {concrete.mnemonic} with the wrong operands"
+            )
+    missing = sorted(
+        feature
+        for feature in concrete.required_features
+        if feature not in schedule.cpu_features
+    )
+    if missing:
+        raise FloorPlannerError(
+            f"memory {kind} emits {concrete.mnemonic} without ISA features: "
+            f"{', '.join(missing)}"
+        )
+    return concrete
+
+
+def _emit_operation(
+    op: FloorOp, dst: int, sources: list[int], mnemonic: str
+) -> list[str]:
     if mnemonic is None:
         raise FloorPlannerError(
             f"operation {op.id} ({op.family}) has no direct x86-64 mnemonic"
@@ -118,10 +270,10 @@ def _emit_operation(op: FloorOp, dst: int, sources: list[int]) -> list[str]:
             raise FloorPlannerError(f"operation {op.id} needs a ternary immediate")
         # GNU as exposes VPTERNLOG's destructive destination as the last
         # vector operand.  A separate copy would be an extra scheduled op, so
-        # v1 requires the first logical input to share the destination register.
+        # v2 requires the first logical input to share the destination register.
         if op.tied_input != 0 or sources[0] != dst:
             raise FloorPlannerError(
-                f"operation {op.id} requires a tied ternary destination in v1"
+                f"operation {op.id} requires a tied ternary destination in v2"
             )
         return [
             f"    vpternlogq ${op.immediate}, %zmm{sources[2]}, "
@@ -129,5 +281,5 @@ def _emit_operation(op: FloorOp, dst: int, sources: list[int]) -> list[str]:
         ]
 
     raise FloorPlannerError(
-        f"operation {op.id} has {len(sources)} inputs; direct x86 v1 supports two or three"
+        f"operation {op.id} has {len(sources)} inputs; direct x86 v2 supports two or three"
     )

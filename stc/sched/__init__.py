@@ -17,7 +17,9 @@ Usage:
 from stc.sched.cpu_model import (
     CpuModel,
     CpuModelError,
+    InstructionEncoding,
     InstructionForm,
+    MemoryModel,
     RegisterFileSpec,
     ResourceSpec,
     cpu_from_agner_csv,
@@ -50,6 +52,7 @@ from stc.sched.floor_planner import (
     FloorProgram,
     FloorPlacement,
     FloorSchedule,
+    MemoryPlacement,
     RegisterPlan,
     plan_floor,
 )
@@ -59,12 +62,20 @@ from stc.sched.floor_backend import (
     emit_circuit_x86_64_asm,
     plan_circuit_floor,
 )
+from stc.sched.x86_encodings import (
+    avx512_memory_model,
+    x86_encoding,
+    x86_encoding_specs,
+    x86_memory_encoding,
+)
 
 __all__ = [
     "TargetModel",
     "CpuModel",
     "CpuModelError",
+    "InstructionEncoding",
     "InstructionForm",
+    "MemoryModel",
     "RegisterFileSpec",
     "ResourceSpec",
     "cpu_from_agner_csv",
@@ -99,10 +110,15 @@ __all__ = [
     "FloorProgram",
     "FloorPlacement",
     "FloorSchedule",
+    "MemoryPlacement",
     "RegisterPlan",
     "plan_floor",
     "emit_x86_64_asm",
     "circuit_to_floor_program",
     "emit_circuit_x86_64_asm",
     "plan_circuit_floor",
+    "x86_encoding",
+    "x86_encoding_specs",
+    "x86_memory_encoding",
+    "avx512_memory_model",
 ]

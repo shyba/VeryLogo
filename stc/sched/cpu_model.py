@@ -8,9 +8,10 @@ unknown timing for a memory form.
 
 This module is deliberately descriptive.  It preserves every row from an
 Agner CSV and keeps the machine-wide facts (issue width, resource capacities,
-and register files) separate from the instruction rows.  A future scheduler
-can therefore choose an instruction form and reserve resources without
-silently inheriting the old ``one family -> one row`` approximation.
+register files, concrete encodings, and optional memory forms) separate from
+the instruction rows.  A scheduler can therefore choose an instruction form
+and reserve resources without silently inheriting the old ``one family -> one
+row`` approximation.
 """
 
 from __future__ import annotations
@@ -57,6 +58,46 @@ class RegisterFileSpec:
             raise CpuModelError("register-file count must be positive")
         if self.width_bits < 1:
             raise CpuModelError("register-file width must be positive")
+
+
+@dataclass(frozen=True)
+class InstructionEncoding:
+    """A concrete machine encoding selected for one instruction form.
+
+    Agner rows often group several mnemonics with identical timing (for
+    example ``PAND PANDN POR PXOR``).  A floor plan still needs the concrete
+    opcode that will be emitted.  Keeping that identity here lets the planner
+    validate arity, destructive operands, and ISA requirements before an
+    emitter turns the plan into text.
+    """
+
+    name: str
+    mnemonic: str
+    family: str
+    source_count: int
+    operands: str | None = None
+    required_features: frozenset[str] = frozenset()
+    tied_input: int | None = None
+    requires_immediate: bool = False
+    target: str = "generic"
+    source: str = "manifest"
+
+    def __post_init__(self) -> None:
+        if not self.name:
+            raise CpuModelError("encoding name must not be empty")
+        if not self.mnemonic:
+            raise CpuModelError("encoding mnemonic must not be empty")
+        if not self.family:
+            raise CpuModelError("encoding family must not be empty")
+        if self.source_count < 0:
+            raise CpuModelError("encoding source count must not be negative")
+        if self.tied_input is not None and not 0 <= self.tied_input < self.source_count:
+            raise CpuModelError("encoding tied input is outside source operands")
+        object.__setattr__(
+            self,
+            "required_features",
+            frozenset(feature.casefold() for feature in self.required_features),
+        )
 
 
 @dataclass(frozen=True)
@@ -115,6 +156,41 @@ class InstructionForm:
 
 
 @dataclass(frozen=True)
+class MemoryModel:
+    """Explicit vector load/store forms for an ABI-facing floor plan."""
+
+    load: InstructionForm
+    store: InstructionForm
+    load_encoding: InstructionEncoding | None = None
+    store_encoding: InstructionEncoding | None = None
+
+    def __post_init__(self) -> None:
+        for kind, form in (("load", self.load), ("store", self.store)):
+            if form.latency is None:
+                raise CpuModelError(f"memory {kind} form needs known latency")
+            if form.reciprocal_throughput is None:
+                raise CpuModelError(f"memory {kind} form needs known throughput")
+            if form.uops is None:
+                raise CpuModelError(f"memory {kind} form needs known uop count")
+            if not form.pipes:
+                raise CpuModelError(f"memory {kind} form needs eligible resources")
+        for kind, form, encoding in (
+            ("load", self.load, self.load_encoding),
+            ("store", self.store, self.store_encoding),
+        ):
+            if encoding is None:
+                continue
+            if encoding.family.casefold() != kind:
+                raise CpuModelError(
+                    f"memory {kind} encoding family is {encoding.family!r}"
+                )
+            if encoding.operands is not None and encoding.operands != form.operands:
+                raise CpuModelError(
+                    f"memory {kind} encoding operands do not match its form"
+                )
+
+
+@dataclass(frozen=True)
 class CpuModel:
     """A machine-level floor description plus all source instruction forms."""
 
@@ -125,6 +201,8 @@ class CpuModel:
     register_files: tuple[RegisterFileSpec, ...] = ()
     features: frozenset[str] = frozenset()
     source: str = "agner"
+    encodings: tuple[InstructionEncoding, ...] = ()
+    memory: MemoryModel | None = None
 
     def __post_init__(self) -> None:
         if not self.name:
@@ -139,6 +217,20 @@ class CpuModel:
         register_names = [reg.name for reg in self.register_files]
         if len(register_names) != len(set(register_names)):
             raise CpuModelError("CPU register-file names must be unique")
+        if any(
+            not isinstance(encoding, InstructionEncoding) for encoding in self.encodings
+        ):
+            raise CpuModelError("CPU encodings must be InstructionEncoding values")
+        encoding_names = [encoding.name.casefold() for encoding in self.encodings]
+        if len(encoding_names) != len(set(encoding_names)):
+            raise CpuModelError("CPU encoding names must be unique")
+        if self.memory is not None and not isinstance(self.memory, MemoryModel):
+            raise CpuModelError("CPU memory model must be a MemoryModel")
+        object.__setattr__(
+            self,
+            "features",
+            frozenset(feature.casefold() for feature in self.features),
+        )
 
     @property
     def families(self) -> tuple[str, ...]:
@@ -216,6 +308,18 @@ class CpuModel:
             if register_file.name == name:
                 return register_file
         raise CpuModelError(f"unknown register file {name!r}")
+
+    def encoding(self, name: str) -> InstructionEncoding:
+        """Return a concrete encoding from the target manifest."""
+
+        wanted = name.casefold()
+        for encoding in self.encodings:
+            if (
+                encoding.name.casefold() == wanted
+                or encoding.mnemonic.casefold() == wanted
+            ):
+                return encoding
+        raise CpuModelError(f"unknown instruction encoding {name!r}")
 
 
 _REQUIRED_COLUMNS = {
@@ -336,15 +440,18 @@ def cpu_from_agner_csv(
     resources: Iterable[ResourceSpec] | None = None,
     register_files: Iterable[RegisterFileSpec] = (),
     features: Iterable[str] = (),
+    encodings: Iterable[InstructionEncoding] = (),
+    memory: MemoryModel | None = None,
 ) -> CpuModel:
     """Construct a CPU description from an Agner table and machine manifest.
 
     Agner supplies instruction forms and timing/resource eligibility.  It does
-    not, by itself, define the complete architectural register file or global
-    issue width, so those facts are explicit arguments rather than guessed from
-    the CSV.  When no resources are supplied, pipe names are exposed with a
-    neutral capacity of one unit/cycle; callers should provide measured or
-    vendor-backed capacities before using them for scheduling.
+    not, by itself, define the complete architectural register file, global
+    issue width, concrete opcode mapping, or ABI memory policy, so those facts
+    are explicit arguments rather than guessed from the CSV.  When no
+    resources are supplied, pipe names are exposed with a neutral capacity of
+    one unit/cycle; callers should provide measured or vendor-backed capacities
+    before using them for scheduling.
     """
 
     csv_path = Path(path)
@@ -353,6 +460,7 @@ def cpu_from_agner_csv(
         resources = tuple(ResourceSpec(name=pipe) for pipe in _pipe_names(forms))
     resource_tuple = tuple(resources)
     register_tuple = tuple(register_files)
+    encoding_tuple = tuple(encodings)
     return CpuModel(
         name=name or csv_path.stem,
         instruction_forms=forms,
@@ -362,6 +470,8 @@ def cpu_from_agner_csv(
         # Form feature tokens describe requirements; only the explicit
         # manifest describes what this CPU actually supports.
         features=frozenset(feature.casefold() for feature in features),
+        encodings=encoding_tuple,
+        memory=memory,
         source=f"agner:{csv_path}",
     )
 

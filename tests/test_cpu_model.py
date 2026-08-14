@@ -6,6 +6,7 @@ from stc.sched import (
     RegisterFileSpec,
     ResourceSpec,
     TargetModel,
+    x86_encoding_specs,
     cpu_from_agner_csv,
     load_agner_forms,
     parse_pipe_set,
@@ -70,3 +71,18 @@ class TestCpuModel(unittest.TestCase):
         )
         self.assertIs(target.cpu, cpu)
         self.assertEqual(target.max_per_cycle("unknown"), 4)
+
+    def test_concrete_encoding_manifest_is_preserved(self):
+        cpu = cpu_from_agner_csv(
+            TABLE,
+            name="zen5-encoding-test",
+            issue_width=4,
+            resources=(ResourceSpec("P0"), ResourceSpec("P1")),
+            register_files=(RegisterFileSpec("zmm", 32, 512),),
+            features=("avx512f",),
+            encodings=x86_encoding_specs(),
+        )
+        encoding = cpu.encoding("vpxorq")
+        self.assertEqual(encoding.family, "bitwise")
+        self.assertEqual(encoding.source_count, 2)
+        self.assertIn("avx512f", encoding.required_features)

@@ -38,9 +38,8 @@ planner. `load_agner_forms` preserves every operand-form row (including
 unknown timings and eligible pipe sets) instead of collapsing a family to one
 representative instruction. `cpu_from_agner_csv` combines those rows with an
 explicit machine manifest for issue width, resource capacities, register
-files, and ISA features. The existing schedulers still consume the legacy
-`TargetModel` projection; resource reservation and target instruction
-selection are intentionally the next layer.
+files, ISA features, concrete encodings, and optional memory forms. The
+existing schedulers still consume the legacy `TargetModel` projection.
 
 ### Floor planner v1 (`floor_planner.py`)
 The v1 path accepts an explicit value DAG (`FloorProgram`), resolves each
@@ -70,6 +69,42 @@ non-destructive AVX-512 integer bitwise operations and tied `VPTERNLOG`
 forms for NOT/MUX/ternary logic. Constant/copy expansions, spills, memory
 scheduling, and automatic instruction selection remain rejected until their
 costs are represented in the machine IR.
+
+### Floor planner v2
+
+v2 closes the boundary between an Agner timing row and the opcode that is
+actually emitted. `InstructionEncoding` records the concrete mnemonic, source
+arity, tied-input and immediate contract, and required ISA features. A
+`FloorOp` may carry that encoding; the planner validates it against the
+selected `InstructionForm`, and the x86 emitter independently rejects a legacy
+opcode override that describes a different form. The target feature manifest
+must include the encoding's requirements (for example `avx512f`).
+
+`MemoryModel` adds explicit vector load and store forms. Passing it to
+`CpuModel` or `plan_floor` creates a conservative ABI envelope: used inputs
+are scheduled as loads, the core DAG starts after load latency, and outputs are
+scheduled as stores after the final result latency. `FloorSchedule` exposes
+those memory placements and the core offset, so its total-cycle figure no
+longer silently excludes the function's fixed I/O traffic. The envelope is
+serial by design; load/core overlap remains a later optimization.
+
+```python
+from stc.sched import (
+    avx512_memory_model,
+    cpu_from_agner_csv,
+    x86_encoding_specs,
+)
+
+cpu = cpu_from_agner_csv(
+    table_path,
+    issue_width=4,
+    resources=resources,
+    register_files=register_files,
+    features=("avx512f", "avx512vnni"),
+    encodings=x86_encoding_specs(),
+    memory=avx512_memory_model(),
+)
+```
 
 ### Schedule (`schedule.py`)
 Assignment of gates to cycles and registers.

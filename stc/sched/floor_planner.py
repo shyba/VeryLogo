@@ -6,10 +6,11 @@ operations already name a logical instruction family and an operand form.  The
 planner resolves that form against :class:`~stc.sched.cpu_model.CpuModel`,
 tracks dependency latency, and reserves eligible execution resources.
 
-This is deliberately not an instruction selector or a spill scheduler yet.
-Those decisions must be explicit before they can be optimized.  A v1 plan
-therefore rejects ambiguous forms and register pressure that cannot fit in the
-declared register file instead of silently producing an optimistic schedule.
+This is deliberately not a spill scheduler or a speculative instruction
+selector.  A v2 plan rejects ambiguous forms, unbound concrete encodings, and
+register pressure that cannot fit in the declared register file instead of
+silently producing an optimistic schedule.  An optional explicit memory model
+accounts for the ABI load/store envelope.
 """
 
 from __future__ import annotations
@@ -18,7 +19,17 @@ import math
 from dataclasses import dataclass
 from typing import Iterable, Mapping
 
-from stc.sched.cpu_model import CpuModel, CpuModelError, InstructionForm
+from stc.sched.cpu_model import (
+    CpuModel,
+    CpuModelError,
+    InstructionEncoding,
+    InstructionForm,
+    MemoryModel,
+)
+
+
+def _normalize_operands(value: str) -> str:
+    return ",".join(part.strip() for part in value.split(","))
 
 
 class FloorPlannerError(ValueError):
@@ -38,6 +49,8 @@ class FloorOp:
     ``asm_mnemonic`` is an optional target-emitter spelling.  Keeping it
     separate from Agner's grouped instruction-family name lets the planner
     remain descriptive while a direct emitter uses a concrete opcode.
+    ``encoding`` is the v2 contract: when present, the planner validates the
+    concrete opcode against the selected Agner form before scheduling.
     """
 
     id: int
@@ -49,6 +62,7 @@ class FloorOp:
     immediate: int | None = None
     form: InstructionForm | None = None
     tied_input: int | None = None
+    encoding: InstructionEncoding | None = None
 
     def __post_init__(self) -> None:
         if self.id < 0:
@@ -63,6 +77,18 @@ class FloorOp:
             raise FloorPlannerError("operation immediate must fit in 8 bits")
         if self.tied_input is not None and not 0 <= self.tied_input < len(self.inputs):
             raise FloorPlannerError("tied input index is outside operation inputs")
+        if self.encoding is not None:
+            if not isinstance(self.encoding, InstructionEncoding):
+                raise FloorPlannerError(
+                    "operation encoding must be InstructionEncoding"
+                )
+            if (
+                self.asm_mnemonic is not None
+                and self.asm_mnemonic.casefold() != self.encoding.mnemonic.casefold()
+            ):
+                raise FloorPlannerError(
+                    "operation asm mnemonic does not match its concrete encoding"
+                )
 
 
 @dataclass(frozen=True)
@@ -121,7 +147,9 @@ class FloorProgram:
     def predecessors(self) -> dict[int, frozenset[int]]:
         producers = self.producer_by_value
         return {
-            op.id: frozenset(producers[value] for value in op.inputs if value in producers)
+            op.id: frozenset(
+                producers[value] for value in op.inputs if value in producers
+            )
             for op in self.operations
         }
 
@@ -143,6 +171,20 @@ class FloorPlacement:
     cycle: int
     form: InstructionForm
     resources: tuple[str, ...]
+    encoding: InstructionEncoding | None = None
+
+
+@dataclass(frozen=True)
+class MemoryPlacement:
+    """One scheduled ABI load or store."""
+
+    kind: str
+    value: int
+    slot: int
+    cycle: int
+    form: InstructionForm
+    resources: tuple[str, ...]
+    encoding: InstructionEncoding | None = None
 
 
 @dataclass(frozen=True)
@@ -164,6 +206,10 @@ class FloorSchedule:
     placements: Mapping[int, FloorPlacement]
     registers: RegisterPlan
     total_cycles: int
+    memory_placements: tuple[MemoryPlacement, ...] = ()
+    core_start: int = 0
+    core_cycles: int = 0
+    cpu_features: frozenset[str] = frozenset()
 
     def placement(self, op_id: int) -> FloorPlacement:
         try:
@@ -185,6 +231,17 @@ class FloorSchedule:
                 usage[resource] = usage.get(resource, 0) + 1
         return usage
 
+    def memory_resource_usage(self, cycle: int) -> dict[str, int]:
+        """Return memory-form resource use at one planned cycle."""
+
+        usage: dict[str, int] = {}
+        for placement in self.memory_placements:
+            if placement.cycle != cycle:
+                continue
+            for resource in placement.resources:
+                usage[resource] = usage.get(resource, 0) + 1
+        return usage
+
 
 @dataclass(frozen=True)
 class _ResolvedOp:
@@ -192,6 +249,7 @@ class _ResolvedOp:
     form: InstructionForm
     latency: int
     issue_limit: int
+    encoding: InstructionEncoding | None
 
 
 class FloorPlanner:
@@ -204,9 +262,16 @@ class FloorPlanner:
     can be achieved in a single cycle.
     """
 
-    def __init__(self, cpu: CpuModel, *, register_file: str | None = None):
+    def __init__(
+        self,
+        cpu: CpuModel,
+        *,
+        register_file: str | None = None,
+        memory: MemoryModel | None = None,
+    ):
         self.cpu = cpu
         self.register_file = register_file
+        self.memory = memory if memory is not None else cpu.memory
 
     def plan(self, program: FloorProgram) -> FloorSchedule:
         resolved = self._resolve(program)
@@ -222,7 +287,8 @@ class FloorPlanner:
                 op_id
                 for op_id in unscheduled
                 if all(pred in placements for pred in predecessors[op_id])
-                and self._ready_cycle(op_id, predecessors, placements, resolved) <= cycle
+                and self._ready_cycle(op_id, predecessors, placements, resolved)
+                <= cycle
             ]
             ready.sort(
                 key=lambda op_id: (
@@ -248,6 +314,7 @@ class FloorPlanner:
                     cycle=cycle,
                     form=candidate.form,
                     resources=assignment,
+                    encoding=candidate.encoding,
                 )
                 unscheduled.remove(op_id)
                 placed_this_cycle = True
@@ -264,7 +331,10 @@ class FloorPlanner:
                     )
                 for op_id in blocked:
                     candidate = resolved[op_id]
-                    if candidate.form.uops and candidate.form.uops > self._issue_capacity():
+                    if (
+                        candidate.form.uops
+                        and candidate.form.uops > self._issue_capacity()
+                    ):
                         raise FloorPlannerError(
                             f"operation {op_id} needs {candidate.form.uops} uops, "
                             f"but CPU issue width is {self._issue_capacity()}"
@@ -273,9 +343,30 @@ class FloorPlanner:
                 # correct; the next cycle has fresh port and issue capacity.
             cycle += 1
 
-        total_cycles = max((placement.cycle for placement in placements.values()), default=-1) + 1
+        core_cycles = (
+            max((placement.cycle for placement in placements.values()), default=-1) + 1
+        )
+        if self.memory is None:
+            memory_placements: tuple[MemoryPlacement, ...] = ()
+            core_start = 0
+            total_cycles = core_cycles
+        else:
+            placements, memory_placements, core_start, total_cycles = self._plan_memory(
+                program,
+                placements,
+                resolved,
+                core_cycles,
+            )
         registers = self._allocate_registers(program, placements, total_cycles)
-        schedule = FloorSchedule(placements, registers, total_cycles)
+        schedule = FloorSchedule(
+            placements,
+            registers,
+            total_cycles,
+            memory_placements=memory_placements,
+            core_start=core_start,
+            core_cycles=core_cycles,
+            cpu_features=self.cpu.features,
+        )
         self.validate(program, schedule)
         return schedule
 
@@ -290,23 +381,46 @@ class FloorPlanner:
             placement = schedule.placements[op_id]
             if placement.form != candidate.form:
                 raise FloorPlannerError(f"operation {op_id} changed instruction form")
+            if placement.encoding != candidate.encoding:
+                raise FloorPlannerError(f"operation {op_id} changed concrete encoding")
             if len(placement.resources) != (candidate.form.uops or 0):
-                raise FloorPlannerError(f"operation {op_id} has the wrong uop assignment")
-            if any(resource not in candidate.form.pipes for resource in placement.resources):
-                raise FloorPlannerError(f"operation {op_id} uses an ineligible resource")
+                raise FloorPlannerError(
+                    f"operation {op_id} has the wrong uop assignment"
+                )
+            if any(
+                resource not in candidate.form.pipes for resource in placement.resources
+            ):
+                raise FloorPlannerError(
+                    f"operation {op_id} uses an ineligible resource"
+                )
             if candidate.op.tied_input is not None:
                 tied_value = candidate.op.inputs[candidate.op.tied_input]
-                output_register = schedule.registers.value_to_register.get(candidate.op.output)
+                output_register = schedule.registers.value_to_register.get(
+                    candidate.op.output
+                )
                 tied_register = schedule.registers.value_to_register.get(tied_value)
-                if output_register is None or tied_register is None or output_register != tied_register:
+                if (
+                    output_register is None
+                    or tied_register is None
+                    or output_register != tied_register
+                ):
                     raise FloorPlannerError(
                         f"operation {op_id} violates its tied destination constraint"
                     )
             for pred in predecessors[op_id]:
-                if schedule.placements[pred].cycle + resolved[pred].latency > placement.cycle:
+                if (
+                    schedule.placements[pred].cycle + resolved[pred].latency
+                    > placement.cycle
+                ):
                     raise FloorPlannerError(
                         f"operation {op_id} violates dependency latency from {pred}"
                     )
+
+        if schedule.cpu_features != self.cpu.features:
+            raise FloorPlannerError(
+                "schedule CPU feature manifest does not match planner"
+            )
+        self._validate_memory(program, resolved, schedule)
 
         for cycle in range(schedule.total_cycles):
             usage = schedule.resource_usage(cycle)
@@ -326,10 +440,13 @@ class FloorPlanner:
                 key = self._form_key(resolved[op_id].form)
                 forms[key] = forms.get(key, 0) + 1
             for key, count in forms.items():
-                limit = resolved[next(
-                    op_id for op_id in schedule.operations_at(cycle)
-                    if self._form_key(resolved[op_id].form) == key
-                )].issue_limit
+                limit = resolved[
+                    next(
+                        op_id
+                        for op_id in schedule.operations_at(cycle)
+                        if self._form_key(resolved[op_id].form) == key
+                    )
+                ].issue_limit
                 if count > limit:
                     raise FloorPlannerError(
                         f"form {key} exceeds issue limit at cycle {cycle}"
@@ -345,36 +462,7 @@ class FloorPlanner:
                     form = self.cpu.select_form(op.family, operands=op.operands)
                 except CpuModelError as exc:
                     raise FloorPlannerError(f"operation {op.id}: {exc}") from exc
-            if form.latency is None:
-                raise FloorPlannerError(
-                    f"operation {op.id} uses form with unknown latency ({form.source})"
-                )
-            if form.reciprocal_throughput is None:
-                raise FloorPlannerError(
-                    f"operation {op.id} uses form with unknown throughput ({form.source})"
-                )
-            cpu_features = {feature.casefold() for feature in self.cpu.features}
-            missing_features = sorted(
-                feature for feature in form.features if feature.casefold() not in cpu_features
-            )
-            if missing_features:
-                raise FloorPlannerError(
-                    f"operation {op.id} requires unavailable ISA features: "
-                    f"{', '.join(missing_features)}"
-                )
-            for resource in form.pipes:
-                try:
-                    self.cpu.resource(resource)
-                except CpuModelError as exc:
-                    raise FloorPlannerError(
-                        f"operation {op.id} references undeclared resource {resource}"
-                    ) from exc
-            if not form.pipes:
-                raise FloorPlannerError(f"operation {op.id} has no eligible resources")
-            if form.uops is None:
-                raise FloorPlannerError(
-                    f"operation {op.id} has no uop count in {form.source}"
-                )
+            self._validate_form(form, f"operation {op.id}")
             total_resource_capacity = sum(
                 math.floor(self.cpu.resource(resource).capacity + 1e-9)
                 for resource in set(form.pipes)
@@ -385,13 +473,400 @@ class FloorPlanner:
                     f"eligible resources provide {total_resource_capacity}"
                 )
             issue_limit = max(1, math.floor((1.0 / form.reciprocal_throughput) + 1e-9))
+            encoding = self._resolve_encoding(op, form)
             result[op.id] = _ResolvedOp(
                 op=op,
                 form=form,
                 latency=max(1, math.ceil(form.latency)),
                 issue_limit=issue_limit,
+                encoding=encoding,
             )
         return result
+
+    def _validate_form(self, form: InstructionForm, label: str) -> None:
+        if form.latency is None:
+            raise FloorPlannerError(
+                f"{label} uses form with unknown latency ({form.source})"
+            )
+        if form.reciprocal_throughput is None:
+            raise FloorPlannerError(
+                f"{label} uses form with unknown throughput ({form.source})"
+            )
+        cpu_features = {feature.casefold() for feature in self.cpu.features}
+        missing_features = sorted(
+            feature
+            for feature in form.features
+            if feature.casefold() not in cpu_features
+        )
+        if missing_features:
+            raise FloorPlannerError(
+                f"{label} requires unavailable ISA features: "
+                f"{', '.join(missing_features)}"
+            )
+        for resource in form.pipes:
+            try:
+                self.cpu.resource(resource)
+            except CpuModelError as exc:
+                raise FloorPlannerError(
+                    f"{label} references undeclared resource {resource}"
+                ) from exc
+        if not form.pipes:
+            raise FloorPlannerError(f"{label} has no eligible resources")
+        if form.uops is None:
+            raise FloorPlannerError(f"{label} has no uop count in {form.source}")
+
+    def _resolve_encoding(
+        self, op: FloorOp, form: InstructionForm
+    ) -> InstructionEncoding | None:
+        encoding = op.encoding
+        if encoding is None and op.asm_mnemonic and self.cpu.encodings:
+            try:
+                encoding = self.cpu.encoding(op.asm_mnemonic)
+            except CpuModelError as exc:
+                raise FloorPlannerError(
+                    f"operation {op.id} opcode {op.asm_mnemonic!r} is not in the "
+                    "CPU manifest"
+                ) from exc
+        if encoding is None:
+            return None
+        if self.cpu.encodings:
+            try:
+                manifest_encoding = self.cpu.encoding(encoding.name)
+            except CpuModelError as exc:
+                raise FloorPlannerError(
+                    f"operation {op.id} encoding {encoding.name!r} is not in the "
+                    "CPU manifest"
+                ) from exc
+            if manifest_encoding != encoding:
+                raise FloorPlannerError(
+                    f"operation {op.id} encoding {encoding.name!r} differs from "
+                    "the CPU manifest"
+                )
+        if encoding.family.casefold() != form.family.casefold():
+            raise FloorPlannerError(
+                f"operation {op.id} encoding {encoding.name!r} does not match "
+                f"form family {form.family!r}"
+            )
+        if encoding.operands is not None and _normalize_operands(
+            encoding.operands
+        ) != _normalize_operands(form.operands):
+            raise FloorPlannerError(
+                f"operation {op.id} encoding {encoding.name!r} does not match "
+                f"form operands {form.operands!r}"
+            )
+        if encoding.source_count != len(op.inputs):
+            raise FloorPlannerError(
+                f"operation {op.id} encoding {encoding.name!r} expects "
+                f"{encoding.source_count} sources, got {len(op.inputs)}"
+            )
+        if encoding.tied_input != op.tied_input:
+            raise FloorPlannerError(
+                f"operation {op.id} encoding {encoding.name!r} has tied input "
+                f"{encoding.tied_input}, operation has {op.tied_input}"
+            )
+        if encoding.requires_immediate != (op.immediate is not None):
+            requirement = (
+                "requires" if encoding.requires_immediate else "does not accept"
+            )
+            raise FloorPlannerError(
+                f"operation {op.id} encoding {encoding.name!r} {requirement} an immediate"
+            )
+        missing_features = sorted(
+            feature
+            for feature in encoding.required_features
+            if feature.casefold() not in self.cpu.features
+        )
+        if missing_features:
+            raise FloorPlannerError(
+                f"operation {op.id} encoding {encoding.name!r} requires unavailable "
+                f"ISA features: {', '.join(missing_features)}"
+            )
+        return encoding
+
+    def _plan_memory(
+        self,
+        program: FloorProgram,
+        placements: Mapping[int, FloorPlacement],
+        resolved: Mapping[int, _ResolvedOp],
+        core_cycles: int,
+    ) -> tuple[dict[int, FloorPlacement], tuple[MemoryPlacement, ...], int, int]:
+        """Plan a serial ABI load/core/store envelope around the value DAG.
+
+        v2 deliberately uses a conservative envelope: all used inputs are
+        loaded before the core DAG and all outputs are stored after its final
+        result latency.  The memory forms and their resource reservations are
+        explicit, so the reported floor no longer treats ABI traffic as free;
+        overlap can be added later without changing the machine contract.
+        """
+
+        if self.memory is None:
+            raise FloorPlannerError("memory plan requested without a memory model")
+
+        used_inputs = {
+            value
+            for op in program.operations
+            for value in op.inputs
+            if value in program.input_set
+        }
+        used_inputs.update(
+            value for value in program.outputs if value in program.input_set
+        )
+        load_accesses = tuple(
+            (value, slot)
+            for slot, value in enumerate(program.inputs)
+            if value in used_inputs
+        )
+        loads, load_end = self._schedule_memory_accesses(
+            "load", load_accesses, 0, self.memory.load, self.memory.load_encoding
+        )
+
+        shifted = {
+            op_id: FloorPlacement(
+                cycle=placement.cycle + load_end,
+                form=placement.form,
+                resources=placement.resources,
+                encoding=placement.encoding,
+            )
+            for op_id, placement in placements.items()
+        }
+        core_finish = max(
+            (
+                placement.cycle + resolved[op_id].latency
+                for op_id, placement in shifted.items()
+            ),
+            default=load_end + core_cycles,
+        )
+        store_accesses = tuple(
+            (value, slot) for slot, value in enumerate(program.outputs)
+        )
+        stores, store_end = self._schedule_memory_accesses(
+            "store",
+            store_accesses,
+            core_finish,
+            self.memory.store,
+            self.memory.store_encoding,
+        )
+        return shifted, loads + stores, load_end, max(core_finish, store_end)
+
+    def _schedule_memory_accesses(
+        self,
+        kind: str,
+        accesses: tuple[tuple[int, int], ...],
+        start_cycle: int,
+        form: InstructionForm,
+        encoding: InstructionEncoding | None,
+    ) -> tuple[tuple[MemoryPlacement, ...], int]:
+        self._validate_form(form, f"memory {kind}")
+        self._validate_memory_encoding(kind, form, encoding)
+        issue_limit = max(1, math.floor((1.0 / form.reciprocal_throughput) + 1e-9))
+        pending = list(accesses)
+        result: list[MemoryPlacement] = []
+        cycle = start_cycle
+        while pending:
+            remaining_issue = self._issue_capacity()
+            remaining_resources = self._resource_capacities()
+            selected = 0
+            while pending and selected < issue_limit:
+                uops = form.uops or 0
+                if uops > remaining_issue:
+                    break
+                assignment = self._assign_resources(form, remaining_resources)
+                if assignment is None:
+                    break
+                value, slot = pending.pop(0)
+                result.append(
+                    MemoryPlacement(
+                        kind=kind,
+                        value=value,
+                        slot=slot,
+                        cycle=cycle,
+                        form=form,
+                        resources=assignment,
+                        encoding=encoding,
+                    )
+                )
+                for resource in assignment:
+                    remaining_resources[resource] -= 1
+                remaining_issue -= uops
+                selected += 1
+            if selected == 0:
+                if (form.uops or 0) > self._issue_capacity():
+                    raise FloorPlannerError(
+                        f"memory {kind} form needs {form.uops} uops, but CPU issue "
+                        f"width is {self._issue_capacity()}"
+                    )
+                raise FloorPlannerError(
+                    f"memory {kind} form cannot reserve resources at cycle {cycle}"
+                )
+            cycle += 1
+        latency = max(1, math.ceil(form.latency))
+        end_cycle = max(
+            (placement.cycle + latency for placement in result),
+            default=start_cycle,
+        )
+        return tuple(result), end_cycle
+
+    def _validate_memory_encoding(
+        self,
+        kind: str,
+        form: InstructionForm,
+        encoding: InstructionEncoding | None,
+    ) -> None:
+        if encoding is None:
+            return
+        if encoding.family.casefold() != kind.casefold():
+            raise FloorPlannerError(
+                f"memory {kind} encoding {encoding.name!r} has the wrong family"
+            )
+        if encoding.operands is not None and _normalize_operands(
+            encoding.operands
+        ) != _normalize_operands(form.operands):
+            raise FloorPlannerError(
+                f"memory {kind} encoding {encoding.name!r} has the wrong operands"
+            )
+        missing_features = sorted(
+            feature
+            for feature in encoding.required_features
+            if feature.casefold() not in self.cpu.features
+        )
+        if missing_features:
+            raise FloorPlannerError(
+                f"memory {kind} encoding {encoding.name!r} requires unavailable "
+                f"ISA features: {', '.join(missing_features)}"
+            )
+
+    def _validate_memory(
+        self,
+        program: FloorProgram,
+        resolved: Mapping[int, _ResolvedOp],
+        schedule: FloorSchedule,
+    ) -> None:
+        if self.memory is None:
+            if schedule.memory_placements:
+                raise FloorPlannerError(
+                    "schedule contains memory operations without a model"
+                )
+            return
+        expected_forms = {"load": self.memory.load, "store": self.memory.store}
+        expected_encodings = {
+            "load": self.memory.load_encoding,
+            "store": self.memory.store_encoding,
+        }
+        used_inputs = {
+            value
+            for op in program.operations
+            for value in op.inputs
+            if value in program.input_set
+        }
+        used_inputs.update(
+            value for value in program.outputs if value in program.input_set
+        )
+        expected_loads = {
+            (value, slot)
+            for slot, value in enumerate(program.inputs)
+            if value in used_inputs
+        }
+        expected_stores = {(value, slot) for slot, value in enumerate(program.outputs)}
+        actual_loads = {
+            (placement.value, placement.slot)
+            for placement in schedule.memory_placements
+            if placement.kind == "load"
+        }
+        actual_stores = {
+            (placement.value, placement.slot)
+            for placement in schedule.memory_placements
+            if placement.kind == "store"
+        }
+        if actual_loads != expected_loads:
+            raise FloorPlannerError("memory schedule does not cover the used inputs")
+        if actual_stores != expected_stores:
+            raise FloorPlannerError(
+                "memory schedule does not cover the program outputs"
+            )
+        for placement in schedule.memory_placements:
+            if placement.kind not in expected_forms:
+                raise FloorPlannerError(
+                    f"unknown memory placement kind {placement.kind!r}"
+                )
+            if placement.form != expected_forms[placement.kind]:
+                raise FloorPlannerError(
+                    f"memory {placement.kind} changed its concrete form"
+                )
+            if placement.encoding != expected_encodings[placement.kind]:
+                raise FloorPlannerError(
+                    f"memory {placement.kind} changed its concrete encoding"
+                )
+            self._validate_memory_encoding(
+                placement.kind, placement.form, placement.encoding
+            )
+            if any(
+                resource not in placement.form.pipes for resource in placement.resources
+            ):
+                raise FloorPlannerError(
+                    f"memory {placement.kind} uses an ineligible resource"
+                )
+        for cycle in range(schedule.total_cycles):
+            usage = schedule.memory_resource_usage(cycle)
+            for resource, used in usage.items():
+                if used > self.cpu.resource(resource).capacity:
+                    raise FloorPlannerError(
+                        f"memory resource {resource} oversubscribed at cycle {cycle}"
+                    )
+            memory_ops = [
+                placement
+                for placement in schedule.memory_placements
+                if placement.cycle == cycle
+            ]
+            issue = sum((placement.form.uops or 0) for placement in memory_ops)
+            if issue > self._issue_capacity():
+                raise FloorPlannerError(f"memory issue width exceeded at cycle {cycle}")
+            form_counts: dict[tuple[str, str], int] = {}
+            for placement in memory_ops:
+                key = self._form_key(placement.form)
+                form_counts[key] = form_counts.get(key, 0) + 1
+            for key, count in form_counts.items():
+                form = next(
+                    placement.form
+                    for placement in memory_ops
+                    if self._form_key(placement.form) == key
+                )
+                limit = max(1, math.floor((1.0 / form.reciprocal_throughput) + 1e-9))
+                if count > limit:
+                    raise FloorPlannerError(
+                        f"memory form {key} exceeds issue limit at cycle {cycle}"
+                    )
+        load_end = max(
+            (
+                placement.cycle + max(1, math.ceil(self.memory.load.latency))
+                for placement in schedule.memory_placements
+                if placement.kind == "load"
+            ),
+            default=0,
+        )
+        if load_end != schedule.core_start:
+            raise FloorPlannerError("memory load envelope does not match core start")
+        core_finish = max(
+            (
+                placement.cycle + resolved[op_id].latency
+                for op_id, placement in schedule.placements.items()
+            ),
+            default=schedule.core_start,
+        )
+        store_end = max(
+            (
+                placement.cycle + max(1, math.ceil(self.memory.store.latency))
+                for placement in schedule.memory_placements
+                if placement.kind == "store"
+            ),
+            default=core_finish,
+        )
+        if store_end != schedule.total_cycles:
+            raise FloorPlannerError("memory store envelope does not match total cycles")
+        if any(
+            placement.kind == "store" and placement.cycle < core_finish
+            for placement in schedule.memory_placements
+        ):
+            raise FloorPlannerError("store occurs before the core result is ready")
 
     def _critical_paths(
         self,
@@ -488,7 +963,10 @@ class FloorPlanner:
             candidate = resolved[op_id]
             uops = candidate.form.uops or 0
             key = self._form_key(candidate.form)
-            if uops > remaining_issue or form_counts.get(key, 0) >= candidate.issue_limit:
+            if (
+                uops > remaining_issue
+                or form_counts.get(key, 0) >= candidate.issue_limit
+            ):
                 continue
             assignment = self._assign_resources(candidate.form, remaining_resources)
             if assignment is None:
@@ -566,9 +1044,7 @@ class FloorPlanner:
         assignment: list[str] = []
         for _ in range(form.uops):
             eligible = [
-                resource
-                for resource in form.pipes
-                if available.get(resource, 0) > 0
+                resource for resource in form.pipes if available.get(resource, 0) > 0
             ]
             if not eligible:
                 return None
@@ -645,7 +1121,9 @@ class FloorPlanner:
 
         assignments: dict[int, int] = {}
         active: list[tuple[int, int, int]] = []
-        for start, end, value in sorted(intervals, key=lambda item: (item[0], item[1], item[2])):
+        for start, end, value in sorted(
+            intervals, key=lambda item: (item[0], item[1], item[2])
+        ):
             active = [item for item in active if item[0] >= start]
             used = {item[1] for item in active}
             reserved_for_pending_ties = {
@@ -659,7 +1137,8 @@ class FloorPlanner:
                 (
                     register
                     for register in range(register_count)
-                    if register not in used and register not in reserved_for_pending_ties
+                    if register not in used
+                    and register not in reserved_for_pending_ties
                 ),
                 None,
             )
@@ -698,7 +1177,8 @@ def plan_floor(
     cpu: CpuModel,
     *,
     register_file: str | None = None,
+    memory: MemoryModel | None = None,
 ) -> FloorSchedule:
-    """Convenience wrapper for the v1 floor planner."""
+    """Plan a value DAG, optionally including an explicit ABI memory envelope."""
 
-    return FloorPlanner(cpu, register_file=register_file).plan(program)
+    return FloorPlanner(cpu, register_file=register_file, memory=memory).plan(program)

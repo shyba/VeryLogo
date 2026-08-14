@@ -1,4 +1,4 @@
-"""CircuitState adapter for the explicit floor-planner v1 path."""
+"""CircuitState adapter for the explicit floor-planner v2 path."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ from stc.sched.floor_planner import (
     FloorSchedule,
     plan_floor,
 )
+from stc.sched.x86_encodings import x86_encoding
 
 
 _GATE_ASM = {
@@ -46,6 +47,7 @@ def circuit_to_floor_program(circuit: CircuitState) -> FloorProgram:
                     output=circuit.input_bits + gate_id,
                     operands="v,v,v",
                     asm_mnemonic=_GATE_ASM[op],
+                    encoding=x86_encoding(_GATE_ASM[op]),
                 )
             )
             continue
@@ -61,6 +63,7 @@ def circuit_to_floor_program(circuit: CircuitState) -> FloorProgram:
                     asm_mnemonic="vpternlogq",
                     immediate=0x01,
                     tied_input=0,
+                    encoding=x86_encoding("vpternlogq"),
                 )
             )
             continue
@@ -76,6 +79,7 @@ def circuit_to_floor_program(circuit: CircuitState) -> FloorProgram:
                     asm_mnemonic="vpternlogq",
                     immediate=0xCA,
                     tied_input=0,
+                    encoding=x86_encoding("vpternlogq"),
                 )
             )
             continue
@@ -91,23 +95,22 @@ def circuit_to_floor_program(circuit: CircuitState) -> FloorProgram:
                     asm_mnemonic="vpternlogq",
                     immediate=immediate,
                     tied_input=0,
+                    encoding=x86_encoding("vpternlogq"),
                 )
             )
             continue
         if op in {"const", "copy"}:
             raise FloorPlannerError(
-                f"gate {gate_id} ({op!r}) is outside floor-planner v1; "
+                f"gate {gate_id} ({op!r}) is outside floor-planner v2; "
                 "constant and copy expansions need explicit machine forms"
             )
-        raise FloorPlannerError(
-            f"gate {gate_id} ({op!r}) is outside floor-planner v1"
-        )
+        raise FloorPlannerError(f"gate {gate_id} ({op!r}) is outside floor-planner v2")
 
     outputs: list[int] = []
     for output_id, inverted in circuit.outputs:
         if inverted:
             raise FloorPlannerError(
-                "inverted circuit outputs need an explicit v1 instruction expansion"
+                "inverted circuit outputs need an explicit v2 instruction expansion"
             )
         outputs.append(output_id)
     return FloorProgram(
@@ -138,7 +141,5 @@ def emit_circuit_x86_64_asm(
 ) -> str:
     """Emit a supported CircuitState as direct GNU-as x86-64 text."""
 
-    program, schedule = plan_circuit_floor(
-        circuit, cpu, register_file=register_file
-    )
+    program, schedule = plan_circuit_floor(circuit, cpu, register_file=register_file)
     return emit_x86_64_asm(program, schedule, function_name=function_name)
