@@ -33,7 +33,7 @@ AVX2 = TargetModel(
 ```
 
 ### CpuModel (`cpu_model.py`)
-`CpuModel` is the richer machine-description boundary for a future floor
+`CpuModel` is the machine-description boundary for the floor
 planner. `load_agner_forms` preserves every operand-form row (including
 unknown timings and eligible pipe sets) instead of collapsing a family to one
 representative instruction. `cpu_from_agner_csv` combines those rows with an
@@ -41,6 +41,32 @@ explicit machine manifest for issue width, resource capacities, register
 files, and ISA features. The existing schedulers still consume the legacy
 `TargetModel` projection; resource reservation and target instruction
 selection are intentionally the next layer.
+
+### Floor planner v1 (`floor_planner.py`)
+The v1 path accepts an explicit value DAG (`FloorProgram`), resolves each
+operation to one `InstructionForm`, reserves eligible resources with
+augmenting-path matching for one-uop forms, enforces dependency latency and
+form throughput, and performs non-spilling allocation in a declared register
+file. It rejects unknown timing, ambiguous forms, impossible resources, and
+register pressure instead of silently delegating those decisions to GCC.
+
+```python
+from stc.sched import FloorOp, FloorProgram, cpu_from_agner_csv, plan_floor
+
+program = FloorProgram(
+    inputs=(0, 1, 2),
+    outputs=(3,),
+    operations=(FloorOp(0, "bitwise", (0, 1), 3, operands="v,v,v"),),
+)
+schedule = plan_floor(program, cpu)
+```
+
+`stc.mir.lower_floor` provides the explicit bitwise MIR subset adapter, and
+`emit_x86_64_asm` emits GNU-as text directly. The v1 emitter covers
+non-destructive AVX-512 integer bitwise operations; multi-instruction
+expansions, tied operands, spills, memory scheduling, and automatic instruction
+selection remain rejected until their costs are represented in the machine
+IR.
 
 ### Schedule (`schedule.py`)
 Assignment of gates to cycles and registers.

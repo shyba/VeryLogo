@@ -43,6 +43,22 @@ from stc.sched.liveness import (
     max_live,
     interference_graph,
 )
+from stc.sched.floor_planner import (
+    FloorOp,
+    FloorPlanner,
+    FloorPlannerError,
+    FloorProgram,
+    FloorPlacement,
+    FloorSchedule,
+    RegisterPlan,
+    plan_floor,
+)
+from stc.sched.emit_x86_asm import emit_x86_64_asm
+from stc.sched.floor_backend import (
+    circuit_to_floor_program,
+    emit_circuit_x86_64_asm,
+    plan_circuit_floor,
+)
 
 __all__ = [
     "TargetModel",
@@ -77,4 +93,16 @@ __all__ = [
     "live_at_cycle",
     "max_live",
     "interference_graph",
+    "FloorOp",
+    "FloorPlanner",
+    "FloorPlannerError",
+    "FloorProgram",
+    "FloorPlacement",
+    "FloorSchedule",
+    "RegisterPlan",
+    "plan_floor",
+    "emit_x86_64_asm",
+    "circuit_to_floor_program",
+    "emit_circuit_x86_64_asm",
+    "plan_circuit_floor",
 ]
