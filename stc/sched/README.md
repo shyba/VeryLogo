@@ -53,6 +53,9 @@ register pressure instead of silently delegating those decisions to GCC.
 ```python
 from stc.sched import FloorOp, FloorProgram, cpu_from_agner_csv, plan_floor
 
+# Supply the Agner table plus the target's explicit machine manifest.
+cpu = cpu_from_agner_csv(table_path, issue_width=4, resources=resources,
+                         register_files=register_files, features=features)
 program = FloorProgram(
     inputs=(0, 1, 2),
     outputs=(3,),

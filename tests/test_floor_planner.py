@@ -42,6 +42,7 @@ def _cpu(*, register_count: int = 32):
         issue_width=4,
         resources=tuple(ResourceSpec(f"P{i}") for i in range(4)),
         register_files=(RegisterFileSpec("zmm", register_count, 512),),
+        features=("avx512f", "avx512vnni", "avx512bf16", "fma3"),
     )
 
 
@@ -237,6 +238,29 @@ class TestFloorPlanner(unittest.TestCase):
         )
         with self.assertRaisesRegex(FloorPlannerError, "unknown latency"):
             plan_floor(program, _cpu())
+
+    def test_instruction_feature_requirements_are_checked(self):
+        program = FloorProgram(
+            inputs=(0, 1, 2),
+            outputs=(3,),
+            operations=(
+                FloorOp(
+                    id=0,
+                    family="vnni8",
+                    operands="v,v,v",
+                    inputs=(0, 1, 2),
+                    output=3,
+                ),
+            ),
+        )
+        with self.assertRaisesRegex(FloorPlannerError, "avx512vnni"):
+            plan_floor(program, cpu_from_agner_csv(
+                TABLE,
+                issue_width=4,
+                resources=tuple(ResourceSpec(f"P{i}") for i in range(4)),
+                register_files=(RegisterFileSpec("zmm", 32, 512),),
+                features=("avx512f",),
+            ))
 
     def test_register_pressure_is_a_hard_error_in_v1(self):
         program = FloorProgram(

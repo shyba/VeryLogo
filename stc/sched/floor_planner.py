@@ -15,7 +15,7 @@ declared register file instead of silently producing an optimistic schedule.
 from __future__ import annotations
 
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Iterable, Mapping
 
 from stc.sched.cpu_model import CpuModel, CpuModelError, InstructionForm
@@ -341,6 +341,15 @@ class FloorPlanner:
             if form.reciprocal_throughput is None:
                 raise FloorPlannerError(
                     f"operation {op.id} uses form with unknown throughput ({form.source})"
+                )
+            cpu_features = {feature.casefold() for feature in self.cpu.features}
+            missing_features = sorted(
+                feature for feature in form.features if feature.casefold() not in cpu_features
+            )
+            if missing_features:
+                raise FloorPlannerError(
+                    f"operation {op.id} requires unavailable ISA features: "
+                    f"{', '.join(missing_features)}"
                 )
             for resource in form.pipes:
                 try:

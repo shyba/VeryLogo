@@ -353,16 +353,15 @@ def cpu_from_agner_csv(
         resources = tuple(ResourceSpec(name=pipe) for pipe in _pipe_names(forms))
     resource_tuple = tuple(resources)
     register_tuple = tuple(register_files)
-    all_features = set(features)
-    for form in forms:
-        all_features.update(form.features)
     return CpuModel(
         name=name or csv_path.stem,
         instruction_forms=forms,
         issue_width=issue_width,
         resources=resource_tuple,
         register_files=register_tuple,
-        features=frozenset(feature.casefold() for feature in all_features),
+        # Form feature tokens describe requirements; only the explicit
+        # manifest describes what this CPU actually supports.
+        features=frozenset(feature.casefold() for feature in features),
         source=f"agner:{csv_path}",
     )
 
