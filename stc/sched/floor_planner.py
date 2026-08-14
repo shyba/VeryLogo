@@ -48,6 +48,7 @@ class FloorOp:
     asm_mnemonic: str | None = None
     immediate: int | None = None
     form: InstructionForm | None = None
+    tied_input: int | None = None
 
     def __post_init__(self) -> None:
         if self.id < 0:
@@ -60,6 +61,8 @@ class FloorOp:
             raise FloorPlannerError("operation inputs must be non-negative")
         if self.immediate is not None and not 0 <= self.immediate <= 0xFF:
             raise FloorPlannerError("operation immediate must fit in 8 bits")
+        if self.tied_input is not None and not 0 <= self.tied_input < len(self.inputs):
+            raise FloorPlannerError("tied input index is outside operation inputs")
 
 
 @dataclass(frozen=True)
@@ -291,6 +294,14 @@ class FloorPlanner:
                 raise FloorPlannerError(f"operation {op_id} has the wrong uop assignment")
             if any(resource not in candidate.form.pipes for resource in placement.resources):
                 raise FloorPlannerError(f"operation {op_id} uses an ineligible resource")
+            if candidate.op.tied_input is not None:
+                tied_value = candidate.op.inputs[candidate.op.tied_input]
+                output_register = schedule.registers.value_to_register.get(candidate.op.output)
+                tied_register = schedule.registers.value_to_register.get(tied_value)
+                if output_register is None or tied_register is None or output_register != tied_register:
+                    raise FloorPlannerError(
+                        f"operation {op_id} violates its tied destination constraint"
+                    )
             for pred in predecessors[op_id]:
                 if schedule.placements[pred].cycle + resolved[pred].latency > placement.cycle:
                     raise FloorPlannerError(
@@ -577,13 +588,32 @@ class FloorPlanner:
     ) -> RegisterPlan:
         file_name, register_count = self._register_file_capacity()
         producers = program.producer_by_value
-        users: dict[int, list[int]] = {value: [] for value in program.inputs}
+        operation_by_output = {op.output: op for op in program.operations}
+        # Do not allocate registers for inputs that are never read.  The
+        # emitter can leave those memory slots untouched, and reserving them
+        # would make tied destructive forms fail for artificial pressure.
+        users: dict[int, list[int]] = {}
         for op in program.operations:
             users.setdefault(op.output, [])
             for value in op.inputs:
                 users.setdefault(value, []).append(op.id)
         for value in program.outputs:
             users.setdefault(value, []).append(None)  # type: ignore[arg-type]
+
+        tied_values: dict[int, int] = {}
+        for op in program.operations:
+            if op.tied_input is None:
+                continue
+            value = op.inputs[op.tied_input]
+            previous = tied_values.setdefault(value, op.id)
+            if previous != op.id:
+                raise FloorPlannerError(
+                    f"value {value} is tied to multiple destructive operations"
+                )
+            if value in program.outputs:
+                raise FloorPlannerError(
+                    f"operation {op.id} ties an output value {value} that must be preserved"
+                )
 
         intervals: list[tuple[int, int, int]] = []
         for value, value_users in users.items():
@@ -597,6 +627,20 @@ class FloorPlanner:
                     end = max(end, total_cycles)
                 else:
                     end = max(end, placements[user].cycle)
+            tied_op_id = tied_values.get(value)
+            if tied_op_id is not None:
+                tied_cycle = placements[tied_op_id].cycle
+                other_users = {
+                    user
+                    for user in value_users
+                    if user is not None and user != tied_op_id
+                }
+                if any(placements[user].cycle >= tied_cycle for user in other_users):
+                    raise FloorPlannerError(
+                        f"tied input value {value} remains live after destructive "
+                        f"operation {tied_op_id}"
+                    )
+                end = min(end, tied_cycle - 1)
             intervals.append((start, end, value))
 
         assignments: dict[int, int] = {}
@@ -604,10 +648,30 @@ class FloorPlanner:
         for start, end, value in sorted(intervals, key=lambda item: (item[0], item[1], item[2])):
             active = [item for item in active if item[0] >= start]
             used = {item[1] for item in active}
+            reserved_for_pending_ties = {
+                assignments[tied_value]
+                for tied_value, tied_op_id in tied_values.items()
+                if tied_value in assignments
+                and program.operation_by_id[tied_op_id].output not in assignments
+                and placements[tied_op_id].cycle >= start
+            }
             available = next(
-                (register for register in range(register_count) if register not in used),
+                (
+                    register
+                    for register in range(register_count)
+                    if register not in used and register not in reserved_for_pending_ties
+                ),
                 None,
             )
+            defining_op = operation_by_output.get(value)
+            if defining_op is not None and defining_op.tied_input is not None:
+                tied_value = defining_op.inputs[defining_op.tied_input]
+                available = assignments.get(tied_value)
+                if available is None or available in used:
+                    raise FloorPlannerError(
+                        f"operation {defining_op.id} cannot satisfy its tied "
+                        "destination register constraint"
+                    )
             if available is None:
                 raise FloorPlannerError(
                     f"register pressure exceeds {register_count} registers at cycle {start}"

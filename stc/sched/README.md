@@ -66,10 +66,10 @@ schedule = plan_floor(program, cpu)
 
 `stc.mir.lower_floor` provides the explicit bitwise MIR subset adapter, and
 `emit_x86_64_asm` emits GNU-as text directly. The v1 emitter covers
-non-destructive AVX-512 integer bitwise operations; multi-instruction
-expansions, tied operands, spills, memory scheduling, and automatic instruction
-selection remain rejected until their costs are represented in the machine
-IR.
+non-destructive AVX-512 integer bitwise operations and tied `VPTERNLOG`
+forms for NOT/MUX/ternary logic. Constant/copy expansions, spills, memory
+scheduling, and automatic instruction selection remain rejected until their
+costs are represented in the machine IR.
 
 ### Schedule (`schedule.py`)
 Assignment of gates to cycles and registers.

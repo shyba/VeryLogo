@@ -20,6 +20,7 @@ from stc.sched import (
     circuit_to_floor_program,
     emit_circuit_x86_64_asm,
     emit_x86_64_asm,
+    plan_circuit_floor,
     plan_floor,
 )
 from stc.circuit_synth import CircuitState
@@ -62,6 +63,27 @@ class TestFloorPlanner(unittest.TestCase):
         self.assertEqual(program.outputs, (6,))
         self.assertIn("circuit_floor_v1:", assembly)
         self.assertIn("vpxorq", assembly)
+
+    def test_circuit_state_ternary_subset_records_tied_destinations(self):
+        circuit = CircuitState(
+            input_bits=6,
+            output_bits=3,
+            gates=[
+                ("not", 0),
+                ("mux", 1, 2, 6),
+                ("ternary", 3, 4, 5, 0x96),
+            ],
+            outputs=[(6, False), (7, False), (8, False)],
+            gate_count=3,
+        )
+
+        program, schedule = plan_circuit_floor(circuit, _cpu())
+
+        self.assertEqual(program.operations[0].tied_input, 0)
+        self.assertEqual(program.operations[1].immediate, 0xCA)
+        self.assertEqual(program.operations[2].immediate, 0x96)
+        self.assertEqual(schedule.registers.value_to_register[6], schedule.registers.value_to_register[0])
+        self.assertEqual(schedule.registers.value_to_register[7], schedule.registers.value_to_register[1])
 
     def test_mir_bitwise_subset_has_a_gcc_free_path(self):
         mir = MIRFunction(
@@ -318,6 +340,91 @@ class TestFloorPlanner(unittest.TestCase):
             function.restype = None
             function(inputs, output)
             self.assertEqual(list(output), expected)
+
+    def test_tied_ternary_forms_execute_without_a_compiler(self):
+        if shutil.which("as") is None or shutil.which("ld") is None:
+            self.skipTest("GNU assembler and linker are required")
+        if "avx512f" not in _cpu_flags():
+            self.skipTest("host does not expose AVX-512F")
+
+        program = FloorProgram(
+            inputs=tuple(range(7)),
+            outputs=(7, 8, 9),
+            operations=(
+                FloorOp(
+                    0,
+                    "ternary",
+                    (0, 0, 0),
+                    7,
+                    operands="v,v,v",
+                    asm_mnemonic="vpternlogq",
+                    immediate=0x01,
+                    tied_input=0,
+                ),
+                FloorOp(
+                    1,
+                    "ternary",
+                    (1, 2, 7),
+                    8,
+                    operands="v,v,v",
+                    asm_mnemonic="vpternlogq",
+                    immediate=0xCA,
+                    tied_input=0,
+                ),
+                FloorOp(
+                    2,
+                    "ternary",
+                    (4, 5, 6),
+                    9,
+                    operands="v,v,v",
+                    asm_mnemonic="vpternlogq",
+                    immediate=0x96,
+                    tied_input=0,
+                ),
+            ),
+        )
+        schedule = plan_floor(program, _cpu())
+        assembly = emit_x86_64_asm(program, schedule, function_name="ternary_floor_v1")
+
+        with tempfile.TemporaryDirectory(prefix="stc_floor_ternary_") as directory:
+            root = Path(directory)
+            source = root / "floor.s"
+            object_file = root / "floor.o"
+            shared = root / "floor.so"
+            source.write_text(assembly, encoding="utf-8")
+            subprocess.run(["as", "--64", "-o", str(object_file), str(source)], check=True)
+            subprocess.run(["ld", "-shared", "-o", str(shared), str(object_file)], check=True)
+
+            vector_type = ctypes.c_uint64 * 8
+            input_type = ctypes.c_uint64 * (8 * 7)
+            zero = [0] * 8
+            inputs = input_type(
+                *(
+                    zero
+                    + [0xFFFFFFFFFFFFFFFF] * 8
+                    + [0xAAAAAAAAAAAAAAAA] * 8
+                    + [0x5555555555555555] * 8
+                    + [0x0F0F0F0F0F0F0F0F] * 8
+                    + [0x3333333333333333] * 8
+                    + [0xAAAAAAAAAAAAAAAA] * 8
+                )
+            )
+            output = (ctypes.c_uint64 * (8 * 3))()
+            expected = [
+                [~zero[i] & ((1 << 64) - 1) for i in range(8)],
+                [
+                    (inputs[8 + i] and inputs[16 + i])
+                    | ((~inputs[8 + i]) & inputs[24 + i])
+                    for i in range(8)
+                ],
+                [inputs[32 + i] ^ inputs[40 + i] ^ inputs[48 + i] for i in range(8)],
+            ]
+            library = ctypes.CDLL(os.fspath(shared))
+            function = library.ternary_floor_v1
+            function.argtypes = [ctypes.POINTER(ctypes.c_uint64), ctypes.POINTER(ctypes.c_uint64)]
+            function.restype = None
+            function(inputs, output)
+            self.assertEqual(list(output), expected[0] + expected[1] + expected[2])
 
 
 def _cpu_flags() -> set[str]:

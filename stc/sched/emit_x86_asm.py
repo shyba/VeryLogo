@@ -2,10 +2,9 @@
 
 This emitter intentionally returns assembly text rather than C or intrinsics.
 The system assembler is the only tool needed to turn the result into an
-object; GCC is not part of this path.  v1 supports non-destructive three-input
-integer vector operations (the common AVX-512 bitwise forms).  Destructive or
-multi-instruction forms must declare a target-specific expansion before they
-are accepted.
+object; GCC is not part of this path.  v1 supports non-destructive integer
+bitwise forms and the destructive ``VPTERNLOG`` form when its tied destination
+constraint is explicit.
 """
 
 from __future__ import annotations
@@ -52,6 +51,8 @@ def emit_x86_64_asm(
     ]
 
     for input_index, value in enumerate(program.inputs):
+        if value not in assignment:
+            continue
         lines.append(
             f"    vmovdqu64 {input_index * 64}(%rdi), %zmm{_reg(assignment, value)}"
         )
@@ -118,7 +119,7 @@ def _emit_operation(op: FloorOp, dst: int, sources: list[int]) -> list[str]:
         # GNU as exposes VPTERNLOG's destructive destination as the last
         # vector operand.  A separate copy would be an extra scheduled op, so
         # v1 requires the first logical input to share the destination register.
-        if sources[0] != dst:
+        if op.tied_input != 0 or sources[0] != dst:
             raise FloorPlannerError(
                 f"operation {op.id} requires a tied ternary destination in v1"
             )

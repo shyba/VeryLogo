@@ -24,29 +24,83 @@ _GATE_ASM = {
 
 
 def circuit_to_floor_program(circuit: CircuitState) -> FloorProgram:
-    """Lower the direct three-input boolean gate subset to floor IR."""
+    """Lower the direct boolean gate subset to floor IR.
+
+    ``not``, ``mux``, and ``ternary`` use VPTERNLOG's destructive destination;
+    the planner therefore adds a tied-input constraint and can reject graphs
+    where the source value must remain live after the operation.
+    """
 
     operations: list[FloorOp] = []
     for gate_id, gate in enumerate(circuit.gates):
         if not gate:
             raise FloorPlannerError(f"gate {gate_id} is empty")
         op = gate[0]
-        if op not in _GATE_ASM or len(gate) != 3:
+        if op in _GATE_ASM and len(gate) == 3:
+            _, left, right = gate
+            operations.append(
+                FloorOp(
+                    id=gate_id,
+                    family="bitwise",
+                    inputs=(left, right),
+                    output=circuit.input_bits + gate_id,
+                    operands="v,v,v",
+                    asm_mnemonic=_GATE_ASM[op],
+                )
+            )
+            continue
+        if op == "not" and len(gate) == 2:
+            inputs = (gate[1],) * 3
+            operations.append(
+                FloorOp(
+                    id=gate_id,
+                    family="ternary",
+                    inputs=inputs,
+                    output=circuit.input_bits + gate_id,
+                    operands="v,v,v",
+                    asm_mnemonic="vpternlogq",
+                    immediate=0x01,
+                    tied_input=0,
+                )
+            )
+            continue
+        if op == "mux" and len(gate) == 4:
+            _, select, left, right = gate
+            operations.append(
+                FloorOp(
+                    id=gate_id,
+                    family="ternary",
+                    inputs=(select, left, right),
+                    output=circuit.input_bits + gate_id,
+                    operands="v,v,v",
+                    asm_mnemonic="vpternlogq",
+                    immediate=0xCA,
+                    tied_input=0,
+                )
+            )
+            continue
+        if op == "ternary" and len(gate) == 5:
+            _, left, middle, right, immediate = gate
+            operations.append(
+                FloorOp(
+                    id=gate_id,
+                    family="ternary",
+                    inputs=(left, middle, right),
+                    output=circuit.input_bits + gate_id,
+                    operands="v,v,v",
+                    asm_mnemonic="vpternlogq",
+                    immediate=immediate,
+                    tied_input=0,
+                )
+            )
+            continue
+        if op in {"const", "copy"}:
             raise FloorPlannerError(
                 f"gate {gate_id} ({op!r}) is outside floor-planner v1; "
-                "only binary bitwise gates are supported"
+                "constant and copy expansions need explicit machine forms"
             )
-        _, left, right = gate
-        output = circuit.input_bits + gate_id
-        operations.append(
-            FloorOp(
-                id=gate_id,
-                family="bitwise",
-                inputs=(left, right),
-                output=output,
-                operands="v,v,v",
-                asm_mnemonic=_GATE_ASM[op],
-            )
+        raise FloorPlannerError(
+            f"gate {gate_id} ({op!r}) is outside floor-planner v1"
         )
 
     outputs: list[int] = []
@@ -88,4 +142,3 @@ def emit_circuit_x86_64_asm(
         circuit, cpu, register_file=register_file
     )
     return emit_x86_64_asm(program, schedule, function_name=function_name)
-
