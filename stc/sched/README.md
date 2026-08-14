@@ -32,6 +32,16 @@ AVX2 = TargetModel(
 )
 ```
 
+### CpuModel (`cpu_model.py`)
+`CpuModel` is the richer machine-description boundary for a future floor
+planner. `load_agner_forms` preserves every operand-form row (including
+unknown timings and eligible pipe sets) instead of collapsing a family to one
+representative instruction. `cpu_from_agner_csv` combines those rows with an
+explicit machine manifest for issue width, resource capacities, register
+files, and ISA features. The existing schedulers still consume the legacy
+`TargetModel` projection; resource reservation and target instruction
+selection are intentionally the next layer.
+
 ### Schedule (`schedule.py`)
 Assignment of gates to cycles and registers.
 

@@ -10,16 +10,25 @@ Each target specifies:
 
 from dataclasses import dataclass, field
 
+from stc.sched.cpu_model import CpuModel
+
 
 @dataclass(frozen=True)
 class TargetModel:
-    """Hardware constraints for instruction scheduling."""
+    """Legacy scheduler projection plus an optional rich CPU description.
+
+    ``latencies`` and integer ``throughput`` remain for compatibility with
+    the existing gate schedulers. ``cpu`` carries operand forms, eligible
+    resources, and register-file facts for the resource-aware floor planner;
+    the current schedulers do not consume it yet.
+    """
 
     name: str
     registers: int
     issue_width: int
     latencies: dict[str, int] = field(default_factory=dict)
     throughput: dict[str, int] = field(default_factory=dict)
+    cpu: CpuModel | None = None
 
     def latency(self, op: str) -> int:
         return self.latencies.get(op, 1)

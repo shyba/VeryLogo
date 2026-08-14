@@ -14,6 +14,16 @@ Usage:
     print(f"Cycles: {schedule.total_cycles}, Regs: {schedule.max_live}")
 """
 
+from stc.sched.cpu_model import (
+    CpuModel,
+    CpuModelError,
+    InstructionForm,
+    RegisterFileSpec,
+    ResourceSpec,
+    cpu_from_agner_csv,
+    load_agner_forms,
+    parse_pipe_set,
+)
 from stc.sched.target import TargetModel, SSE2, SSE2_X64, AVX2, AVX512, PTX
 from stc.sched.schedule import Schedule, ScheduleStats
 from stc.sched.scheduler import Scheduler
@@ -36,6 +46,14 @@ from stc.sched.liveness import (
 
 __all__ = [
     "TargetModel",
+    "CpuModel",
+    "CpuModelError",
+    "InstructionForm",
+    "RegisterFileSpec",
+    "ResourceSpec",
+    "cpu_from_agner_csv",
+    "load_agner_forms",
+    "parse_pipe_set",
     "SSE2",
     "SSE2_X64",
     "AVX2",
