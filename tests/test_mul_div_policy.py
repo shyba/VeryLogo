@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
+from pathlib import Path
 
 from stc.tick_ir import (
     BitVecConst,
@@ -13,6 +15,8 @@ from stc.tick_ir import (
     Var,
 )
 from stc.tick_ir_classify_arith import classify_arithmetic
+from stc.tick_ir_bin2 import read_tick_ir_bin, write_tick_ir_bin
+from stc.reduce import reduce_tick_ir
 from stc.tick_ir_to_circuit_state import lower_tick_ir_to_circuit_state
 from stc.tick_ir_to_packed_circuit_state import (
     PackedLoweringError,
@@ -173,6 +177,22 @@ class TestMulDivPackedLowering(unittest.TestCase):
 
 
 class TestMulDivBitLevelLowering(unittest.TestCase):
+    def test_mul_binary_tick_ir_roundtrip(self):
+        ir = TickIR(
+            name="mul_bin",
+            inputs={"x": BitVecType(width=8), "y": BitVecType(width=8)},
+            outputs={"z": BitVecType(width=8)},
+            state={},
+            reset_state={},
+            next_state={},
+            output_exprs={"z": Mul(a=Var(name="x"), b=Var(name="y"))},
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "mul.tickir"
+            write_tick_ir_bin(ir, str(path))
+            self.assertEqual(read_tick_ir_bin(str(path)).to_dict(), ir.to_dict())
+        self.assertEqual(reduce_tick_ir(ir).to_dict(), ir.to_dict())
+
     def test_mul_small_width_succeeds(self):
         ir = TickIR(
             name="test",

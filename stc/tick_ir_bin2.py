@@ -31,6 +31,7 @@ from stc.tick_ir import (
     FSub,
     FloatConst,
     FloatType,
+    GemmCall,
     LShr,
     Lut8,
     Mul,
@@ -65,6 +66,7 @@ from stc.tick_ir import (
     SimdInsertLane,
     SimdLShr,
     SimdMaddS16,
+    SimdDotU8S8AccI32,
     SimdMaskExpand,
     SimdMaskPack,
     SimdMaxS,
@@ -428,6 +430,24 @@ def _write_node_payload(
     if isinstance(node, Not):
         w.write_u32(ref(node.x))
         return
+    if isinstance(node, SimdDotU8S8AccI32):
+        w.write_u32(ref(node.a))
+        w.write_u32(ref(node.b))
+        w.write_u32(ref(node.acc))
+        return
+    if isinstance(node, GemmCall):
+        w.write_u32(ref(node.a))
+        w.write_u32(ref(node.b))
+        w.write_u32(node.m)
+        w.write_u32(node.n)
+        w.write_u32(node.k)
+        w.write_u32(node.a_width)
+        w.write_u32(node.b_width)
+        w.write_u32(node.acc_width)
+        w.write_u8(1 if node.a_signed else 0)
+        w.write_u8(1 if node.b_signed else 0)
+        w.write_u8(0 if node.layout == "row_major" else 1)
+        return
     if isinstance(
         node,
         (
@@ -625,6 +645,39 @@ def _read_nodes(r: BinReader, strings: list[str]) -> list[Expr]:
         elif cls in {Not, SimdNot, FNeg, FAbs, FSqrt, SimdFNeg, SimdFAbs, SimdFSqrt}:
             x = nodes[r.read_u32()]
             nodes.append(cls(x=x))
+        elif cls is SimdDotU8S8AccI32:
+            a = nodes[r.read_u32()]
+            b = nodes[r.read_u32()]
+            acc = nodes[r.read_u32()]
+            nodes.append(SimdDotU8S8AccI32(a=a, b=b, acc=acc))
+        elif cls is GemmCall:
+            a = nodes[r.read_u32()]
+            b = nodes[r.read_u32()]
+            m = r.read_u32()
+            n = r.read_u32()
+            k = r.read_u32()
+            a_width = r.read_u32()
+            b_width = r.read_u32()
+            acc_width = r.read_u32()
+            a_signed = bool(r.read_u8())
+            b_signed = bool(r.read_u8())
+            layout_tag = r.read_u8()
+            if layout_tag != 0:
+                raise ValueError("unsupported GEMM layout in binary Tick-IR")
+            nodes.append(
+                GemmCall(
+                    a=a,
+                    b=b,
+                    m=m,
+                    n=n,
+                    k=k,
+                    a_width=a_width,
+                    b_width=b_width,
+                    acc_width=acc_width,
+                    a_signed=a_signed,
+                    b_signed=b_signed,
+                )
+            )
         elif cls in {
             And,
             Or,
@@ -816,6 +869,8 @@ def _kind_for_class(cls: type[Expr]) -> str:
         "SimdMulHiU": "simd_mul_hi_u",
         "SimdMulHiS": "simd_mul_hi_s",
         "SimdMaddS16": "simd_madd_s16",
+        "SimdDotU8S8AccI32": "simd_dot_u8s8_acc_i32",
+        "GemmCall": "gemm_call",
         "SimdUnpackLo": "simd_unpack_lo",
         "SimdUnpackHi": "simd_unpack_hi",
         "SimdPackSS16To8": "simd_pack_ss16_to_8",

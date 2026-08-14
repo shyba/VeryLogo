@@ -5,8 +5,9 @@ from pathlib import Path
 
 from stc.extract import extract_tick_ir
 from stc.interp import reset_state, tick
-from stc.tick_ir import Not, Var
+from stc.tick_ir import BitVecType, Mul, Not, Slice, Var
 from stc.yosys_json import load_design
+from stc.yosys_frontend import run_yosys
 
 
 class TestExtract(unittest.TestCase):
@@ -76,6 +77,133 @@ class TestExtract(unittest.TestCase):
         state = reset_state(ir)
         _, outputs = tick(ir, state, {"a": 1, "b": 2})
         self.assertEqual(outputs["y"], 3)
+
+    def test_extract_mul_4bit(self) -> None:
+        design = {
+            "modules": {
+                "top": {
+                    "ports": {
+                        "a": {"direction": "input", "bits": [2, 3, 4, 5]},
+                        "b": {"direction": "input", "bits": [6, 7, 8, 9]},
+                        "y": {"direction": "output", "bits": [10, 11, 12, 13]},
+                    },
+                    "cells": {
+                        "$mul$0": {
+                            "type": "$mul",
+                            "port_directions": {
+                                "A": "input",
+                                "B": "input",
+                                "Y": "output",
+                            },
+                            "connections": {
+                                "A": [2, 3, 4, 5],
+                                "B": [6, 7, 8, 9],
+                                "Y": [10, 11, 12, 13],
+                            },
+                            "parameters": {
+                                "A_WIDTH": "4",
+                                "B_WIDTH": "4",
+                                "Y_WIDTH": "4",
+                                "A_SIGNED": "0",
+                                "B_SIGNED": "0",
+                            },
+                        }
+                    },
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "normalized.json"
+            p.write_text(json.dumps(design), encoding="utf-8")
+            yosys = load_design(p)
+
+        ir = extract_tick_ir(yosys)
+        self.assertEqual(
+            ir.inputs, {"a": BitVecType(width=4), "b": BitVecType(width=4)}
+        )
+        self.assertEqual(ir.outputs, {"y": BitVecType(width=4)})
+        self.assertEqual(
+            ir.output_exprs["y"],
+            Slice(x=Mul(a=Var(name="a"), b=Var(name="b")), offset=0, width=4),
+        )
+
+        state = reset_state(ir)
+        _, outputs = tick(ir, state, {"a": 7, "b": 9})
+        self.assertEqual(outputs["y"], 15)
+
+    def test_extract_mul_extends_operands_to_output_width(self) -> None:
+        design = {
+            "modules": {
+                "top": {
+                    "ports": {
+                        "a": {"direction": "input", "bits": [2, 3]},
+                        "b": {"direction": "input", "bits": [4, 5]},
+                        "y": {"direction": "output", "bits": [6, 7, 8, 9]},
+                    },
+                    "cells": {
+                        "$mul$0": {
+                            "type": "$mul",
+                            "port_directions": {
+                                "A": "input",
+                                "B": "input",
+                                "Y": "output",
+                            },
+                            "connections": {
+                                "A": [2, 3],
+                                "B": [4, 5],
+                                "Y": [6, 7, 8, 9],
+                            },
+                            "parameters": {
+                                "A_WIDTH": "2",
+                                "B_WIDTH": "2",
+                                "Y_WIDTH": "4",
+                                "A_SIGNED": "0",
+                                "B_SIGNED": "0",
+                            },
+                        }
+                    },
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "normalized.json"
+            p.write_text(json.dumps(design), encoding="utf-8")
+            yosys = load_design(p)
+
+        ir = extract_tick_ir(yosys)
+        expr = ir.output_exprs["y"]
+        self.assertIsInstance(expr, Slice)
+        self.assertIsInstance(expr.x, Mul)
+        self.assertEqual(ir.outputs["y"], BitVecType(width=4))
+        state = reset_state(ir)
+        _, outputs = tick(ir, state, {"a": 3, "b": 3})
+        self.assertEqual(outputs["y"], 9)
+
+    def test_extract_mul_from_yosys(self) -> None:
+        source = """
+module top(
+    input wire [3:0] a,
+    input wire [3:0] b,
+    output wire [7:0] y
+);
+    assign y = a * b;
+endmodule
+"""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            input_v = root / "mul.v"
+            normalized = root / "normalized.json"
+            input_v.write_text(source, encoding="utf-8")
+            run_yosys(input_v, normalized, top="top")
+            ir = extract_tick_ir(load_design(normalized, top="top"))
+
+        self.assertIsInstance(ir.output_exprs["y"], Slice)
+        self.assertIsInstance(ir.output_exprs["y"].x, Mul)
+        state = reset_state(ir)
+        _, outputs = tick(ir, state, {"a": 15, "b": 15})
+        self.assertEqual(outputs["y"], 225)
 
     def test_extract_dff_state(self) -> None:
         design = {

@@ -8,6 +8,7 @@ from stc.tick_ir import (
     BitVecConst,
     BoolConst,
     Concat,
+    Div,
     LShr,
     Eq,
     Expr,
@@ -22,8 +23,10 @@ from stc.tick_ir import (
     FNe,
     FSqrt,
     FSub,
+    GemmCall,
     FloatConst,
     Mux,
+    Mul,
     Not,
     Or,
     Shl,
@@ -40,6 +43,7 @@ from stc.tick_ir import (
     SimdInsertLane,
     SimdLShr,
     SimdMaddS16,
+    SimdDotU8S8AccI32,
     SimdBlend,
     SimdAddMasked,
     SimdSubMasked,
@@ -109,7 +113,8 @@ def replace_vars(expr: Expr, repl: dict[str, Expr]) -> Expr:
     if isinstance(expr, Not):
         return Not(x=replace_vars(expr.x, repl))
     if isinstance(
-        expr, (And, Or, Xor, Add, Sub, Shl, LShr, AShr, Eq, Ult, Ule, Ugt, Uge)
+        expr,
+        (And, Or, Xor, Add, Sub, Mul, Div, Shl, LShr, AShr, Eq, Ult, Ule, Ugt, Uge),
     ):
         return expr.__class__(
             a=replace_vars(expr.a, repl),
@@ -181,6 +186,26 @@ def replace_vars(expr: Expr, repl: dict[str, Expr]) -> Expr:
         return SimdMulHiS(a=replace_vars(expr.a, repl), b=replace_vars(expr.b, repl))
     if isinstance(expr, SimdMaddS16):
         return SimdMaddS16(a=replace_vars(expr.a, repl), b=replace_vars(expr.b, repl))
+    if isinstance(expr, SimdDotU8S8AccI32):
+        return SimdDotU8S8AccI32(
+            a=replace_vars(expr.a, repl),
+            b=replace_vars(expr.b, repl),
+            acc=replace_vars(expr.acc, repl),
+        )
+    if isinstance(expr, GemmCall):
+        return GemmCall(
+            a=replace_vars(expr.a, repl),
+            b=replace_vars(expr.b, repl),
+            m=expr.m,
+            n=expr.n,
+            k=expr.k,
+            a_width=expr.a_width,
+            b_width=expr.b_width,
+            acc_width=expr.acc_width,
+            a_signed=expr.a_signed,
+            b_signed=expr.b_signed,
+            layout=expr.layout,
+        )
     if isinstance(expr, SimdUnpackLo):
         return SimdUnpackLo(a=replace_vars(expr.a, repl), b=replace_vars(expr.b, repl))
     if isinstance(expr, SimdUnpackHi):

@@ -13,6 +13,7 @@ from stc.tick_ir import (
     Div,
     Expr,
     FloatType,
+    GemmCall,
     LShr,
     Mul,
     Shl,
@@ -103,6 +104,7 @@ def classify_arithmetic_expr(
         SimdInsertLane,
         SimdLShr,
         SimdMaddS16,
+        SimdDotU8S8AccI32,
         SimdMaskExpand,
         SimdMaskPack,
         SimdMaxS,
@@ -384,6 +386,29 @@ def classify_arithmetic_expr(
         b = classify_arithmetic_expr(expr.b, types)
         return SimdMaddS16(a=a, b=b)
 
+    if isinstance(expr, SimdDotU8S8AccI32):
+        a = classify_arithmetic_expr(expr.a, types)
+        b = classify_arithmetic_expr(expr.b, types)
+        acc = classify_arithmetic_expr(expr.acc, types)
+        return SimdDotU8S8AccI32(a=a, b=b, acc=acc)
+
+    if isinstance(expr, GemmCall):
+        a = classify_arithmetic_expr(expr.a, types)
+        b = classify_arithmetic_expr(expr.b, types)
+        return GemmCall(
+            a=a,
+            b=b,
+            m=expr.m,
+            n=expr.n,
+            k=expr.k,
+            a_width=expr.a_width,
+            b_width=expr.b_width,
+            acc_width=expr.acc_width,
+            a_signed=expr.a_signed,
+            b_signed=expr.b_signed,
+            layout=expr.layout,
+        )
+
     if isinstance(expr, (SimdZExtLo, SimdSExtLo)):
         x = classify_arithmetic_expr(expr.x, types)
         return expr.__class__(x=x, to=expr.to)
@@ -469,6 +494,7 @@ def _count_expr_kinds(expr: Expr) -> Counter[str]:
         SimdInsertLane,
         SimdLShr,
         SimdMaddS16,
+        SimdDotU8S8AccI32,
         SimdMaskExpand,
         SimdMaskPack,
         SimdMaxS,
@@ -601,6 +627,11 @@ def _count_expr_kinds(expr: Expr) -> Counter[str]:
         counts.update(_count_expr_kinds(expr.b))
         if isinstance(expr, SimdBlend):
             counts.update(_count_expr_kinds(expr.mask))
+    elif isinstance(expr, (SimdDotU8S8AccI32, GemmCall)):
+        counts.update(_count_expr_kinds(expr.a))
+        counts.update(_count_expr_kinds(expr.b))
+        if isinstance(expr, SimdDotU8S8AccI32):
+            counts.update(_count_expr_kinds(expr.acc))
     elif isinstance(expr, SimdShuffle):
         counts.update(_count_expr_kinds(expr.x))
     elif isinstance(expr, (FNeg, FAbs, FSqrt, SimdNot, SimdFNeg, SimdFAbs, SimdFSqrt)):

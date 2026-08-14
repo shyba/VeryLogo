@@ -56,3 +56,13 @@ class TestTechnology(unittest.TestCase):
         tech = GenericTechnology()
         expr = And(a=BoolConst(value=True), b=BoolConst(value=False))
         self.assertTrue(tech.is_legal(expr))
+
+    def test_gemm_target_dispatcher(self):
+        from stc.tick_ir import GemmCall, Var
+
+        gemm = GemmCall(Var("a"), Var("b"), m=1, n=1, k=1)
+        target = get_technology("x86-gemm")
+        self.assertTrue(target.is_legal(gemm))
+        self.assertIs(target.lower_expr(gemm, target="x86-vnni"), gemm)
+        generic = get_technology("generic").lower_expr(gemm, target="scalar")
+        self.assertNotIsInstance(generic, GemmCall)

@@ -1,17 +1,19 @@
 # Design: GEMM from Verilog through VeryLogo (fp/bf16 support exploration)
 
-Status: **exploration + design only** (no code changes). Goal: get, from a
-Verilog GEMM description through the VeryLogo pipeline, a target with the
-same functionality and comparable performance to the hand-scheduled
+Status: **int8 GEMM component lift and generated-code path implemented; BF16
+remains a follow-on target**. The current path gets a packed row-major Verilog
+GEMM description through the VeryLogo pipeline to a correctness-tested
+portable fallback or AVX-512 VNNI C kernel. Reaching the same sustained rate as
+the hand-scheduled
 `inference/bench/bench_gemm_avx512.py` kernels — using the instruction
 specs in `inference/aggen.py` as the codegen oracle.
 
 ## 1. What the pipeline does today (verified by experiment)
 
 Flow: `Verilog -> yosys (proc+opt, no abc) -> JSON netlist -> subset check
--> Tick-IR -> optimize (autovec / superopt / arith_classify) ->
-CircuitState (bit-level gates) -> backend (generic / avr / x86-avx2 /
-x86-avx512 / ptx / futhark)`.
+-> shaped Tick-IR (GemmCall) -> target lowering -> generated C` for
+`--backend x86-gemm`; ordinary designs retain the existing
+`Tick-IR -> CircuitState -> backend` path.
 
 Verified facts:
 
@@ -20,12 +22,25 @@ Verified facts:
   (`stc/subset.py` allows `$add`, `$sub`; the default yosys script stops
   before `abc`, so cells are not gate-blasted). `stc/tick_ir_to_circuit_state.py`
   is where bit-level lowering happens, downstream.
-- **`$mul` is rejected at the frontend.** `stc/subset.py:SUPPORTED_CELL_TYPES`
-  has no `$mul`; a Verilog `a * b` fails with
-  `SubsetError: unsupported cell type: $mul`. This is the first blocker.
+- **Unsigned scalar `$mul` now reaches Tick-IR.** `stc/subset.py` accepts
+  `$mul` when its signedness parameters are zero; `stc/extract.py` emits a
+  width-matched `Mul` (signed `$mul` remains rejected until signed semantics
+  are specified). A Verilog `a * b` is covered by frontend and binary-IR
+  round-trip tests.
+- **Parameterized GEMM hierarchy now lifts without flattening.** Yosys' derived
+  `$paramod…\gemm` module metadata is retained by `stc/yosys_json.py`, the
+  subset gate admits only a known GEMM module, and `stc/extract.py` emits a
+  shaped `GemmCall` with `M/N/K`, element widths, signedness, and packed
+  row-major ABI.
+- **The complete int8 target path is executable.** `--backend x86-gemm` writes
+  `circuit_x86_gemm.c` with the standard `stc_eval(const uint64_t*,uint64_t*)`
+  ABI. VNNI-friendly shapes use `_mm512_dpbusd_epi32`; other 8-bit shapes use
+  the same ABI with a scalar fallback. `--backend generic` expands bounded
+  `GemmCall`s to scalar Tick-IR for reference lowering.
 - **The IR already has a rich arithmetic set** (`stc/tick_ir.py`): scalar
   `Mul/Add/Sub/Div`, `SimdMulLo/HiU/HiS`, **`SimdMaddS16`** (i16 x i16 -> i32,
-  PMADDWD-class), **`SimdFFma`** (fp32 FMA), `FAdd/FMul/...`, and the
+  PMADDWD-class), **`SimdDotU8S8AccI32`** (u8 x s8 dot + i32 accumulator,
+  VPDPBUSD-class), **`SimdFFma`** (fp32 FMA), `FAdd/FMul/...`, and the
   `FloatType`/`SimdType` type system.
 - **The backends already emit the MAC/FMA building blocks.** Verified by
   building a Tick-IR by hand: `SimdMaddS16 -> _mm512_madd_epi16` and
@@ -40,9 +55,9 @@ Verified facts:
 
 | need | inference/ has | VeryLogo has today |
 |---|---|---|
-| i8 dot-product (VPDPBUSD) | hand-scheduled asm kernel | no IR op (`SimdMaddS16` is i16 PMADDWD) |
+| i8 dot-product (VPDPBUSD) | hand-scheduled asm kernel | `SimdDotU8S8AccI32` + AVX-512 VNNI backend and shaped `GemmCall` target lowering |
 | BF16 FMA (VDPBF16PS) | hand-scheduled asm kernel | no IR op, **no BF16 type** |
-| Verilog `*` accepted | - | **blocked at subset** |
+| Verilog `*` accepted | - | unsigned scalar `$mul` → `Mul` (signed params still rejected) |
 | GEMM-structure recognition (K-loop dot + packed layout + accumulator chains) | the bench generator | only pattern `mul+add -> madd` for i16 |
 | instruction-spec-driven schedule (>= 2*latency chains) | `inference/aggen.py` best_tile / predicted cycles | scheduler target has latencies but no GEMM scheduling |
 
@@ -117,24 +132,26 @@ naive synthesis. This is the "compiles naturally" claim made rigorous.
 
 ```systemverilog
 module gemm #(parameter M = 64, N = 64, K = 64, W = 8, ACCW = 32)
-  (input  wire [W-1:0] a[M*K],   // row-major A
-   input  wire [W-1:0] b[K*N],   // row-major B
-   output wire [ACCW-1:0] c[M*N]); // row-major C, zero-init accumulate
+  (input  wire [M*K*W-1:0] a,       // packed row-major A
+   input  wire [K*N*W-1:0] b,       // packed row-major B
+   output wire [M*N*ACCW-1:0] c);   // packed row-major C
 endmodule
 ```
 
 The module declares the *interface*; the body is either a real RTL MAC loop
-(used for the bit-level reference / fallback target) or empty (opaque
-primitive). The frontend matches the module by **name + exact port
-signatures** (like a hardened macro in a standard-cell flow): a
-`gemm`-named module with these ports lifts to the Tick-IR `Gemm` primitive.
-Strict matching avoids accidental collisions; a Verilog attribute
-(`(* verylogo_primitive = "gemm" *)`) can make the intent explicit.
+(used for the reference/fallback target) or empty (opaque primitive). Yosys
+0.52 does not accept unpacked-array ports in this frontend, so the ABI is
+explicitly packed. The frontend matches a `gemm` module by **name + exact
+packed port widths** and lifts the instance to `GemmCall`; parameterized
+instances are resolved from Yosys' derived-module metadata.
 
 ### 3.2 The Tick-IR primitive + verification
 
-- A `Gemm(a, b, M, N, K, W, ACCW)` expr (or a `GemmOp` with typed ports);
-  a BF16 variant uses a new `FloatType(subformat=bf16)` on the ports.
+- A `GemmCall(a, b, m, n, k, a_width, b_width, acc_width, signedness)` expr
+  carries the complete packed ABI. Its interpreter, Z3/reference-Verilog
+  expansion, binary Tick-IR registry, validation, reducer, and variable
+  replacement are implemented. A BF16 variant still needs a new element
+  type (`FloatType` has no subformat knob).
 - Verification is the pipeline's own machinery: `bounded_equiv` / `z3_encode`
   prove the primitive equals the bit-level reference (the RTL MAC body) -
   so "compiles naturally" is not a trust-me shortcut. The property tests
@@ -142,16 +159,13 @@ Strict matching avoids accidental collisions; a Verilog attribute
 
 ### 3.3 Per-target lowering (the Technology)
 
-- `Technology.primitives()` (NOTE: `is_legal` is never called and no
-  lowering dispatcher exists yet - the per-target consumer is net-new)
-  would declare the GEMM primitive per target:
-  - Zen 5 AVX-512: lower to the VPDPBUSD/VDPBF16PS kernel, scheduling
-    accumulator chains and the 8x32 tile from `inference/aggen.py`
-    (>= 2*latency chains, packed K-major/N-interleaved layout). This is
-    the existing "pipeline uses the instruction specs" integration.
-  - PTX: dp4a / bf16.fma; generic: gates fallback (the RTL body).
-- `is_legal` gates the choice; `cost_model`/`depth_model` let the
-  optimizer schedule around it.
+- `stc/tech.py` now has an explicit lowering dispatcher and an `x86-gemm`
+  technology with a `gemm_u8s8_i32` primitive. The generic target expands a
+  bounded call to scalar Tick-IR; the x86 target consumes the shape directly
+  and emits a VNNI kernel (or the scalar ABI-compatible fallback). The current
+  emitted kernel is correctness-focused and does not yet claim the
+  hand-scheduled 8x32 register-chain ceiling; that remains a measured
+  performance phase driven by `inference/aggen.py`.
 
 ### 3.4 "Compile naturally" vs "force with inline tick"
 
@@ -196,13 +210,16 @@ per kernel class; everything else is hierarchy.
 
 ## 6. Suggested first slice (smallest)
 
-1. Subset: allow `$mul` -> `Mul`; a Verilog 8x8 mul reaches the avx512
-   backend.
-2. IR+backend: `SimdDotS8` -> `_mm512_dpbusd_epi32`; property-test the
-   emitted kernel against a naive reference (reuse the inference harness).
-3. Recognition: turn a Verilog MAC module (K-iterated mul+add) into
-   `SimdDotS8` + accumulate; then a small GEMM driver with the packed
-   layout, scheduled from `inference/aggen.py`.
+1. **Done:** subset allows unsigned `$mul` -> `Mul`; a Verilog
+   multiply is extracted, interpreted, and serialized in Tick-IR.
+2. **Done:** `SimdDotU8S8AccI32` -> `_mm512_dpbusd_epi32`, with
+   interpreter, Z3, binary-IR, reference-Verilog, auto-dispatch, and a real
+   AVX-512 compile/run equivalence test.
+3. **Done:** a parameterized packed `gemm` hierarchy lifts to `GemmCall`,
+   survives Tick-IR/binary artifacts, and reaches `circuit_x86_gemm.c`; the
+   generic expansion and scalar/VNNI runtime harnesses are covered by tests.
+4. Performance follow-on: lower the same call to the hand-scheduled 8x32
+   register-chain kernel and validate rate against `inference/aggen.py`.
 
 ## Open questions
 

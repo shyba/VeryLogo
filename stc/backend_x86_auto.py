@@ -32,6 +32,7 @@ from stc.tick_ir import (
     SimdFMul,
     SimdLShr,
     SimdMaddS16,
+    SimdDotU8S8AccI32,
     SimdMaxS,
     SimdMaxU,
     SimdMaskPack,
@@ -199,6 +200,7 @@ def emit_x86_auto_c(ir: TickIR, *, flags: set[str] | None = None) -> str:
         need_fma = False
         need_avx512bw = False
         need_avx512vbmi = False
+        need_avx512vnni = False
         types = dict(ir.inputs)
         for e in ir.output_exprs.values():
             for node in _walk_expr(e):
@@ -222,6 +224,8 @@ def emit_x86_auto_c(ir: TickIR, *, flags: set[str] | None = None) -> str:
                     need_avx512_float = True
                 if isinstance(node, SimdFFma):
                     need_fma = True
+                if isinstance(node, SimdDotU8S8AccI32):
+                    need_avx512vnni = True
                 if isinstance(
                     node,
                     (
@@ -276,6 +280,10 @@ def emit_x86_auto_c(ir: TickIR, *, flags: set[str] | None = None) -> str:
                         need_avx512vbmi = True
 
         if need_avx512_float:
+            if need_avx512vnni:
+                raise AutoBackendError(
+                    "x86 auto backend cannot combine AVX-512 VNNI dot and float SIMD expressions"
+                )
             if need_fma and not has_flag("fma", flags):
                 raise AutoBackendError("fma is not available on this CPU")
             return emit_x86_avx512_float_c(ir)
@@ -284,6 +292,10 @@ def emit_x86_auto_c(ir: TickIR, *, flags: set[str] | None = None) -> str:
             raise AutoBackendError("avx512bw is not available on this CPU")
         if need_avx512vbmi and not has_flag("avx512vbmi", flags):
             raise AutoBackendError("avx512vbmi is not available on this CPU")
+        if need_avx512vnni and not (
+            has_flag("avx512vnni", flags) or has_flag("avx512_vnni", flags)
+        ):
+            raise AutoBackendError("avx512vnni is not available on this CPU")
 
         return emit_x86_avx512_c(ir)
 

@@ -15,6 +15,7 @@ from stc.tick_ir import (
     BoolConst,
     BoolType,
     Concat,
+    Div,
     Eq,
     Expr,
     FAdd,
@@ -28,7 +29,9 @@ from stc.tick_ir import (
     FNe,
     FSqrt,
     FSub,
+    GemmCall,
     LShr,
+    Mul,
     Mux,
     Not,
     Or,
@@ -50,6 +53,7 @@ from stc.tick_ir import (
     SimdInsertLane,
     SimdLShr,
     SimdMaddS16,
+    SimdDotU8S8AccI32,
     SimdMaskExpand,
     SimdMaskPack,
     SimdMaxS,
@@ -346,7 +350,8 @@ def encode_expr(
         return ~x
 
     if isinstance(
-        expr, (And, Or, Xor, Add, Sub, Shl, LShr, AShr, Eq, Ult, Ule, Ugt, Uge)
+        expr,
+        (And, Or, Xor, Add, Sub, Mul, Div, Shl, LShr, AShr, Eq, Ult, Ule, Ugt, Uge),
     ):
         a = encode_expr(expr.a, types, vars)
         b = encode_expr(expr.b, types, vars)
@@ -382,6 +387,16 @@ def encode_expr(
             if not isinstance(t, BitVecType):
                 raise Z3EncodeError("sub requires bitvec operands")
             return a - b
+        if isinstance(expr, Mul):
+            if not isinstance(t, BitVecType):
+                raise Z3EncodeError("mul requires bitvec operands")
+            return a * b
+        if isinstance(expr, Div):
+            if not isinstance(t, BitVecType):
+                raise Z3EncodeError("div requires bitvec operands")
+            return z3.If(
+                b == z3.BitVecVal(0, t.width), z3.BitVecVal(0, t.width), z3.UDiv(a, b)
+            )
         if isinstance(expr, Shl):
             if not isinstance(t, BitVecType):
                 raise Z3EncodeError("shl requires bitvec operands")
@@ -422,6 +437,11 @@ def encode_expr(
         for part in lanes[1:]:
             out = z3.Concat(out, part)
         return out
+
+    if isinstance(expr, GemmCall):
+        from stc.gemm_lowering import expand_gemm_call
+
+        return encode_expr(expand_gemm_call(expr), types, vars)
 
     if isinstance(expr, SimdAddMasked):
         t = infer_type(expr.a, types)
@@ -773,6 +793,34 @@ def encode_expr(
             b0e = z3.SignExt(16, b0)
             b1e = z3.SignExt(16, b1)
             lanes.append((a0e * b0e) + (a1e * b1e))
+        if not lanes:
+            raise Z3EncodeError("simd lanes must be >= 1")
+        out = lanes[0]
+        for part in lanes[1:]:
+            out = z3.Concat(out, part)
+        return out
+
+    if isinstance(expr, SimdDotU8S8AccI32):
+        out_t = infer_type(expr, types)
+        a_t = infer_type(expr.a, types)
+        if not (isinstance(out_t, SimdType) and isinstance(a_t, SimdType)):
+            raise Z3EncodeError("simd_dot_u8s8_acc_i32 requires simd operands")
+        a = encode_expr(expr.a, types, vars)
+        b = encode_expr(expr.b, types, vars)
+        acc = encode_expr(expr.acc, types, vars)
+        lanes: list[z3.ExprRef] = []
+        for i in reversed(range(out_t.lanes)):
+            acc_off = i * 32
+            acc_lane = z3.Extract(acc_off + 31, acc_off, acc)
+            total = acc_lane
+            for j in range(4):
+                off = (4 * i + j) * 8
+                a_byte = z3.Extract(off + 7, off, a)
+                b_byte = z3.Extract(off + 7, off, b)
+                au32 = z3.ZeroExt(24, a_byte)
+                bs32 = z3.SignExt(24, b_byte)
+                total = total + (au32 * bs32)
+            lanes.append(total)
         if not lanes:
             raise Z3EncodeError("simd lanes must be >= 1")
         out = lanes[0]

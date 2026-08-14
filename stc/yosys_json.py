@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -20,6 +20,7 @@ class YosysCell:
     port_directions: dict[str, str]
     connections: dict[str, list[int]]
     parameters: dict[str, str]
+    attributes: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -27,12 +28,34 @@ class YosysModule:
     name: str
     ports: dict[str, YosysPort]
     cells: dict[str, YosysCell]
+    attributes: dict[str, str] = field(default_factory=dict)
+    parameter_defaults: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class YosysDesign:
     top: str
     modules: dict[str, YosysModule]
+
+
+def module_hdl_name(module: YosysModule) -> str:
+    """Return the source HDL name for a (possibly parameterized) module."""
+
+    raw = module.attributes.get("hdlname", module.name)
+    return raw.lstrip("\\").rsplit("\\", 1)[-1]
+
+
+def is_gemm_module(module: YosysModule) -> bool:
+    return module_hdl_name(module).lower().split(".")[-1] == "gemm"
+
+
+def is_gemm_cell(design: YosysDesign, cell: YosysCell) -> bool:
+    module = design.modules.get(cell.type)
+    if module is not None and is_gemm_module(module):
+        return True
+    # Hand-authored normalized fixtures often use the source module name
+    # directly rather than Yosys' $paramod...\gemm spelling.
+    return cell.type.lstrip("\\").rsplit("\\", 1)[-1].lower() == "gemm"
 
 
 def load_design(path: str | Path, *, top: str | None = None) -> YosysDesign:
@@ -126,9 +149,34 @@ def load_design(path: str | Path, *, top: str | None = None) -> YosysDesign:
                 port_directions=dict(port_directions),
                 connections=conns,
                 parameters={k: str(v) for k, v in params_raw.items()},
+                attributes={
+                    str(k): str(v)
+                    for k, v in (cell_data.get("attributes", {}) or {}).items()
+                    if isinstance(k, str) and isinstance(v, (str, int))
+                },
             )
 
-        return YosysModule(name=name, ports=ports, cells=cells)
+        attrs_raw = m.get("attributes", {})
+        if not isinstance(attrs_raw, dict):
+            raise ValueError("invalid module attributes")
+        parameter_defaults_raw = m.get("parameter_default_values", {})
+        if not isinstance(parameter_defaults_raw, dict):
+            raise ValueError("invalid module parameter defaults")
+        return YosysModule(
+            name=name,
+            ports=ports,
+            cells=cells,
+            attributes={
+                str(k): str(v)
+                for k, v in attrs_raw.items()
+                if isinstance(k, str) and isinstance(v, (str, int))
+            },
+            parameter_defaults={
+                str(k): str(v)
+                for k, v in parameter_defaults_raw.items()
+                if isinstance(k, str) and isinstance(v, (str, int))
+            },
+        )
 
     modules: dict[str, YosysModule] = {}
     for name, m in modules_raw.items():

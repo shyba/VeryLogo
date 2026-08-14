@@ -12,7 +12,9 @@ from Verilog onto the CPU "device floor" via a component-as-primitive model.
 inference stack was split from the VeryLogo core on this branch
 (commits `0f3151d` … `4d82269`). Both halves must stay self-contained.
 
-**Last updated**: 2026-08-12, HEAD `4d82269`.
+**Last updated**: 2026-08-13, packed int8 `gemm` hierarchy lift and generated
+scalar/VNNI C path implemented; BF16 and hand-scheduled peak-rate lowering
+remain follow-on work.
 
 ---
 
@@ -29,17 +31,18 @@ scheduled code for `generic` / `avr` / `ptx` / `x86-avx2` / `x86-avx512` /
 SIMD autovectorization, packed word-level lowering, region decomposition,
 tick fusion.
 
-Invocation: `.venv/bin/python -m stc <input.v> --out <dir> [--backend ...]`
-(`python -m stc.cli` does NOT run main; use `python -m stc`).
+Invocation: `.venv/bin/python3 -m stc <input.v> --out <dir> [--backend ...]`
+Use `--backend x86-gemm` for the shaped int8 GEMM path.
+(`python3 -m stc.cli` does NOT run main; use `python3 -m stc`).
 
 **Crucial frontend fact**: the default Yosys script is
 `read_verilog; proc; opt; opt_clean; write_json` — it stops *before* `abc`,
 so arithmetic cells (`$add`, `$sub`, …) survive as word-level cells, not
-gates. `stc/subset.py:SUPPORTED_CELL_TYPES` allow-lists cells; **`$mul` is
-NOT in the list** — a Verilog `a * b` fails with
-`SubsetError: unsupported cell type: $mul`. `$add` survives to the Tick-IR
-as a word-level `Add` (verified: `add4.v` → `Add` in
-`reduced_tick_ir.bin`).
+gates. `stc/subset.py:SUPPORTED_CELL_TYPES` allow-lists cells; unsigned
+`$mul` is now accepted and signed `$mul` parameters are still rejected until
+signed semantics are specified. `$add` and unsigned `$mul` survive to
+Tick-IR as word-level `Add`/`Mul` (verified with frontend extraction and
+binary-IR round trips).
 
 Pipeline files: `stc/yosys_frontend.py` (yosys script), `stc/yosys_json.py`
 (JSON → cells), `stc/subset.py` (cell allowlist; rejects submodules:
@@ -53,7 +56,8 @@ Pipeline files: `stc/yosys_frontend.py` (yosys script), `stc/yosys_json.py`
 `stc/backend_x86_avx512_float.py` (fp), `stc/backend_sched.py`,
 `stc/sched/*` (list scheduler, target models), `stc/tech.py`
 (**`Primitive` + `Technology` abstraction** — per-target primitives,
-`is_legal`, cost/depth models — the natural home for the GEMM primitive),
+`is_legal`, cost/depth models, and the lowering dispatcher — the home for the
+GEMM primitive),
 `stc/z3_encode.py` / `stc/bounded_equiv.py` (verification).
 
 **Scheduler target**: `stc/sched/target.py` inlines the measured Zen 5
@@ -312,36 +316,33 @@ gate-blasted (the S-box precedent).
 
 ```systemverilog
 module gemm #(parameter M = 64, N = 64, K = 64, W = 8, ACCW = 32)
-  (input  wire [W-1:0] a[M*K],     // row-major A
-   input  wire [W-1:0] b[K*N],     // row-major B
-   output wire [ACCW-1:0] c[M*N]); // row-major C
+  (input  wire [M*K*W-1:0] a,       // packed row-major A
+   input  wire [K*N*W-1:0] b,       // packed row-major B
+   output wire [M*N*ACCW-1:0] c);   // packed row-major C
 endmodule
 ```
 
-Body = either a real RTL MAC loop (bit-level reference / fallback target)
-or empty (opaque primitive). Frontend matches by name + exact ports; a
-Verilog attribute (`(* verylogo_primitive = "gemm" *)`) can make intent
-explicit. A BF16 variant needs a NEW element type: `FloatType` only supports
-widths 32/64 with no subformat knob (tick_ir.py:40-52).
+Body = either a real RTL MAC loop (reference/fallback target) or empty (opaque
+primitive). Yosys' normalized derived-module metadata resolves `M/N/K`; the
+frontend lifts only a known `gemm` module and checks exact packed widths. A
+BF16 variant needs a NEW element type: `FloatType` only supports widths 32/64
+with no subformat knob (tick_ir.py:40-52).
 
 ### 6.5 Mechanism (mapped onto existing pipeline)
 
-1. **Frontend**: allow known primitive module names in `stc/subset.py`
-   (currently ALL submodules are rejected at subset.py:94-98); the lift
-   itself is new code in `stc/extract.py` (the `expr_for_cell_output`
-   dispatch and `width_of_expr`), a new expr class + its registries in
-   `stc/tick_ir.py`, and ~10 downstream consumer cases - name the exact
-   hooks, don't expect a one-line change.
-2. **IR**: `Gemm` expr (or a `GemmOp`); the two new SIMD ops
-   `SimdDotS8` (→ VPDPBUSD, with the §2 operand semantics) and
-   `SimdFmaBF16` (→ VDPBF16PS); a BF16 element type
-   (`FloatType(subformat=bf16)`); `FloatConst` bf16 rounding (f2b).
-3. **Technology**: `stc/tech.py` has `Primitive`/`Technology` but
-   **`is_legal` is never called and there is no lowering dispatcher
-   today** (verified: grep finds only the tech.py definitions) - the
-   per-target lowering consumer is net-new. It would declare the GEMM per
-   target: Zen 5 → the 8×32 kernel scheduled from aggen (tile, ≥2×latency
-   chains, packed layout); PTX → dp4a / bf16.fma; generic → gates.
+1. **Done (frontend)**: `stc/subset.py` admits only known GEMM module types,
+   `stc/yosys_json.py` retains derived-module attributes/parameter defaults,
+   and `stc/extract.py` lifts the packed instance to `GemmCall`.
+2. **Done (IR)**: `GemmCall` carries shape, element widths, signedness, and
+   row-major layout; interpreter, Z3/reference expansion, binary serialization,
+   reducer, classifier, and variable replacement are covered. The
+   instruction-sized `SimdDotU8S8AccI32` still maps to VPDPBUSD. BF16 remains
+   future work.
+3. **Done (Technology + target)**: `stc/tech.py` has a lowering dispatcher and
+   `x86-gemm` primitive. `stc/backend_x86_gemm.py` emits the packed
+   `stc_eval` ABI, using VPDPBUSD for `u8×s8→i32` shapes with `N%16==0,K%4==0`
+   and a scalar fallback otherwise. The hand-scheduled 8×32 chain schedule is
+   a separate performance phase.
 4. **"Inline tick"** (the bridge, and the right model for variable-K
    decode): lower the GEMM to a K-tick program. CAVEAT (verified by
    review): this is NOT a free ride on existing machinery - the
@@ -359,13 +360,15 @@ widths 32/64 with no subformat knob (tick_ir.py:40-52).
 
 ### 6.6 First slice (smallest)
 
-1. Subset: allow `$mul` → Tick-IR `Mul`; a Verilog 8×8 mul reaches the
-   avx512 backend.
-2. IR + backend: `SimdDotS8` → `_mm512_dpbusd_epi32`; property-test the
-   emitted kernel vs a naive reference (reuse the inference harness).
-3. Recognition-lite: a K-iterated Verilog MAC module → `SimdDotS8` +
-   accumulate (this is a *component boundary*, not a structural pass),
-   then a small GEMM driver with the packed layout, scheduled from aggen.
+1. **Done:** allow unsigned `$mul` → Tick-IR `Mul`; a Verilog
+   multiply is extracted, interpreted, and serialized in Tick-IR.
+2. **Done:** `SimdDotU8S8AccI32` → `_mm512_dpbusd_epi32`; the
+   interpreter, Z3, binary-IR, reference-Verilog, auto-dispatch, and a real
+   AVX-512 compile/run equivalence test cover the instruction-sized slice.
+3. **Done:** the parameterized packed component reaches generated C through
+   `--backend x86-gemm`; generic bounded expansion provides the reference path.
+4. Performance phase: replace the straightforward VNNI loop with the measured
+   8×32 register-chain kernel and validate against the inference ceilings.
 
 ### 6.7 Open questions
 
@@ -380,18 +383,18 @@ widths 32/64 with no subformat knob (tick_ir.py:40-52).
 
 ## 7. Verification and tooling conventions
 
-- **VeryLogo tests**: `.venv/bin/python -m unittest discover -s tests`
-  (1008 pass, 19 skipped — verified by running on 2026-08-12; the
+- **VeryLogo tests**: `.venv/bin/python3 -m unittest discover -s tests`
+  (1024 pass, 19 skipped — verified by running on 2026-08-13; the
   pressure-scheduler test needs xor throughput >= 2 on the AVX512 target,
   so keep it at 2 rather than raising it to the measured 3).
-- **Inference tests**: `.venv/bin/python -m pytest inference/tests/`
+- **Inference tests**: `.venv/bin/python3 -m pytest inference/tests/`
   (17 pass + 1 xfail — verified by running on 2026-08-12; requires
   avx512_vnni + avx512_bf16; the SIMD checker C is compiled once per
   process; checker buffers are `buf[65536]` — don't reference an
   undefined BUFSZ. NOTE: the split_qkv round-trip property is mode 6 in
   the checker (mode 3 is softmax_rect) — a past duplicate made it
   unreachable).
-- **Running a benchmark**: `cd repo-root; .venv/bin/python
+- **Running a benchmark**: `cd repo-root; .venv/bin/python3
   inference/bench/bench_mha_prefill_avx512.py --seq 512 --layers 6`
   (the scripts insert the repo root on sys.path and import the
   `inference` package; they compile the asm kernel with `gcc -c` and the
@@ -412,11 +415,8 @@ widths 32/64 with no subformat knob (tick_ir.py:40-52).
 
 1. Read `docs/GEMM_FROM_VERILOG_DESIGN.md` (the full design, incl. the
    floor model) and this document.
-2. Implement the first slice (§6.6): `$mul` in the subset → `Mul`;
-   `SimdDotS8` → `_mm512_dpbusd_epi32`; property-test the emitted kernel.
-3. Prototype the component lift: a `gemm` Verilog module + frontend
-   allowlist → `Gemm` primitive → Technology lowering (Zen 5 vpdpbusd
-   kernel scheduled from aggen), then a decoder-layer Verilog
-   instantiating it.
+2. Keep the component lift, generic fallback, and VNNI ABI tests green.
+3. Implement and measure the 8×32 register-chain lowering against
+   `inference/aggen.py`, then add BF16 as a separate type/op slice.
 4. Keep both halves self-contained (`stc/` no inference imports,
    `inference/` no stc imports).

@@ -19,6 +19,7 @@ from stc.tick_ir import (
     SimdEq,
     SimdLShr,
     SimdMaddS16,
+    SimdDotU8S8AccI32,
     SimdMaxS,
     SimdMaxU,
     SimdMaskPack,
@@ -430,6 +431,31 @@ def emit_x86_avx512_c(ir: TickIR) -> str:
 
             op = f"_mm512_{prefix}_{suffix}"
             lines.append(f"  __m512i {name} = {op}({a}, {b});")
+            memo[key] = name
+            return name
+
+        if isinstance(expr, SimdDotU8S8AccI32):
+            a = emit_expr(expr.a)
+            b = emit_expr(expr.b)
+            acc = emit_expr(expr.acc)
+            a_t = _require_simd512(infer_type(expr.a, types))
+            b_t = _require_simd512(infer_type(expr.b, types))
+            acc_t = _require_simd512(infer_type(expr.acc, types))
+            if (
+                a_t.lane_width != 8
+                or a_t.lanes != 64
+                or b_t != a_t
+                or acc_t.lane_width != 32
+                or acc_t.lanes != 16
+            ):
+                raise CodegenError(
+                    "avx512 dot_u8s8_acc_i32 requires simd[8,64] operands and simd[32,16] accumulator"
+                )
+            name = f"t{tmp_id}"
+            tmp_id += 1
+            # VPDPBUSD's first operand is the accumulator; the second is
+            # unsigned-byte input and the third is signed-byte input.
+            lines.append(f"  __m512i {name} = _mm512_dpbusd_epi32({acc}, {a}, {b});")
             memo[key] = name
             return name
 

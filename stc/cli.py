@@ -14,6 +14,7 @@ from stc.backend_futhark import (
     emit_futhark_manifest,
     resolve_futhark_mode,
 )
+from stc.backend_x86_gemm import emit_x86_gemm_c
 from stc.avr_project import emit_avr_project
 from stc.backend_sched import generate_scheduled_code, get_schedule_stats
 from stc.circuit_synth import CircuitState
@@ -170,6 +171,13 @@ def run_pipeline(
     t0 = time.perf_counter()
     tick_ir = extract_tick_ir(design)
     _log_timing("extract_tick_ir", t0)
+    if backend == "generic":
+        from stc.gemm_lowering import expand_gemm_calls
+
+        max_gemm_macs = int(os.environ.get("STC_GENERIC_GEMM_MAX_MACS", "4096"))
+        t0 = time.perf_counter()
+        tick_ir = expand_gemm_calls(tick_ir, max_macs=max_gemm_macs)
+        _log_timing("expand_generic_gemm", t0)
     t0 = time.perf_counter()
     validate_tick_ir(tick_ir)
     _log_timing("validate_tick_ir", t0)
@@ -258,7 +266,7 @@ def run_pipeline(
     effective_bounded_state_opt = (
         bounded_state_opt
         if bounded_state_opt is not None
-        else backend not in {"x86-avx2", "x86-avx512", "ptx", "futhark"}
+        else backend not in {"x86-avx2", "x86-avx512", "x86-gemm", "ptx", "futhark"}
     )
     reduced, arith_report = optimize_tick_ir(
         tick_ir,
@@ -311,6 +319,13 @@ def run_pipeline(
     # `--no-backend` is set, users may be targeting non-AVR outputs and the
     # reduced IR may have many outputs that cannot fit the default PORTB map.
     if no_backend:
+        return
+
+    if backend == "x86-gemm":
+        t0 = time.perf_counter()
+        code = emit_x86_gemm_c(reduced)
+        (out_dir / "circuit_x86_gemm.c").write_text(code, encoding="utf-8")
+        _log_timing("emit_x86_gemm", t0)
         return
 
     if backend == "futhark":
@@ -699,7 +714,15 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     p.add_argument(
         "--backend",
         "-b",
-        choices=["generic", "avr", "ptx", "x86-avx2", "x86-avx512", "futhark"],
+        choices=[
+            "generic",
+            "avr",
+            "ptx",
+            "x86-avx2",
+            "x86-avx512",
+            "x86-gemm",
+            "futhark",
+        ],
         default="generic",
         help="Target backend for optimization",
     )

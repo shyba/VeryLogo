@@ -9,6 +9,54 @@ from stc.tooling import ToolMissing
 
 
 class TestCliPipeline(unittest.TestCase):
+    def test_pipeline_reduces_unsigned_mul(self) -> None:
+        design = {
+            "modules": {
+                "top": {
+                    "ports": {
+                        "a": {"direction": "input", "bits": [2, 3, 4, 5]},
+                        "b": {"direction": "input", "bits": [6, 7, 8, 9]},
+                        "y": {"direction": "output", "bits": [10, 11, 12, 13]},
+                    },
+                    "cells": {
+                        "$mul$0": {
+                            "type": "$mul",
+                            "port_directions": {
+                                "A": "input",
+                                "B": "input",
+                                "Y": "output",
+                            },
+                            "connections": {
+                                "A": [2, 3, 4, 5],
+                                "B": [6, 7, 8, 9],
+                                "Y": [10, 11, 12, 13],
+                            },
+                            "parameters": {
+                                "A_WIDTH": "4",
+                                "B_WIDTH": "4",
+                                "Y_WIDTH": "4",
+                                "A_SIGNED": "0",
+                                "B_SIGNED": "0",
+                            },
+                        }
+                    },
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as d:
+            base = Path(d)
+            normalized = base / "normalized.json"
+            normalized.write_text(json.dumps(design), encoding="utf-8")
+            out_dir = base / "out"
+            run_pipeline(normalized, out_dir, no_backend=True, bound=2)
+            reduced = read_tick_ir_bin(out_dir / "reduced_tick_ir.bin")
+
+        from stc.tick_ir import Mul, Slice
+
+        self.assertIsInstance(reduced.output_exprs["y"], Slice)
+        self.assertIsInstance(reduced.output_exprs["y"].x, Mul)
+
     def test_pipeline_outputs(self) -> None:
         design = {
             "modules": {

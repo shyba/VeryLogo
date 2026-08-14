@@ -18,6 +18,7 @@ from stc.tick_ir import (
     BoolConst,
     BoolType,
     Concat,
+    Div,
     Eq,
     Expr,
     FAdd,
@@ -33,8 +34,10 @@ from stc.tick_ir import (
     FSub,
     FloatConst,
     FloatType,
+    GemmCall,
     LShr,
     Mux,
+    Mul,
     Not,
     Or,
     Shl,
@@ -51,6 +54,7 @@ from stc.tick_ir import (
     SimdInsertLane,
     SimdLShr,
     SimdMaddS16,
+    SimdDotU8S8AccI32,
     SimdBlend,
     SimdMulHiS,
     SimdMulHiU,
@@ -370,7 +374,7 @@ def _reduce_expr_impl(
         x = reduce_expr(expr.x, types, _cache)
         return Slice(x=x, offset=expr.offset, width=expr.width)
 
-    if isinstance(expr, (Add, Sub, Shl, LShr, AShr, Eq, Ult, Ule, Ugt, Uge)):
+    if isinstance(expr, (Add, Sub, Mul, Div, Shl, LShr, AShr, Eq, Ult, Ule, Ugt, Uge)):
         a = reduce_expr(expr.a, types, _cache)
         b = reduce_expr(expr.b, types, _cache)
         t = infer_type(a, types)
@@ -427,6 +431,10 @@ def _reduce_expr_impl(
                 return BitVecConst(width=t.width, value=aa + bb)
             if isinstance(expr, Sub):
                 return BitVecConst(width=t.width, value=aa - bb)
+            if isinstance(expr, Mul):
+                return BitVecConst(width=t.width, value=aa * bb)
+            if isinstance(expr, Div):
+                return BitVecConst(width=t.width, value=0 if bb == 0 else aa // bb)
             if isinstance(expr, Shl):
                 return BitVecConst(width=t.width, value=(aa << bb) & _mask(t.width))
             if isinstance(expr, LShr):
@@ -508,6 +516,27 @@ def _reduce_expr_impl(
         a = reduce_expr(expr.a, types, _cache)
         b = reduce_expr(expr.b, types, _cache)
         return expr.__class__(a=a, b=b)
+
+    if isinstance(expr, SimdDotU8S8AccI32):
+        a = reduce_expr(expr.a, types, _cache)
+        b = reduce_expr(expr.b, types, _cache)
+        acc = reduce_expr(expr.acc, types, _cache)
+        return SimdDotU8S8AccI32(a=a, b=b, acc=acc)
+
+    if isinstance(expr, GemmCall):
+        return GemmCall(
+            a=reduce_expr(expr.a, types, _cache),
+            b=reduce_expr(expr.b, types, _cache),
+            m=expr.m,
+            n=expr.n,
+            k=expr.k,
+            a_width=expr.a_width,
+            b_width=expr.b_width,
+            acc_width=expr.acc_width,
+            a_signed=expr.a_signed,
+            b_signed=expr.b_signed,
+            layout=expr.layout,
+        )
 
     if isinstance(
         expr,

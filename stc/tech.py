@@ -1,9 +1,9 @@
 from __future__ import annotations
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Protocol, Sequence
+from typing import Callable, Protocol, Sequence
 
-from stc.tick_ir import Expr
+from stc.tick_ir import Expr, GemmCall
 
 
 class CostModel(Protocol):
@@ -67,6 +67,16 @@ class Technology(ABC):
         """Check if expression is legal for this backend."""
         ...
 
+    def lower_expr(self, expr: Expr, *, target: str) -> Expr:
+        """Dispatch a target lowering for one expression.
+
+        Technologies historically exposed only ``is_legal``; the explicit
+        dispatcher keeps shaped operations from being silently treated as
+        ordinary gates and gives each target a named lowering seam.
+        """
+
+        return dispatch_lowering(self.name, expr, target=target)
+
 
 class DefaultCostModel:
     """Software-style cost: all gates equal."""
@@ -121,6 +131,23 @@ class GenericTechnology(Technology):
 
 
 _TECHNOLOGIES: dict[str, Technology] = {}
+_LOWERING_DISPATCH: dict[tuple[str, str, type], Callable[[Expr], Expr]] = {}
+
+
+def register_lowering(
+    technology: str, target: str, expr_type: type, lowering: Callable[[Expr], Expr]
+) -> None:
+    _LOWERING_DISPATCH[(technology, target, expr_type)] = lowering
+
+
+def dispatch_lowering(technology: str, expr: Expr, *, target: str) -> Expr:
+    """Resolve the most-specific registered lowering, preserving unknown nodes."""
+
+    for cls in type(expr).__mro__:
+        lowering = _LOWERING_DISPATCH.get((technology, target, cls))
+        if lowering is not None:
+            return lowering(expr)
+    return expr
 
 
 def register_technology(tech: Technology) -> None:
@@ -305,9 +332,59 @@ class FutharkTechnology(Technology):
         return True
 
 
+class X86GemmTechnology(Technology):
+    """x86 packed GEMM target with an explicit shaped primitive."""
+
+    @property
+    def name(self) -> str:
+        return "x86-gemm"
+
+    def primitives(self) -> Sequence[Primitive]:
+        return [
+            Primitive(
+                "gemm_u8s8_i32",
+                2,
+                1,
+                4,
+                1.0,
+                {"instruction": "vpdpbusd", "layout": "row_major"},
+            )
+        ]
+
+    def cost_model(self) -> CostModel:
+        return DefaultCostModel()
+
+    def depth_model(self) -> DepthModel:
+        return DefaultDepthModel()
+
+    def is_legal(self, expr: Expr) -> bool:
+        from stc.tick_ir import GemmCall
+
+        return isinstance(expr, GemmCall)
+
+
 register_technology(GenericTechnology())
 register_technology(PTXTechnology())
 register_technology(AVX512Technology())
 register_technology(AVRTechnology())
 register_technology(AVX2Technology())
 register_technology(FutharkTechnology())
+register_technology(X86GemmTechnology())
+
+
+# The generic lowering is deliberately bounded; production-shaped calls stay
+# intact for the x86 target and are consumed by backend_x86_gemm.py.
+def _lower_gemm_generic(expr: Expr) -> Expr:
+    from stc.gemm_lowering import expand_gemm_call
+
+    if not isinstance(expr, GemmCall):
+        return expr
+    return expand_gemm_call(expr)
+
+
+def _identity_lowering(expr: Expr) -> Expr:
+    return expr
+
+
+register_lowering("generic", "scalar", GemmCall, _lower_gemm_generic)
+register_lowering("x86-gemm", "x86-vnni", GemmCall, _identity_lowering)

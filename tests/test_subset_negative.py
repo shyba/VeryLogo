@@ -57,3 +57,35 @@ class TestSubsetNegative(unittest.TestCase):
 
         with self.assertRaises(SubsetError):
             check_subset(yosys)
+
+    def test_reject_signed_mul(self) -> None:
+        design = {
+            "modules": {
+                "top": {
+                    "ports": {},
+                    "cells": {
+                        "$mul$0": {
+                            "type": "$mul",
+                            "port_directions": {
+                                "A": "input",
+                                "B": "input",
+                                "Y": "output",
+                            },
+                            "connections": {"A": [2], "B": [3], "Y": [4]},
+                            "parameters": {
+                                "A_SIGNED": "1",
+                                "B_SIGNED": "0",
+                            },
+                        }
+                    },
+                }
+            }
+        }
+
+        with tempfile.TemporaryDirectory() as d:
+            p = Path(d) / "normalized.json"
+            p.write_text(json.dumps(design), encoding="utf-8")
+            yosys = load_design(p)
+
+        with self.assertRaisesRegex(SubsetError, "signed cell params"):
+            check_subset(yosys)

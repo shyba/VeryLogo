@@ -32,6 +32,7 @@ from stc.tick_ir import (
     FNe,
     FSqrt,
     FSub,
+    GemmCall,
     LShr,
     Mul,
     Mux,
@@ -54,6 +55,7 @@ from stc.tick_ir import (
     SimdInsertLane,
     SimdLShr,
     SimdMaddS16,
+    SimdDotU8S8AccI32,
     SimdMaskExpand,
     SimdMaskPack,
     SimdMaxS,
@@ -439,6 +441,37 @@ def _infer_type_no_cache(expr: Expr, ctx: dict[str, Type]) -> Type:
         if a_t.lanes % 2 != 0:
             raise TickIRValidationError("simd_madd_s16 requires even lanes")
         return SimdType(lane_width=32, lanes=a_t.lanes // 2)
+
+    if isinstance(expr, SimdDotU8S8AccI32):
+        a_t = infer_type(expr.a, ctx)
+        b_t = infer_type(expr.b, ctx)
+        acc_t = infer_type(expr.acc, ctx)
+        if not (
+            isinstance(a_t, SimdType)
+            and type_equal(a_t, b_t)
+            and isinstance(acc_t, SimdType)
+        ):
+            raise TickIRValidationError(
+                "simd_dot_u8s8_acc_i32 requires matching byte operands and an accumulator"
+            )
+        if a_t.lane_width != 8 or a_t.lanes % 4 != 0:
+            raise TickIRValidationError(
+                "simd_dot_u8s8_acc_i32 requires byte lanes in groups of four"
+            )
+        if acc_t.lane_width != 32 or acc_t.lanes != a_t.lanes // 4:
+            raise TickIRValidationError(
+                "simd_dot_u8s8_acc_i32 accumulator must have one i32 lane per byte group"
+            )
+        return acc_t
+
+    if isinstance(expr, GemmCall):
+        a_t = infer_type(expr.a, ctx)
+        b_t = infer_type(expr.b, ctx)
+        if not isinstance(a_t, BitVecType) or a_t.width != expr.a_total_width:
+            raise TickIRValidationError("gemm A operand width does not match shape")
+        if not isinstance(b_t, BitVecType) or b_t.width != expr.b_total_width:
+            raise TickIRValidationError("gemm B operand width does not match shape")
+        return BitVecType(width=expr.result_width)
 
     if isinstance(expr, (SimdUnpackLo, SimdUnpackHi)):
         a_t = infer_type(expr.a, ctx)
@@ -1226,6 +1259,52 @@ def eval_expr(
             s = int(a0) * int(b0) + int(a1) * int(b1)
             out |= (s & 0xFFFFFFFF) << (32 * i)
         return out & _mask(out_t.total_width)
+
+    if isinstance(expr, SimdDotU8S8AccI32):
+        out_t = infer_type(expr, ctx_types)
+        assert isinstance(out_t, SimdType)
+        a_t = infer_type(expr.a, ctx_types)
+        assert isinstance(a_t, SimdType)
+        aa = _as_int(eval_expr(expr.a, ctx_types, env)) & _mask(a_t.total_width)
+        bb = _as_int(eval_expr(expr.b, ctx_types, env)) & _mask(a_t.total_width)
+        cc = _as_int(eval_expr(expr.acc, ctx_types, env)) & _mask(out_t.total_width)
+        out = 0
+        for i in range(out_t.lanes):
+            total = (cc >> (32 * i)) & 0xFFFFFFFF
+            for j in range(4):
+                a_byte = (aa >> (8 * (4 * i + j))) & 0xFF
+                b_byte = (bb >> (8 * (4 * i + j))) & 0xFF
+                if b_byte & 0x80:
+                    b_byte -= 0x100
+                total += a_byte * b_byte
+            out |= (total & 0xFFFFFFFF) << (32 * i)
+        return out & _mask(out_t.total_width)
+
+    if isinstance(expr, GemmCall):
+        a_bits = _as_int(eval_expr(expr.a, ctx_types, env)) & _mask(expr.a_total_width)
+        b_bits = _as_int(eval_expr(expr.b, ctx_types, env)) & _mask(expr.b_total_width)
+        out = 0
+        a_mask = _mask(expr.a_width)
+        b_mask = _mask(expr.b_width)
+        acc_mask = _mask(expr.acc_width)
+
+        def decode(raw: int, width: int, signed: bool) -> int:
+            raw &= _mask(width)
+            if signed and (raw & (1 << (width - 1))):
+                return raw - (1 << width)
+            return raw
+
+        for i in range(expr.m):
+            for j in range(expr.n):
+                total = 0
+                for q in range(expr.k):
+                    a_raw = (a_bits >> ((i * expr.k + q) * expr.a_width)) & a_mask
+                    b_raw = (b_bits >> ((q * expr.n + j) * expr.b_width)) & b_mask
+                    total += decode(a_raw, expr.a_width, expr.a_signed) * decode(
+                        b_raw, expr.b_width, expr.b_signed
+                    )
+                out |= (total & acc_mask) << ((i * expr.n + j) * expr.acc_width)
+        return out & _mask(expr.result_width)
 
     if isinstance(expr, (SimdUnpackLo, SimdUnpackHi)):
         t = infer_type(expr, ctx_types)

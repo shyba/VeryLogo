@@ -14,7 +14,9 @@ from stc.tick_ir import (
     Concat,
     Eq,
     Expr,
+    GemmCall,
     LShr,
+    Mul,
     Mux,
     Not,
     Or,
@@ -32,7 +34,7 @@ from stc.tick_ir import (
     Var,
     Xor,
 )
-from stc.yosys_json import YosysCell, YosysDesign
+from stc.yosys_json import YosysCell, YosysDesign, is_gemm_cell
 
 
 @dataclass(frozen=True)
@@ -185,6 +187,61 @@ def _bus_from_bits(
 def extract_tick_ir(design: YosysDesign) -> TickIR:
     check_subset(design)
     module = design.modules[design.top]
+
+    def gemm_cell_contract(cell: YosysCell) -> tuple[dict[str, str], str, str, str]:
+        """Resolve a GEMM cell's shape and port names from Yosys metadata."""
+
+        referenced = design.modules.get(cell.type)
+        params: dict[str, str] = {}
+        if referenced is not None:
+            params.update(referenced.parameter_defaults)
+        params.update(cell.parameters)
+
+        def required(name: str) -> int:
+            raw = params.get(name)
+            if raw is None:
+                raise ExtractionError(f"gemm cell missing parameter {name}")
+            try:
+                value = _parse_param_int(raw)
+            except ValueError as exc:
+                raise ExtractionError(f"invalid gemm parameter {name}") from exc
+            if value < 1:
+                raise ExtractionError(f"gemm parameter {name} must be positive")
+            return value
+
+        # Keep the numeric values in canonical decimal form so downstream
+        # diagnostics and hand-authored fixtures share one representation.
+        numeric = {name: str(required(name)) for name in ("M", "N", "K")}
+        for name in ("A_WIDTH", "B_WIDTH", "ACC_WIDTH"):
+            if name in params:
+                numeric[name] = str(required(name))
+        for name in ("A_SIGNED", "B_SIGNED"):
+            if name in params:
+                numeric[name] = "1" if _parse_param_int(params[name]) else "0"
+
+        def find_port(direction: str, preferred: str) -> str:
+            for port_name, port_direction in cell.port_directions.items():
+                if port_direction == direction and port_name.lower() == preferred:
+                    return port_name
+            matches = [
+                port_name
+                for port_name, port_direction in cell.port_directions.items()
+                if port_direction == direction
+            ]
+            if len(matches) != (1 if direction == "output" else 2):
+                raise ExtractionError(
+                    f"gemm cell must expose named {preferred} port or an unambiguous "
+                    f"{direction} port set"
+                )
+            # Inputs are ordered by the contract (A then B); outputs have one
+            # result port.  Preserve normalized JSON insertion order.
+            if direction == "input":
+                return matches[0 if preferred == "a" else 1]
+            return matches[0]
+
+        return numeric, find_port("input", "a"), find_port("input", "b"), find_port(
+            "output", "c"
+        )
 
     def decode_mem_init_bits(init: str, *, size: int, width: int) -> list[int]:
         s = init.strip()
@@ -344,6 +401,8 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
             return 1 if expr.width == 1 else expr.width
         if isinstance(expr, Lut8):
             return 8
+        if isinstance(expr, GemmCall):
+            return expr.result_width
         raise ExtractionError("cannot infer width")
 
     def expr_for_bit(bit: int) -> Expr:
@@ -430,7 +489,35 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
             return (a, b)
 
         t = cell.type
-        if t == "$not":
+        if is_gemm_cell(design, cell):
+            params, a_port, b_port, c_port = gemm_cell_contract(cell)
+            if out_port != c_port:
+                raise ExtractionError("gemm supports only its result output port")
+            a_width = int(params.get("A_WIDTH", "8"))
+            b_width = int(params.get("B_WIDTH", "8"))
+            acc_width = int(params.get("ACC_WIDTH", "32"))
+            expected_a = int(params["M"]) * int(params["K"]) * a_width
+            expected_b = int(params["K"]) * int(params["N"]) * b_width
+            expected_c = int(params["M"]) * int(params["N"]) * acc_width
+            if len(cell.connections.get(a_port, [])) != expected_a:
+                raise ExtractionError("gemm A port width does not match M*K*A_WIDTH")
+            if len(cell.connections.get(b_port, [])) != expected_b:
+                raise ExtractionError("gemm B port width does not match K*N*B_WIDTH")
+            if y_width != expected_c:
+                raise ExtractionError("gemm C port width does not match M*N*ACC_WIDTH")
+            expr = GemmCall(
+                a=bus(a_port),
+                b=bus(b_port),
+                m=int(params["M"]),
+                n=int(params["N"]),
+                k=int(params["K"]),
+                a_width=a_width,
+                b_width=b_width,
+                acc_width=acc_width,
+                a_signed=params.get("A_SIGNED", "0") == "1",
+                b_signed=params.get("B_SIGNED", "1") == "1",
+            )
+        elif t == "$not":
             expr = Not(x=bus("A"))
         elif t == "$logic_not":
             a = bus("A")
@@ -454,6 +541,9 @@ def extract_tick_ir(design: YosysDesign) -> TickIR:
         elif t == "$sub":
             a, b = match_widths_to(y_width, bus("A"), bus("B"))
             expr = Sub(a=a, b=b)
+        elif t == "$mul":
+            a, b = match_widths_to(y_width, bus("A"), bus("B"))
+            expr = Mul(a=a, b=b)
         elif t == "$shl":
             a, b = match_widths_to(y_width, bus("A"), bus("B"))
             expr = Shl(a=a, b=b)

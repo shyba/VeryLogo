@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
-from stc.yosys_json import YosysDesign
+from stc.yosys_json import YosysDesign, is_gemm_cell
 
 
 @dataclass(frozen=True)
@@ -23,6 +23,7 @@ SUPPORTED_CELL_TYPES = {
     "$pmux",
     "$add",
     "$sub",
+    "$mul",
     "$shl",
     "$shr",
     "$sshr",
@@ -93,7 +94,13 @@ def check_subset(design: YosysDesign) -> None:
             and cell.type in design.modules
             and cell.type != design.top
         ):
-            raise SubsetError(f"submodule instantiation not supported: {cell.type}")
+            if not is_gemm_cell(design, cell):
+                raise SubsetError(f"submodule instantiation not supported: {cell.type}")
+        if is_gemm_cell(design, cell):
+            # GEMM is a shaped primitive.  Its full contract is checked by
+            # extraction/type inference; keeping the subset gate here makes
+            # hierarchy lifting explicit while rejecting unknown submodules.
+            continue
         if cell.type not in SUPPORTED_CELL_TYPES:
             raise SubsetError(f"unsupported cell type: {cell.type}")
 
@@ -101,6 +108,7 @@ def check_subset(design: YosysDesign) -> None:
         if cell.type in {
             "$add",
             "$sub",
+            "$mul",
             "$shl",
             "$shr",
             "$lt",

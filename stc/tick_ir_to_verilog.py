@@ -15,7 +15,9 @@ from stc.tick_ir import (
     Concat,
     Eq,
     Expr,
+    GemmCall,
     LShr,
+    Mul,
     Mux,
     Not,
     Or,
@@ -31,6 +33,7 @@ from stc.tick_ir import (
     SimdInsertLane,
     SimdLShr,
     SimdMaddS16,
+    SimdDotU8S8AccI32,
     SimdMaskExpand,
     SimdMaskPack,
     SimdBlend,
@@ -128,6 +131,8 @@ def _emit_expr(expr: Expr, types: dict[str, Type]) -> str:
         return f"(({_emit_expr(expr.a, types)}) + ({_emit_expr(expr.b, types)}))"
     if isinstance(expr, Sub):
         return f"(({_emit_expr(expr.a, types)}) - ({_emit_expr(expr.b, types)}))"
+    if isinstance(expr, Mul):
+        return f"(({_emit_expr(expr.a, types)}) * ({_emit_expr(expr.b, types)}))"
     if isinstance(expr, Shl):
         return f"(({_emit_expr(expr.a, types)}) << ({_emit_expr(expr.b, types)}))"
     if isinstance(expr, LShr):
@@ -301,6 +306,67 @@ def _emit_expr(expr: Expr, types: dict[str, Type]) -> str:
             s = f"(($signed({a0}) * $signed({b0})) + ($signed({a1}) * $signed({b1})))"
             lane_exprs.append(f"({s})[31:0]")
         return "{" + ", ".join(lane_exprs) + "}"
+    if isinstance(expr, SimdDotU8S8AccI32):
+        out_t = infer_type(expr, types)
+        a_t = infer_type(expr.a, types)
+        b_t = infer_type(expr.b, types)
+        acc_t = infer_type(expr.acc, types)
+        if not (
+            isinstance(out_t, SimdType)
+            and isinstance(a_t, SimdType)
+            and isinstance(b_t, SimdType)
+            and isinstance(acc_t, SimdType)
+        ):
+            raise VerilogEmitError("simd_dot_u8s8_acc_i32 requires simd operands")
+        if (
+            a_t.lane_width != 8
+            or b_t != a_t
+            or a_t.lanes % 4 != 0
+            or acc_t.lane_width != 32
+            or acc_t.lanes != a_t.lanes // 4
+            or out_t != acc_t
+        ):
+            raise VerilogEmitError("simd_dot_u8s8_acc_i32 shape mismatch")
+        a = _emit_expr(expr.a, types)
+        b = _emit_expr(expr.b, types)
+        acc = _emit_expr(expr.acc, types)
+
+        def lane_slice(vector: str, hi: int, lo: int) -> str:
+            # A direct variable may be indexed in Verilog. Parenthesized
+            # arbitrary expressions are retained for compatibility with the
+            # existing emitter, although a future materialization pass should
+            # be used when dot operands are themselves compound expressions.
+            if vector.isidentifier():
+                return f"{vector}[{hi}:{lo}]"
+            return f"({vector})[{hi}:{lo}]"
+
+        def bit_select(vector: str, bit: int) -> str:
+            if vector.isidentifier():
+                return f"{vector}[{bit}]"
+            return f"({vector})[{bit}]"
+
+        lane_exprs: list[str] = []
+        for i in reversed(range(out_t.lanes)):
+            acc_off = 32 * i
+            acc_lane = lane_slice(acc, acc_off + 31, acc_off)
+            terms: list[str] = []
+            for j in range(4):
+                off = 8 * (4 * i + j)
+                a_lane = lane_slice(a, off + 7, off)
+                b_lane = lane_slice(b, off + 7, off)
+                a_ext = f"$unsigned({{24'b0, {a_lane}}})"
+                b_bit = bit_select(b, off + 7)
+                b_ext = "$signed({{" + "24{" + b_bit + "}} , " + b_lane + "})"
+                terms.append(f"({a_ext} * {b_ext})")
+            total = f"({acc_lane} + " + " + ".join(terms) + ")"
+            lane_exprs.append(f"32'({total})")
+        return "{" + ", ".join(lane_exprs) + "}"
+    if isinstance(expr, GemmCall):
+        # Reference Verilog is intentionally scalar and bounded.  The target
+        # backend consumes the shaped node directly for production GEMMs.
+        from stc.gemm_lowering import expand_gemm_call
+
+        return _emit_expr(expand_gemm_call(expr), types)
     if isinstance(expr, (SimdUnpackLo, SimdUnpackHi)):
         t = infer_type(expr.a, types)
         if not isinstance(t, SimdType):
@@ -629,9 +695,20 @@ def _emit_expr(expr: Expr, types: dict[str, Type]) -> str:
         inner = ", ".join(_emit_expr(p, types) for p in expr.parts)
         return f"{{{inner}}}"
     if isinstance(expr, Slice):
+        if isinstance(expr.x, Slice):
+            return _emit_expr(
+                Slice(
+                    x=expr.x.x,
+                    offset=expr.x.offset + expr.offset,
+                    width=expr.width,
+                ),
+                types,
+            )
+        vector = _emit_expr(expr.x, types)
+        base = vector if vector.isidentifier() else f"({vector})"
         if expr.width == 1:
-            return f"({_emit_expr(expr.x, types)})[{expr.offset}]"
-        return f"({_emit_expr(expr.x, types)})[{expr.offset + expr.width - 1}:{expr.offset}]"
+            return f"{base}[{expr.offset}]"
+        return f"{base}[{expr.offset + expr.width - 1}:{expr.offset}]"
     raise VerilogEmitError("unsupported expression kind")
 
 

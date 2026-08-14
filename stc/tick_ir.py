@@ -595,6 +595,92 @@ class SimdMaddS16:
 
 
 @dataclass(frozen=True)
+class SimdDotU8S8AccI32:
+    """Unsigned-u8 times signed-s8 dot product accumulated into i32 lanes.
+
+    The operation matches AVX-512 VNNI ``VPDPBUSD`` semantics: each output
+    dword adds four products from the corresponding groups of four input
+    bytes to the supplied 32-bit accumulator lane. Values are represented as
+    bit patterns, so the result wraps modulo 2**32.
+    """
+
+    a: Expr
+    b: Expr
+    acc: Expr
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "simd_dot_u8s8_acc_i32",
+            "a": self.a.to_dict(),
+            "b": self.b.to_dict(),
+            "acc": self.acc.to_dict(),
+        }
+
+
+@dataclass(frozen=True)
+class GemmCall:
+    """A shaped row-major integer GEMM component call.
+
+    ``a`` and ``b`` are packed bit-vectors containing matrix elements in
+    row-major order, with each element's least-significant bit first.  The
+    result is packed in the same order.  Signedness is an element property;
+    the accumulator wraps modulo ``2**acc_width`` just like a fixed-width
+    Verilog arithmetic datapath.
+
+    The node is deliberately target-independent.  Generic lowering expands it
+    into scalar Tick-IR, while the x86 GEMM target consumes the shape directly
+    and emits a VNNI kernel.
+    """
+
+    a: Expr
+    b: Expr
+    m: int
+    n: int
+    k: int
+    a_width: int = 8
+    b_width: int = 8
+    acc_width: int = 32
+    a_signed: bool = False
+    b_signed: bool = True
+    layout: str = "row_major"
+
+    def __post_init__(self) -> None:
+        for name in ("m", "n", "k", "a_width", "b_width", "acc_width"):
+            if int(getattr(self, name)) < 1:
+                raise ValueError(f"gemm {name} must be >= 1")
+        if self.layout != "row_major":
+            raise ValueError("gemm currently supports only row_major layout")
+
+    @property
+    def a_total_width(self) -> int:
+        return self.m * self.k * self.a_width
+
+    @property
+    def b_total_width(self) -> int:
+        return self.k * self.n * self.b_width
+
+    @property
+    def result_width(self) -> int:
+        return self.m * self.n * self.acc_width
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "kind": "gemm_call",
+            "a": self.a.to_dict(),
+            "b": self.b.to_dict(),
+            "m": self.m,
+            "n": self.n,
+            "k": self.k,
+            "a_width": self.a_width,
+            "b_width": self.b_width,
+            "acc_width": self.acc_width,
+            "a_signed": bool(self.a_signed),
+            "b_signed": bool(self.b_signed),
+            "layout": self.layout,
+        }
+
+
+@dataclass(frozen=True)
 class SimdUnpackLo:
     a: Expr
     b: Expr
@@ -1194,6 +1280,8 @@ Expr = (
     | SimdMulHiU
     | SimdMulHiS
     | SimdMaddS16
+    | SimdDotU8S8AccI32
+    | GemmCall
     | SimdUnpackLo
     | SimdUnpackHi
     | SimdPackSS16To8
@@ -1364,6 +1452,13 @@ EXPR_CLASSES = (
     SimdFCmpLt,
     SimdFCmpLe,
     SimdFCmpNe,
+    # Appended after the original opcode order so existing v2 binary artifacts
+    # remain decodable. These were omitted from the original registry even
+    # though scalar Mul/Div are valid Tick-IR nodes.
+    Mul,
+    Div,
+    SimdDotU8S8AccI32,
+    GemmCall,
 )
 
 
@@ -1461,6 +1556,26 @@ def expr_from_dict(data: dict[str, Any]) -> Expr:
         return SimdMulHiS(a=expr_from_dict(data["a"]), b=expr_from_dict(data["b"]))
     if kind == "simd_madd_s16":
         return SimdMaddS16(a=expr_from_dict(data["a"]), b=expr_from_dict(data["b"]))
+    if kind == "simd_dot_u8s8_acc_i32":
+        return SimdDotU8S8AccI32(
+            a=expr_from_dict(data["a"]),
+            b=expr_from_dict(data["b"]),
+            acc=expr_from_dict(data["acc"]),
+        )
+    if kind == "gemm_call":
+        return GemmCall(
+            a=expr_from_dict(data["a"]),
+            b=expr_from_dict(data["b"]),
+            m=int(data["m"]),
+            n=int(data["n"]),
+            k=int(data["k"]),
+            a_width=int(data.get("a_width", 8)),
+            b_width=int(data.get("b_width", 8)),
+            acc_width=int(data.get("acc_width", 32)),
+            a_signed=bool(data.get("a_signed", False)),
+            b_signed=bool(data.get("b_signed", True)),
+            layout=str(data.get("layout", "row_major")),
+        )
     if kind == "simd_unpack_lo":
         return SimdUnpackLo(a=expr_from_dict(data["a"]), b=expr_from_dict(data["b"]))
     if kind == "simd_unpack_hi":
